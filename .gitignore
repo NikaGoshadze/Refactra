@@ -1,0 +1,63 @@
+# Local project notes (existing exclusions)
+/Refactra_v1_Requirements.md
+/REFACTRA_CODEX_HANDOFF.md
+
+# Working documentation (publish when finalized)
+/docs/architecture/
+/docs/contracts/
+/docs/adr/
+
+# Secrets and local environment configuration
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Python environments and generated files
+/env/
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# JavaScript dependencies, builds and caches
+node_modules/
+.next/
+out/
+dist/
+build/
+.turbo/
+.cache/
+.npm/
+.pnpm-store/
+.eslintcache
+*.tsbuildinfo
+
+# Generated test reports
+coverage/
+playwright-report/
+test-results/
+blob-report/
+
+# Local run data, workspaces, logs and scratch files
+/.runtime/
+/logs/
+/tmp/
+/temp/
+*.log
+
+# Local editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
