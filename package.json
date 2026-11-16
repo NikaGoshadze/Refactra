@@ -1,0 +1,15 @@
+{
+  "name": "refactra",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["apps/web"],
+  "engines": { "node": ">=24 <25" },
+  "scripts": {
+    "dev": "npm run dev --workspace @refactra/web",
+    "build": "npm run build --workspace @refactra/web",
+    "lint": "npm run lint --workspace @refactra/web",
+    "typecheck": "npm run typecheck --workspace @refactra/web",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": { "@playwright/test": "^1.56.0" }
+}
