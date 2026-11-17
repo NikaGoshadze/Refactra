@@ -112,7 +112,9 @@ The backend has a local eligibility policy for future repository endpoints. It r
 
 `REFACTRA_ALLOWED_GITHUB_USER_IDS` accepts comma-separated numeric IDs, for example `12345,67890`. Keep real local choices in ignored `.env`; an empty value allows nobody. This is an operator-managed tester list, with no invitation UI or extra database table.
 
-This policy is not wired into API routes yet, and Compose does not pass the new setting to the API. It does not replace checking the user's current GitHub repository permissions or the App's installation access. Those checks must precede any protected repository operation. The operator-only `github-check` command remains separate and uses no browser session.
+The separate GitHub permission checker mints a repository-scoped read token, confirms repository identity, resolves the user's current login by numeric ID, and checks that same user's current base permission. It requires `write` or `admin`; GitHub maps maintain roles to the `write` base permission. A role name alone does not grant access. Every call rechecks GitHub; missing access is denied and unverifiable responses fail closed. See [GitHub's permission endpoint](https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user).
+
+Neither check is wired into API routes yet, and Compose does not pass the tester allowlist to the API. A future endpoint must apply the local session/user/repository policy before calling the GitHub checker. The returned App token remains read-only even when the user has write access. The operator-only `github-check` command remains separate and uses no browser session.
 
 ## What this milestone does
 
