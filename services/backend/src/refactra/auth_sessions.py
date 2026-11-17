@@ -1,7 +1,7 @@
-"""Internal session storage. Issue only after the future OAuth flow verifies identity.
+"""Internal session storage. Issue only after the OAuth callback verifies identity.
 
-No HTTP route currently calls this service. Cookie/CSRF protection and GitHub OAuth
-verification must be implemented before exposing authenticated actions.
+The GitHub callback calls this service. Protected actions must separately verify
+the session, CSRF protection and current repository permissions.
 """
 
 import re

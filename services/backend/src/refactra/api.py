@@ -33,7 +33,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         description="Local mock queue only. Live execution and approvals are not implemented.",
         lifespan=lifespan,
     )
-    app.include_router(create_github_auth_router())
+    app.include_router(create_github_auth_router(session_factory))
 
     @app.exception_handler(HTTPException)
     async def http_error(_, exc: HTTPException):
