@@ -1,0 +1,16 @@
+# Opt in with: docker compose -f compose.yaml -f compose.repository-api.yaml up --build -d --wait api
+services:
+  api:
+    environment:
+      REFACTRA_GITHUB_CLIENT_ID: ${REFACTRA_GITHUB_CLIENT_ID:?Set the App Client ID in .env}
+      REFACTRA_ALLOWED_GITHUB_USER_IDS: ${REFACTRA_ALLOWED_GITHUB_USER_IDS:?Set allowed numeric GitHub user IDs in .env}
+      REFACTRA_GITHUB_REPOSITORY_ID: ${REFACTRA_GITHUB_REPOSITORY_ID:?Set the selected repository ID in .env}
+      REFACTRA_GITHUB_INSTALLATION_ID: ${REFACTRA_GITHUB_INSTALLATION_ID:?Set the App installation ID in .env}
+      REFACTRA_GITHUB_PRIVATE_KEY_PATH: /run/secrets/github-app.pem
+    volumes:
+      - type: bind
+        source: ./.runtime/secrets/github-app.pem
+        target: /run/secrets/github-app.pem
+        read_only: true
+        bind:
+          create_host_path: false

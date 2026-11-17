@@ -100,7 +100,7 @@ From the repository root, run:
 docker compose --profile github-check run --build --rm --no-deps github-check
 ```
 
-The optional profile mounts the PEM read-only into that one-off container. The default stack starts without a PEM; a missing PEM causes the check to fail without creating a directory in its place. The file stays outside Docker build contexts, and the API, web app and worker do not receive it. On Linux hosts, allow container user UID 10001 to read the key without making it publicly readable; Docker Desktop uses the Windows file-sharing permissions.
+The optional profile mounts the PEM read-only into that one-off container. The default stack starts without a PEM; a missing PEM causes the check to fail without creating a directory in its place. The file stays outside Docker build contexts. The web app and worker do not receive it; the API receives it only with the separate override below. On Linux hosts, allow container user UID 10001 to read the key without making it publicly readable; Docker Desktop uses the Windows file-sharing permissions.
 
 Success prints only the repository name/ID, `read-only` access and token expiry. The client requests Contents/Metadata read access for exactly the configured repository ID and checks the returned scope/expiry before use. No JWT, installation token or private key is printed or persisted. The token expires automatically; see [GitHub's scoped-token flow](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
 
@@ -116,9 +116,31 @@ The separate GitHub permission checker mints a repository-scoped read token, con
 
 `GET /api/v1/repositories/{repository_id}` now applies the local policy before loading App credentials or calling GitHub, checks current write permission, and returns only `repository_id`, `full_name`, `default_branch` and `access: "read-only"`. Metadata and handled access-error responses use `Cache-Control: no-store`. It returns 401 for missing/inactive sessions, 403 for local/GitHub access denial, 503 for unavailable configuration and 502 when GitHub results cannot be verified. Credentials and upstream error bodies are not returned.
 
-Runtime settings are `REFACTRA_ALLOWED_GITHUB_USER_IDS`, `REFACTRA_GITHUB_REPOSITORY_ID`, `REFACTRA_GITHUB_INSTALLATION_ID`, `REFACTRA_GITHUB_CLIENT_ID` and a readable `REFACTRA_GITHUB_PRIVATE_KEY_PATH`. The default Compose API does not yet receive the repository settings or key mount; it denies access until configured. The web proxy and UI do not expose this endpoint yet. Runtime wiring and browser access are separate follow-ups. Endpoint tests use PostgreSQL sessions and simulated GitHub responses.
+Runtime settings are `REFACTRA_ALLOWED_GITHUB_USER_IDS`, `REFACTRA_GITHUB_REPOSITORY_ID`, `REFACTRA_GITHUB_INSTALLATION_ID`, `REFACTRA_GITHUB_CLIENT_ID` and a readable `REFACTRA_GITHUB_PRIVATE_KEY_PATH`. The default Compose API does not receive the repository settings or key mount; enable the optional override below for local use. The web proxy and UI do not expose this endpoint yet. Endpoint tests use PostgreSQL sessions and simulated GitHub responses.
 
 The returned App token remains inside the backend and read-only even when the user has write access. The operator-only `github-check` command remains separate and uses no browser session. Live refactoring and publication remain disabled.
+
+## Optional protected repository API runtime
+
+Complete GitHub App sign-in and repository installation/key setup above. In ignored `.env`, set `REFACTRA_ALLOWED_GITHUB_USER_IDS` to the allowed testers' numeric GitHub IDs (comma-separated), and fill the existing Client ID, installation ID and repository ID. Keep the PEM at `.runtime/secrets/github-app.pem`.
+
+Opt in explicitly from the repository root:
+
+```powershell
+docker compose -f compose.yaml -f compose.repository-api.yaml up --build -d --wait api
+```
+
+This adds the repository settings and a read-only PEM mount to the API only, while preserving its database and OAuth settings. Missing required environment values stop Compose configuration; a missing key stops container creation without creating a replacement directory. Other services receive no new settings or key mounts. Use both `-f` files on later `up` commands to keep protected repository access enabled. The base `docker compose up` command still needs no PEM and recreates the API without this opt-in configuration. Compose merges the override with the base file; see [Docker's merge rules](https://docs.docker.com/compose/how-tos/multiple-compose-files/merge/).
+
+Sign in at `http://localhost:3000`, then open `http://localhost:8000/api/v1/repositories/1001132861` in that same browser for AI-Hub. Use `localhost` consistently so the browser sends the local session cookie. A successful request returns only repository metadata with `access: "read-only"`; an anonymous request returns 401, and a disallowed user/repository returns 403. No tokens or PEM contents appear in the response. This verifies the direct API; browser proxy/UI support comes separately. Use the configured API port if it differs from 8000.
+
+To remove the API key mount and repository settings again:
+
+```powershell
+docker compose -f compose.yaml up -d --no-deps --force-recreate --wait api
+```
+
+That recreates only the API with the base configuration; it preserves the PostgreSQL volume and existing sessions. No real refactoring or publication is enabled by this override.
 
 ## What this milestone does
 
