@@ -26,7 +26,7 @@ The named PostgreSQL volume survives `down`. Removing that volume deletes local 
 
 ## Optional local GitHub sign-in
 
-The mock queue works without GitHub. Sign-in establishes identity only; repository operations are not exposed to browser users, and live refactoring remains unimplemented.
+The mock queue works without GitHub. Sign-in establishes identity; protected repository metadata is available when the API override is enabled. Live refactoring remains unimplemented.
 
 Create your local configuration from the repository root with Python 3.12:
 
@@ -116,7 +116,9 @@ The separate GitHub permission checker mints a repository-scoped read token, con
 
 `GET /api/v1/repositories/{repository_id}` now applies the local policy before loading App credentials or calling GitHub, checks current write permission, and returns only `repository_id`, `full_name`, `default_branch` and `access: "read-only"`. Metadata and handled access-error responses use `Cache-Control: no-store`. It returns 401 for missing/inactive sessions, 403 for local/GitHub access denial, 503 for unavailable configuration and 502 when GitHub results cannot be verified. Credentials and upstream error bodies are not returned.
 
-Runtime settings are `REFACTRA_ALLOWED_GITHUB_USER_IDS`, `REFACTRA_GITHUB_REPOSITORY_ID`, `REFACTRA_GITHUB_INSTALLATION_ID`, `REFACTRA_GITHUB_CLIENT_ID` and a readable `REFACTRA_GITHUB_PRIVATE_KEY_PATH`. The default Compose API does not receive the repository settings or key mount; enable the optional override below for local use. The web proxy and UI do not expose this endpoint yet. Endpoint tests use PostgreSQL sessions and simulated GitHub responses.
+Runtime settings are `REFACTRA_ALLOWED_GITHUB_USER_IDS`, `REFACTRA_GITHUB_REPOSITORY_ID`, `REFACTRA_GITHUB_INSTALLATION_ID`, `REFACTRA_GITHUB_CLIENT_ID` and a readable `REFACTRA_GITHUB_PRIVATE_KEY_PATH`. The default Compose API does not receive the repository settings or key mount; enable the optional override below for local use. The web proxy exposes this endpoint as GET-only for positive decimal repository IDs; the UI has no repository controls yet. Endpoint tests use PostgreSQL sessions and simulated GitHub responses.
+
+Repository proxy calls forward only Refactra session cookies (local and HTTPS names), preserve backend status/JSON, and force `no-store` on responses. OAuth/unrelated cookies and browser Authorization headers are not forwarded to this route. The proxy permits up to 60 seconds for the backend's sequential GitHub checks; other route timeouts are unchanged. Proxy tests use an isolated production Next.js server and a simulated API, including a response delayed beyond five seconds.
 
 The returned App token remains inside the backend and read-only even when the user has write access. The operator-only `github-check` command remains separate and uses no browser session. Live refactoring and publication remain disabled.
 
@@ -132,7 +134,7 @@ docker compose -f compose.yaml -f compose.repository-api.yaml up --build -d --wa
 
 This adds the repository settings and a read-only PEM mount to the API only, while preserving its database and OAuth settings. Missing required environment values stop Compose configuration; a missing key stops container creation without creating a replacement directory. Other services receive no new settings or key mounts. Use both `-f` files on later `up` commands to keep protected repository access enabled. The base `docker compose up` command still needs no PEM and recreates the API without this opt-in configuration. Compose merges the override with the base file; see [Docker's merge rules](https://docs.docker.com/compose/how-tos/multiple-compose-files/merge/).
 
-Sign in at `http://localhost:3000`, then open `http://localhost:8000/api/v1/repositories/1001132861` in that same browser for AI-Hub. Use `localhost` consistently so the browser sends the local session cookie. A successful request returns only repository metadata with `access: "read-only"`; an anonymous request returns 401, and a disallowed user/repository returns 403. No tokens or PEM contents appear in the response. This verifies the direct API; browser proxy/UI support comes separately. Use the configured API port if it differs from 8000.
+Sign in at `http://localhost:3000`, then open `http://localhost:3000/api/v1/repositories/1001132861` in that same browser for AI-Hub through the web proxy. The direct API remains at `http://localhost:8000/api/v1/repositories/1001132861`. Use `localhost` consistently so the browser sends the local session cookie. A successful request returns only repository metadata with `access: "read-only"`; an anonymous request returns 401, and a disallowed user/repository returns 403. No tokens or PEM contents appear in the response. Repository UI support comes separately. Use the configured web/API ports if they differ from 3000/8000, and rebuild the web service to apply proxy changes.
 
 To remove the API key mount and repository settings again:
 
