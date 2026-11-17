@@ -22,6 +22,22 @@ class Base(DeclarativeBase):
     pass
 
 
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+    __table_args__ = (
+        CheckConstraint("github_user_id > 0", name="ck_auth_sessions_user"),
+        CheckConstraint("expires_at > created_at", name="ck_auth_sessions_expiry"),
+    )
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    github_user_id: Mapped[int] = mapped_column(BigInteger)
+    # Display data only; repository permissions must be checked separately.
+    github_login: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class Run(Base):
     __tablename__ = "runs"
     __table_args__ = (
