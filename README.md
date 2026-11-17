@@ -24,6 +24,60 @@ docker compose down
 
 The named PostgreSQL volume survives `down`. Removing that volume deletes local runs. No GitHub credentials, model keys or paid services are needed.
 
+## Optional local GitHub sign-in
+
+The mock queue works without GitHub. Sign-in establishes identity only; repository access and live refactoring remain unimplemented.
+
+Create your local configuration from the repository root with Python 3.12:
+
+```powershell
+python scripts/prepare-local-env.py
+```
+
+This creates an ignored `.env` with a random OAuth-cookie signing key. It never prints that key and leaves an existing `.env` untouched. Keep real secrets in `.env`; `.env.example` contains blank placeholders only. If `.env` already exists, add missing keys from the example and retain your existing signing key.
+
+Register a development **GitHub App** under **Settings → Developer settings → GitHub Apps → New GitHub App**. Use a unique name, such as `Refactra-dev-<short-suffix>`, and these settings:
+
+| Setting | Local value |
+|---|---|
+| Homepage URL | Your Refactra repository URL |
+| Callback URL | `http://localhost:3000/api/v1/auth/github/callback` |
+| Expire user authorization tokens | Enabled |
+| Request user authorization during installation | Disabled; use our sign-in link to initiate it |
+| Device Flow / Setup URL | Disabled / empty |
+| Webhook Active | Disabled; this sign-in flow uses no webhooks |
+| Permissions | Keep at minimum/default access for sign-in; repository read/write grants come with later integrations |
+| Installation availability | Only on this account for the owner's initial development App |
+
+These settings follow [GitHub's registration instructions](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app). [User authorization does not require installation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-with-a-github-app-on-behalf-of-a-user). This identity-only flow uses the Client ID and client secret; no App private key is needed.
+
+Copy the App's **Client ID**, generate a **client secret**, and edit `.env` locally:
+
+```dotenv
+REFACTRA_GITHUB_CLIENT_ID=your-app-client-id
+REFACTRA_GITHUB_CLIENT_SECRET=your-client-secret
+REFACTRA_GITHUB_CALLBACK_URL=http://localhost:3000/api/v1/auth/github/callback
+```
+
+Retain the generated `REFACTRA_OAUTH_STATE_SECRET`. The Client ID differs from the App ID; the client secret is required for the server's authorization-code exchange. See [GitHub's user access-token flow](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app). Compose supplies these four settings only to the API service; the web app, worker, migrations and tests do not receive the OAuth secrets.
+
+Start or recreate the stack after editing `.env`:
+
+```powershell
+docker compose up --build -d
+```
+
+Use **http://localhost:3000** consistently. Opening `127.0.0.1` instead changes the browser origin and cookie host. If you change the web port, update both the local callback setting and the GitHub App callback to match. HTTPS callbacks automatically use Secure cookies; HTTP is supported only for loopback development.
+
+Manual verification after credentials are configured:
+
+1. Click **Sign in with GitHub**, authorize your development App, and confirm the page displays your GitHub login.
+2. Reload and confirm the signed-in state persists. `/api/v1/auth/session` should return your identity through the web origin.
+3. Click **Sign out**, reload, and confirm anonymous status remains. Session cookies are HttpOnly and are not available through JavaScript.
+4. Try declining authorization; no new session should be created. Backend auth access logs must show redacted query values rather than authorization codes/state.
+
+Automated tests use simulated GitHub responses. A real GitHub round trip is a separate manual check; do not claim it passed until observed. Avoid posting `.env`, client secrets, cookie values or unredacted configuration output in issues/logs. Authentication does not enable live runs or authorize repository actions.
+
 ## What this milestone does
 
 1. The UI submits a clearly labeled mock task with an idempotency key.
