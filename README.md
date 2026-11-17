@@ -60,7 +60,7 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-The Playwright tests expect the Compose stack at `http://127.0.0.1:3000`. Override `REFACTRA_WEB_URL` if needed. They create mock records in the local development database. Type checking follows the build because Next.js generates route types during the build.
+The browser smoke tests expect the Compose stack at `http://127.0.0.1:3000`. Override `REFACTRA_WEB_URL` if needed. They create mock records in the local development database. The auth-proxy integration tests start an isolated Next.js server against a simulated API; they need the local `npm run build` output and never contact GitHub. Type checking follows the build because Next.js generates route types during the build.
 
 For backend development outside Docker, use Python 3.12 and uv, run `uv sync --frozen` in `services/backend`, set `REFACTRA_DATABASE_URL` and `REFACTRA_ENABLE_MOCK=true`, then run `uv run alembic upgrade head`. Start `uv run uvicorn refactra.api:app --reload` and `uv run python -m refactra.worker` in separate terminals. Set `REFACTRA_TEST_DATABASE_URL` before `uv run pytest`; database tests skip explicitly when it is absent. Set environment variables in the shell; these Python commands do not automatically load the root `.env` file.
 
@@ -68,7 +68,7 @@ For backend development outside Docker, use Python 3.12 and uv, run `uv sync --f
 
 - `apps/web`: Next.js App Router UI and a server-side API proxy.
 - `services/backend`: shared FastAPI/worker package, Alembic migrations and PostgreSQL integration tests.
-- `tests/e2e`: Playwright browser smoke tests.
+- `tests/e2e`: Playwright browser and proxy integration tests; shared helpers live in `tests/fixtures`.
 - `docs/diagrams`: versioned diagrams and editable source links.
 
 Frontend dependencies are locked in `package-lock.json`; backend dependencies are locked in `services/backend/uv.lock`. Both containers run as non-root users. These service containers are not the restricted code-execution sandbox planned for later.
