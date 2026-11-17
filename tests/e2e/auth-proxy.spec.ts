@@ -54,3 +54,70 @@ for (const [method, route] of [["GET", "auth/logout"], ["HEAD", "auth/logout"], 
     expect(proxy.calls).toHaveLength(0);
   });
 }
+
+test.describe("account controls", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.route("**/api/v1/capabilities", (route) => route.fulfill({ json: { mock_enabled: true } }));
+  });
+
+  test("anonymous users can start GitHub sign-in", async ({ authProxy, page }, testInfo) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await page.goto(authProxy.origin);
+    const account = page.getByRole("region", { name: "GitHub account" });
+    await expect(account.getByText("Not signed in", { exact: true })).toBeVisible();
+    await expect(account.getByRole("link", { name: "Sign in with GitHub" })).toHaveAttribute("href", "/api/v1/auth/github/login");
+    await page.screenshot({ path: testInfo.outputPath("account-anonymous.png"), fullPage: true });
+    // Intercept navigation so this UI test never visits the real GitHub site.
+    await page.route("**/api/v1/auth/github/login", (route) => route.fulfill({
+      contentType: "text/html", body: "<h1>GitHub authorization handoff</h1>",
+    }));
+    await account.getByRole("link", { name: "Sign in with GitHub" }).click();
+    await expect(page.getByRole("heading", { name: "GitHub authorization handoff" })).toBeVisible();
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("signed-in users can log out through the proxy on mobile", async ({ authProxy, page, context }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await context.addCookies([{ name: "refactra_session", value: "fixture-session", url: authProxy.origin, httpOnly: true, sameSite: "Lax" }]);
+    await page.goto(authProxy.origin);
+    const account = page.getByRole("region", { name: "GitHub account" });
+    await expect(account.getByText("Signed in as fixture-user")).toBeVisible();
+    expect(await page.evaluate(() => document.cookie)).not.toContain("refactra_session");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath("account-signed-in-mobile.png"), fullPage: true });
+    await account.getByRole("button", { name: "Sign out", exact: true }).click();
+    await expect(account.getByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
+    const logout = authProxy.calls.find((call) => call.url === "/api/v1/auth/logout");
+    expect(logout?.headers.origin).toBe(authProxy.origin);
+    expect(logout?.headers["x-refactra-csrf"]).toBe("1");
+    expect((await context.cookies()).some((cookie) => cookie.name === "refactra_session")).toBe(false);
+    await expect(account.getByRole("alert")).toHaveCount(0);
+  });
+
+  test("a rejected logout keeps the account visible and explains the failure", async ({ authProxy, page, context }) => {
+    await context.addCookies([{ name: "refactra_session", value: "fixture-session", url: authProxy.origin, httpOnly: true }]);
+    await page.route("**/api/v1/auth/logout", (route) => route.fulfill({ status: 403, json: { error: { message: "Logout was rejected." } } }));
+    await page.goto(authProxy.origin);
+    const account = page.getByRole("region", { name: "GitHub account" });
+    await account.getByRole("button", { name: "Sign out", exact: true }).click();
+    await expect(account.getByRole("alert")).toHaveText("Logout was rejected.");
+    await expect(account.getByText("Signed in as fixture-user")).toBeVisible();
+    await expect(account.getByRole("button", { name: "Sign out", exact: true })).toBeEnabled();
+    await expect(account.getByRole("link", { name: "Sign in with GitHub" })).toHaveCount(0);
+  });
+
+  test("an unavailable session is unknown until a successful retry", async ({ authProxy, page }) => {
+    let attempts = 0;
+    await page.route("**/api/v1/auth/session", (route) => ++attempts === 1
+      ? route.fulfill({ status: 503, json: { error: { message: "Account service unavailable." } } })
+      : route.continue());
+    await page.goto(authProxy.origin);
+    const account = page.getByRole("region", { name: "GitHub account" });
+    await expect(account.getByRole("alert")).toHaveText("Account service unavailable.");
+    await expect(account.getByRole("link", { name: "Sign in with GitHub" })).toHaveCount(0);
+    await account.getByRole("button", { name: "Retry account" }).click();
+    await expect(account.getByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
+    await expect(account.getByRole("alert")).toHaveCount(0);
+  });
+});
