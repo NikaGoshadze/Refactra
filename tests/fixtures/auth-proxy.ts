@@ -44,6 +44,22 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
           return;
         }
         response.writeHead(204, { "Set-Cookie": [CLEAR_SESSION, CLEAR_OAUTH] });
+      } else if (/^\/api\/v1\/repositories\/[1-9][0-9]*$/.test(route)) {
+        const id = Number(route.split("/").at(-1));
+        if (id === 47) { request.socket.destroy(); return; }
+        const authenticated = request.headers.cookie?.includes("refactra_session=fixture-session") ?? false;
+        const statuses: Record<number, number> = { 43: 403, 44: 502, 45: 503 };
+        const status = !authenticated ? 401 : (statuses[id] ?? 200);
+        const codes: Record<number, string> = { 401: "authentication_required", 403: "repository_access_denied", 502: "github_unavailable", 503: "repository_access_unconfigured" };
+        const body = status === 200
+          ? { repository_id: id, full_name: "fixture/example", default_branch: "main", access: "read-only" }
+          : { error: { code: codes[status], message: "Fixture repository access failed." } };
+        response.writeHead(status, {
+          "Cache-Control": "public, max-age=3600", "Set-Cookie": "unrelated=must-not-pass; Path=/",
+        });
+        if (id === 46) setTimeout(() => response.end(JSON.stringify(body)), 5500);
+        else response.end(JSON.stringify(body));
+        return;
       } else {
         response.writeHead(404);
       }
