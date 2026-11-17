@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
+from refactra.github_auth import create_github_auth_router
 from refactra.models import Run, RunCommand, RunEvent
 from refactra.schemas import EventPage, EventRead, MockRunCreate, MockRunRead
 
@@ -32,6 +33,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         description="Local mock queue only. Live execution and approvals are not implemented.",
         lifespan=lifespan,
     )
+    app.include_router(create_github_auth_router(session_factory))
 
     @app.exception_handler(HTTPException)
     async def http_error(_, exc: HTTPException):
@@ -103,7 +105,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     def ready():
         with engine.connect() as connection:
             version = connection.scalar(text("SELECT version_num FROM alembic_version"))
-            if version != "0001_foundation":
+            if version != "0002_auth_sessions":
                 raise HTTPException(503, {"code": "schema_not_ready", "message": "Run migrations."})
         return {"status": "ready", "database": "postgresql", "schema": version}
 

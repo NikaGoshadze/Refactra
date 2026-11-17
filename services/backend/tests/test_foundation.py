@@ -1,13 +1,16 @@
 from datetime import timedelta
+from hashlib import sha256
 from uuid import UUID, uuid4
 
+import pytest
 from alembic import command
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 
 from refactra.api import create_app
+from refactra.auth_sessions import GitHubIdentity, issue_session, resolve_session, revoke_session
 from refactra.config import Settings
-from refactra.models import Run, RunCommand, RunEvent
+from refactra.models import AuthSession, Run, RunCommand, RunEvent
 from refactra.worker import claim_command, process_command
 
 from .conftest import migration_config
@@ -132,9 +135,62 @@ def test_a_new_api_instance_reads_the_persisted_run(client, database, session_fa
 def test_migration_downgrade_and_upgrade(database):
     with database.begin() as connection:
         config = migration_config(connection)
+        command.downgrade(config, "0001_foundation")
+        run_id = uuid4()
+        connection.execute(
+            Run.__table__.insert().values(id=run_id, task_text="Keep this mock run.")
+        )
+        command.upgrade(config, "head")
+        task = connection.scalar(select(Run.task_text).where(Run.id == run_id))
+        assert task == "Keep this mock run."
         command.downgrade(config, "base")
         assert connection.scalar(text("SELECT to_regclass('runs')")) is None
+        assert connection.scalar(text("SELECT to_regclass('auth_sessions')")) is None
         command.upgrade(config, "head")
-        assert (
-            connection.scalar(text("SELECT version_num FROM alembic_version")) == "0001_foundation"
-        )
+        version = connection.scalar(text("SELECT version_num FROM alembic_version"))
+        assert version == "0002_auth_sessions"
+
+
+def test_session_persists_only_a_digest_and_resolves_through_a_new_connection(session_factory):
+    identity = GitHubIdentity(user_id=12345, login="fixture-user")
+    with session_factory.begin() as session:
+        token = issue_session(session, identity)
+        stored = session.scalar(select(AuthSession))
+        assert len(token) == 43
+        assert stored.token_hash == sha256(token.encode("ascii")).hexdigest()
+        assert stored.token_hash != token
+        assert stored.expires_at - stored.created_at == timedelta(hours=8)
+    with session_factory() as session:
+        assert resolve_session(session, token) == identity
+        assert resolve_session(session, stored.token_hash) is None
+        assert resolve_session(session, "A" * 43) is None
+
+
+@pytest.mark.parametrize("token", [None, "", "bad-cookie", "x" * 10000])
+def test_malformed_session_tokens_are_rejected_before_database_access(token):
+    assert resolve_session(None, token) is None
+    revoke_session(None, token)
+
+
+def test_expired_and_revoked_sessions_do_not_authenticate(session_factory):
+    identity = GitHubIdentity(user_id=12345, login="fixture-user")
+    with session_factory.begin() as session:
+        expired = issue_session(session, identity)
+        revoked = issue_session(session, identity)
+        active = issue_session(session, identity)
+        stored = session.get(AuthSession, sha256(expired.encode("ascii")).hexdigest())
+        now = session.scalar(select(func.now()))
+        stored.created_at = now - timedelta(hours=9)
+        stored.expires_at = now - timedelta(seconds=1)
+        revoke_session(session, revoked)
+        revoke_session(session, revoked)
+    with session_factory() as session:
+        assert resolve_session(session, expired) is None
+        assert resolve_session(session, revoked) is None
+        assert resolve_session(session, active) == identity
+
+
+@pytest.mark.parametrize("user_id,login", [(0, "fixture"), (-1, "fixture"), (1, " ")])
+def test_session_identity_requires_a_real_user_id_and_nonblank_login(user_id, login):
+    with pytest.raises(ValueError):
+        GitHubIdentity(user_id=user_id, login=login)
