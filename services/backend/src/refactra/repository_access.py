@@ -1,6 +1,6 @@
 """Local eligibility gate; GitHub repository permissions must be checked separately.
 
-No API route uses this policy yet. Passing it does not authorize a GitHub operation.
+Repository routes apply this gate first; passing it alone does not authorize a GitHub operation.
 """
 
 import os

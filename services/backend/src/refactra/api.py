@@ -13,6 +13,7 @@ from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.github_auth import create_github_auth_router
 from refactra.models import Run, RunCommand, RunEvent
+from refactra.repository_routes import create_repository_router
 from refactra.schemas import EventPage, EventRead, MockRunCreate, MockRunRead
 from refactra.session_routes import create_session_router
 
@@ -38,6 +39,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     )
     app.include_router(create_github_auth_router(session_factory))
     app.include_router(create_session_router(session_factory))
+    app.include_router(create_repository_router(session_factory))
 
     @app.exception_handler(HTTPException)
     async def http_error(_, exc: HTTPException):
