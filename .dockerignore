@@ -1,0 +1,17 @@
+.git
+.runtime
+**/node_modules
+**/.next
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/*.tsbuildinfo
+.env
+.env.*
+!.env.example
+docs/architecture
+docs/contracts
+docs/adr
+REFACTRA_CODEX_HANDOFF.md
+Refactra_v1_Requirements.md
