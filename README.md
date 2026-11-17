@@ -146,6 +146,12 @@ docker compose -f compose.yaml up -d --no-deps --force-recreate --wait api
 
 That recreates only the API with the base configuration; it preserves the PostgreSQL volume and existing sessions. No real refactoring or publication is enabled by this override.
 
+## Repository revision foundation
+
+The backend revision resolver accepts an already-authorized, repository-scoped read token, validates repository identity, and reads the exact default-branch head through [GitHub's reference endpoint](https://docs.github.com/en/rest/git/refs#get-a-reference). It returns an immutable value containing the repository ID/name, default branch and full 40-character commit SHA. Later source reads must use that returned SHA, so a moving branch does not change an existing resolved revision.
+
+This helper is not exposed by the metadata API or UI yet. It does not persist a run's revision, download source or execute repository code. Persistence and bounded retrieval remain later batches. Missing/invalid branch references and GitHub failures stop resolution without falling back to another branch or tag.
+
 ## What this milestone does
 
 1. The UI submits a clearly labeled mock task with an idempotency key.
