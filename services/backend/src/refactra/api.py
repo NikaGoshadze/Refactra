@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
+from refactra.github_auth import create_github_auth_router
 from refactra.models import Run, RunCommand, RunEvent
 from refactra.schemas import EventPage, EventRead, MockRunCreate, MockRunRead
 
@@ -32,6 +33,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         description="Local mock queue only. Live execution and approvals are not implemented.",
         lifespan=lifespan,
     )
+    app.include_router(create_github_auth_router())
 
     @app.exception_handler(HTTPException)
     async def http_error(_, exc: HTTPException):
