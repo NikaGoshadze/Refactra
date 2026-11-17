@@ -26,7 +26,7 @@ The named PostgreSQL volume survives `down`. Removing that volume deletes local 
 
 ## Optional local GitHub sign-in
 
-The mock queue works without GitHub. Sign-in establishes identity only; repository access and live refactoring remain unimplemented.
+The mock queue works without GitHub. Sign-in establishes identity only; repository operations are not exposed to browser users, and live refactoring remains unimplemented.
 
 Create your local configuration from the repository root with Python 3.12:
 
@@ -59,7 +59,7 @@ REFACTRA_GITHUB_CLIENT_SECRET=your-client-secret
 REFACTRA_GITHUB_CALLBACK_URL=http://localhost:3000/api/v1/auth/github/callback
 ```
 
-Retain the generated `REFACTRA_OAUTH_STATE_SECRET`. The Client ID differs from the App ID; the client secret is required for the server's authorization-code exchange. See [GitHub's user access-token flow](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app). Compose supplies these four settings only to the API service; the web app, worker, migrations and tests do not receive the OAuth secrets.
+Retain the generated `REFACTRA_OAUTH_STATE_SECRET`. The Client ID differs from the App ID; the client secret is required for the server's authorization-code exchange. See [GitHub's user access-token flow](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app). Compose supplies the OAuth client secret and signing key only to the API service; other services do not receive these secrets. The optional repository check also uses the public Client ID.
 
 Start or recreate the stack after editing `.env`:
 
@@ -77,6 +77,34 @@ Manual verification after credentials are configured:
 4. Try declining authorization; no new session should be created. Backend auth access logs must show redacted query values rather than authorization codes/state.
 
 Automated tests use simulated GitHub responses. A real GitHub round trip is a separate manual check; do not claim it passed until observed. Avoid posting `.env`, client secrets, cookie values or unredacted configuration output in issues/logs. Authentication does not enable live runs or authorize repository actions.
+
+## Optional read-only GitHub repository check
+
+This operator-only command verifies the App installation against one repository. It reads repository metadata; it does not retrieve source, authorize browser users or enable live runs.
+
+1. In your GitHub App's **Permissions & events**, set **Repository permissions → Contents → Read-only** and save. Keep other permissions at their minimum/default values.
+2. Under **Install App**, install it on your account with **Only select repositories**, choosing the one test repository. If already installed, update its selected repositories and accept the changed permission when GitHub prompts. See [GitHub's installation instructions](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app).
+3. In the App's **Credentials → Key pairs → New key** (or **General → Private keys** in the older layout), download the PEM. Save it locally as `.runtime/secrets/github-app.pem`, creating that directory if needed. Use the downloaded file, not its SHA fingerprint or the OAuth client secret. Keep the file out of chat and Git. See [GitHub's private-key instructions](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps).
+4. Add these settings to your ignored `.env`, keeping your existing OAuth settings:
+
+```dotenv
+REFACTRA_GITHUB_INSTALLATION_ID=your-installation-id
+REFACTRA_GITHUB_REPOSITORY_ID=your-repository-id
+```
+
+The installation ID is the number in `https://github.com/settings/installations/NUMBER` when configuring the installed App; it is different from the App ID. The repository ID is the repository's numeric `id` in GitHub's API. For the owner's first check, `NikaGoshadze/AI-Hub` has repository ID `1001132861`.
+
+From the repository root, run:
+
+```powershell
+docker compose --profile github-check run --build --rm --no-deps github-check
+```
+
+The optional profile mounts the PEM read-only into that one-off container. The default stack starts without a PEM; a missing PEM causes the check to fail without creating a directory in its place. The file stays outside Docker build contexts, and the API, web app and worker do not receive it. On Linux hosts, allow container user UID 10001 to read the key without making it publicly readable; Docker Desktop uses the Windows file-sharing permissions.
+
+Success prints only the repository name/ID, `read-only` access and token expiry. The client requests Contents/Metadata read access for exactly the configured repository ID and checks the returned scope/expiry before use. No JWT, installation token or private key is printed or persisted. The token expires automatically; see [GitHub's scoped-token flow](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
+
+This diagnostic uses operator-supplied IDs. An API for browser users must independently check the user's session, invitation and repository permissions before using the App client. Automated checks simulate GitHub; record a live check separately after completing installation/key setup.
 
 ## What this milestone does
 
