@@ -106,6 +106,14 @@ Success prints only the repository name/ID, `read-only` access and token expiry.
 
 This diagnostic uses operator-supplied IDs. An API for browser users must independently check the user's session, invitation and repository permissions before using the App client. Automated checks simulate GitHub; record a live check separately after completing installation/key setup.
 
+## Repository access policy foundation
+
+The backend has a local eligibility policy for future repository endpoints. It resolves an active, unexpired, non-revoked Refactra session, checks the user's numeric GitHub ID against `REFACTRA_ALLOWED_GITHUB_USER_IDS`, and requires the requested repository ID to match `REFACTRA_GITHUB_REPOSITORY_ID`. Missing allowlists/repository settings deny access; malformed settings are rejected. Usernames are display data, not allowlist entries.
+
+`REFACTRA_ALLOWED_GITHUB_USER_IDS` accepts comma-separated numeric IDs, for example `12345,67890`. Keep real local choices in ignored `.env`; an empty value allows nobody. This is an operator-managed tester list, with no invitation UI or extra database table.
+
+This policy is not wired into API routes yet, and Compose does not pass the new setting to the API. It does not replace checking the user's current GitHub repository permissions or the App's installation access. Those checks must precede any protected repository operation. The operator-only `github-check` command remains separate and uses no browser session.
+
 ## What this milestone does
 
 1. The UI submits a clearly labeled mock task with an idempotency key.
