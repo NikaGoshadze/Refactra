@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import Engine, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from refactra.access_logs import install_auth_query_redaction
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.github_auth import create_github_auth_router
@@ -16,6 +17,7 @@ from refactra.schemas import EventPage, EventRead, MockRunCreate, MockRunRead
 
 
 def create_app(settings: Settings | None = None, engine: Engine | None = None) -> FastAPI:
+    install_auth_query_redaction()
     settings = settings or Settings.from_env()
     owns_engine = engine is None
     engine = engine or make_engine(settings.database_url)
