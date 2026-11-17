@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import { request, type SessionStatus } from "@/lib/api";
 
-export function AuthControls() {
-  const [session, setSession] = useState<SessionStatus | null>(null);
+export function AuthControls({ session, onSessionChange }: {
+  session: SessionStatus | null; onSessionChange: (session: SessionStatus) => void;
+}) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -13,13 +14,13 @@ export function AuthControls() {
   useEffect(() => {
     const controller = new AbortController();
     request<SessionStatus>("auth/session", { signal: controller.signal })
-      .then((current) => { if (!controller.signal.aborted) setSession(current); })
+      .then((current) => { if (!controller.signal.aborted) onSessionChange(current); })
       .catch((err: unknown) => {
         if (!controller.signal.aborted) setError(err instanceof Error ? err.message : "Could not load your account.");
       })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [retry]);
+  }, [retry, onSessionChange]);
 
   function retryAccount() {
     setError(null);
@@ -32,7 +33,7 @@ export function AuthControls() {
     setError(null);
     try {
       await request<void>("auth/logout", { method: "POST", headers: { "X-Refactra-CSRF": "1" } });
-      setSession({ authenticated: false, user: null });
+      onSessionChange({ authenticated: false, user: null });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign out failed. Please try again.");
     } finally { setBusy(false); }

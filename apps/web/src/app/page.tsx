@@ -1,5 +1,5 @@
 import { RunConsole } from "@/components/run-console";
-import { AuthControls } from "@/components/auth-controls";
+import { RepositoryConnection } from "@/components/repository-connection";
 import Link from "next/link";
 
 export default function Home() {
@@ -11,13 +11,14 @@ export default function Home() {
         </Link>
         <span className="environment"><span className="status-dot" />Local foundation <span>0.1</span></span>
       </header>
-      <AuthControls />
       <main>
+        <RepositoryConnection>
         <section className="intro">
           <p className="eyebrow">YOUR REPOSITORY. YOUR APPROVAL.</p>
           <h1>A clearer path<br />from task to change.</h1>
-          <p className="intro-copy">Refactra is being built to analyze, plan and refactor code through two human approvals. This workspace demonstrates the first step: a durable task queue.</p>
+          <p className="intro-copy">Refactra is being built to analyze, plan and refactor code through two human approvals. This workspace demonstrates verified repository access and a durable mock task queue.</p>
         </section>
+        </RepositoryConnection>
         <RunConsole />
         <section className="roadmap" aria-labelledby="roadmap-title">
           <div><p className="eyebrow">THE INTENDED WORKFLOW</p><h2 id="roadmap-title">Small steps. Explicit decisions.</h2></div>
