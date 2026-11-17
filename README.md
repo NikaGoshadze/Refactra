@@ -114,7 +114,11 @@ The backend has a local eligibility policy for future repository endpoints. It r
 
 The separate GitHub permission checker mints a repository-scoped read token, confirms repository identity, resolves the user's current login by numeric ID, and checks that same user's current base permission. It requires `write` or `admin`; GitHub maps maintain roles to the `write` base permission. A role name alone does not grant access. Every call rechecks GitHub; missing access is denied and unverifiable responses fail closed. See [GitHub's permission endpoint](https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user).
 
-Neither check is wired into API routes yet, and Compose does not pass the tester allowlist to the API. A future endpoint must apply the local session/user/repository policy before calling the GitHub checker. The returned App token remains read-only even when the user has write access. The operator-only `github-check` command remains separate and uses no browser session.
+`GET /api/v1/repositories/{repository_id}` now applies the local policy before loading App credentials or calling GitHub, checks current write permission, and returns only `repository_id`, `full_name`, `default_branch` and `access: "read-only"`. Metadata and handled access-error responses use `Cache-Control: no-store`. It returns 401 for missing/inactive sessions, 403 for local/GitHub access denial, 503 for unavailable configuration and 502 when GitHub results cannot be verified. Credentials and upstream error bodies are not returned.
+
+Runtime settings are `REFACTRA_ALLOWED_GITHUB_USER_IDS`, `REFACTRA_GITHUB_REPOSITORY_ID`, `REFACTRA_GITHUB_INSTALLATION_ID`, `REFACTRA_GITHUB_CLIENT_ID` and a readable `REFACTRA_GITHUB_PRIVATE_KEY_PATH`. The default Compose API does not yet receive the repository settings or key mount; it denies access until configured. The web proxy and UI do not expose this endpoint yet. Runtime wiring and browser access are separate follow-ups. Endpoint tests use PostgreSQL sessions and simulated GitHub responses.
+
+The returned App token remains inside the backend and read-only even when the user has write access. The operator-only `github-check` command remains separate and uses no browser session. Live refactoring and publication remain disabled.
 
 ## What this milestone does
 

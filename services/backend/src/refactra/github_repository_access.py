@@ -1,7 +1,7 @@
 """Current GitHub permission check; callers must pass the local eligibility policy first.
 
-Returns a read-only App token after verifying the user's write permission. No API
-route uses this yet; the user's permission does not broaden the App token's scope.
+Returns a read-only App token after verifying the user's write permission. The
+user's permission does not broaden the App token's scope.
 """
 
 import re
