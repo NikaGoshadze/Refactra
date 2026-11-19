@@ -1,14 +1,17 @@
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Identity,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     func,
@@ -78,6 +81,27 @@ class RunAnalysisContext(Base):
 
     run_id: Mapped[UUID] = mapped_column(ForeignKey("runs.id"), primary_key=True)
     payload: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ModelReservation(Base):
+    __tablename__ = "model_reservations"
+    __table_args__ = (
+        CheckConstraint(
+            "input_tokens BETWEEN 1 AND 12000 AND output_tokens BETWEEN 1 AND 3000 "
+            "AND maximum_cost_usd BETWEEN 0 AND 0.75",
+            name="ck_model_reservation_bounds",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("run_analysis_contexts.run_id"), index=True)
+    budget_month: Mapped[date] = mapped_column(Date, index=True)
+    request_hash: Mapped[str] = mapped_column(String(64))
+    model: Mapped[str] = mapped_column(Text)
+    input_tokens: Mapped[int] = mapped_column(Integer)
+    output_tokens: Mapped[int] = mapped_column(Integer)
+    maximum_cost_usd: Mapped[Decimal] = mapped_column(Numeric(18, 12))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
