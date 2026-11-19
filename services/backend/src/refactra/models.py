@@ -65,6 +65,22 @@ class Run(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class RunAnalysisContext(Base):
+    __tablename__ = "run_analysis_contexts"
+    __table_args__ = (
+        CheckConstraint(
+            "jsonb_typeof(payload) = 'object' "
+            "AND COALESCE(payload->>'schema_version', '') = 'analysis-context-v1'",
+            name="ck_analysis_context_format",
+        ),
+        CheckConstraint("octet_length(payload::text) <= 2097152", name="ck_analysis_context_size"),
+    )
+
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("runs.id"), primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class RunCommand(Base):
     __tablename__ = "run_commands"
     __table_args__ = (
