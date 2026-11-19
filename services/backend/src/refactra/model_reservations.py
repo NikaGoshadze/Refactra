@@ -31,23 +31,42 @@ class ReservationReceipt:
     created: bool
 
 
-def reserve_analysis_request(
-    session: Session, reservation_id: UUID, request: PreparedAnalysisRequest
-) -> ReservationReceipt:
-    """Use trusted preflight output; disregard its potentially stale usage snapshots.
-
-    The caller owns a short transaction. All reservations remain held until later
-    reconciliation; no timeout, retry or restart releases an unknown charge here.
-    """
-    if not isinstance(reservation_id, UUID):
-        raise ValueError("A stable attempt UUID is required.")
+def _lock_budget(session: Session) -> None:
     connection = session.connection()
     if (
         connection.get_isolation_level() != "READ COMMITTED"
         or connection.connection.dbapi_connection.autocommit
     ):
         raise ValueError("Budget reservations require READ COMMITTED transactions.")
+    session.execute(select(func.pg_advisory_xact_lock(BUDGET_LOCK)))
+
+
+def reserve_analysis_request(
+    session: Session, reservation_id: UUID, request: PreparedAnalysisRequest
+) -> ReservationReceipt:
+    """Use trusted preflight output; disregard its potentially stale usage snapshots.
+
+    The caller owns a short transaction. No timeout, retry or restart releases an
+    unknown charge; only confirmed usage can replace a hold in budget calculations.
+    """
+    if not isinstance(reservation_id, UUID):
+        raise ValueError("A stable attempt UUID is required.")
+    if request.pricing.model != request.model_input.model:
+        raise ValueError("Pricing must describe the requested model.")
+    pricing = {
+        "input": str(request.pricing.input_usd_per_million),
+        "output": str(request.pricing.output_usd_per_million),
+    }
     cost = request.maximum_cost_usd.quantize(Decimal("0.000000000001"), rounding=ROUND_CEILING)
+    expected = (
+        (
+            request.input_tokens * request.pricing.input_usd_per_million
+            + request.model_input.max_output_tokens * request.pricing.output_usd_per_million
+        )
+        / Decimal(1_000_000)
+    ).quantize(Decimal("0.000000000001"), rounding=ROUND_CEILING)
+    if cost != expected:
+        raise ValueError("Request estimate must match its saved pricing.")
     fingerprint = sha256(
         json.dumps(
             {
@@ -61,10 +80,12 @@ def reserve_analysis_request(
         ).encode()
     ).hexdigest()
     # Current one-worker scale: one transaction lock covers all run/month ledger sums.
-    session.execute(select(func.pg_advisory_xact_lock(BUDGET_LOCK)))
+    _lock_budget(session)
     existing = session.get(ModelReservation, reservation_id)
     if existing is not None:
-        if existing.request_hash != fingerprint:
+        if existing.request_hash != fingerprint or (
+            existing.pricing is not None and existing.pricing != pricing
+        ):
             raise ValueError("Attempt UUID is already bound to a different request.")
         return ReservationReceipt(reservation_id, False)
     context = load_analysis_context(session, request.run_id)
@@ -80,15 +101,43 @@ def reserve_analysis_request(
     attempts, inputs, outputs, run_cost = session.execute(
         select(
             func.count(ModelReservation.id),
-            func.coalesce(func.sum(ModelReservation.input_tokens), 0),
-            func.coalesce(func.sum(ModelReservation.output_tokens), 0),
-            func.coalesce(func.sum(ModelReservation.maximum_cost_usd), 0),
+            func.coalesce(
+                func.sum(
+                    func.coalesce(
+                        ModelReservation.actual_input_tokens, ModelReservation.input_tokens
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    func.coalesce(
+                        ModelReservation.actual_output_tokens, ModelReservation.output_tokens
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    func.coalesce(
+                        ModelReservation.actual_cost_usd, ModelReservation.maximum_cost_usd
+                    )
+                ),
+                0,
+            ),
         ).where(ModelReservation.run_id == request.run_id)
     ).one()
     month_cost = session.scalar(
-        select(func.coalesce(func.sum(ModelReservation.maximum_cost_usd), 0)).where(
-            ModelReservation.budget_month == month
-        )
+        select(
+            func.coalesce(
+                func.sum(
+                    func.coalesce(
+                        ModelReservation.actual_cost_usd, ModelReservation.maximum_cost_usd
+                    )
+                ),
+                0,
+            )
+        ).where(ModelReservation.budget_month == month)
     )
     checks = (
         (attempts < MAX_RUN_ATTEMPTS, "run_attempts"),
@@ -110,6 +159,7 @@ def reserve_analysis_request(
             input_tokens=request.input_tokens,
             output_tokens=request.model_input.max_output_tokens,
             maximum_cost_usd=cost,
+            pricing=pricing,
         )
     )
     session.add(
@@ -121,3 +171,53 @@ def reserve_analysis_request(
     )
     session.flush()
     return ReservationReceipt(reservation_id, True)
+
+
+def settle_model_usage(
+    session: Session, reservation_id: UUID, *, input_tokens: int, output_tokens: int
+) -> Decimal:
+    """Only trusted, confirmed provider usage; unknown outcomes must retain their holds.
+
+    Cost is an estimate at original uncached rates, not a provider invoice. Record
+    overruns honestly so future admission sees them. Caller commits usage/event together.
+    """
+    if any(type(value) is not int or value < 0 for value in (input_tokens, output_tokens)):
+        raise ValueError("Confirmed usage requires nonnegative integer token counts.")
+    _lock_budget(session)
+    row = session.get(ModelReservation, reservation_id, populate_existing=True)
+    if row is None or row.pricing is None:
+        raise ValueError("A reservation with saved pricing is required.")
+    if row.actual_input_tokens is not None:
+        if (row.actual_input_tokens, row.actual_output_tokens) != (input_tokens, output_tokens):
+            raise ValueError("Conflicting confirmed usage cannot replace an earlier settlement.")
+        return row.actual_cost_usd
+    cost = (
+        (
+            input_tokens * Decimal(row.pricing["input"])
+            + output_tokens * Decimal(row.pricing["output"])
+        )
+        / Decimal(1_000_000)
+    ).quantize(Decimal("0.000000000001"), rounding=ROUND_CEILING)
+    row.actual_input_tokens, row.actual_output_tokens, row.actual_cost_usd = (
+        input_tokens,
+        output_tokens,
+        cost,
+    )
+    row.settled_at = session.scalar(select(func.now()))
+    session.add(
+        RunEvent(
+            run_id=row.run_id,
+            event_type="MODEL_USAGE_RECORDED",
+            payload={
+                "reservation_id": str(row.id),
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "estimated_cost_usd": str(cost),
+                "over_reservation": cost > row.maximum_cost_usd
+                or input_tokens > row.input_tokens
+                or output_tokens > row.output_tokens,
+            },
+        )
+    )
+    session.flush()
+    return cost

@@ -148,7 +148,7 @@ def test_migration_downgrade_and_upgrade(database):
         assert connection.scalar(text("SELECT to_regclass('auth_sessions')")) is None
         command.upgrade(config, "head")
         version = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "0004_model_reservations"
+        assert version == "0005_model_usage"
 
 
 def test_session_persists_only_a_digest_and_resolves_through_a_new_connection(session_factory):

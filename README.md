@@ -216,7 +216,15 @@ The immutable result contains model input (text excluded from repr), the maximum
 
 The helper atomically inserts a `model_reservations` row and metadata-only activity event. It records a request fingerprint and rounded-up Decimal cost (12 fractional digits), with no prompt/source body in the ledger. Matching attempt IDs return `created=False` without another allocation; conflicting requests cannot reuse the ID. **Commit before transport.** Only a newly committed receipt represents a new attempt; an existing receipt never authorizes resending. A real retry needs a new attempt UUID and another allocation.
 
-Migration `0004_model_reservations` adds the ledger, bounds and run/month indexes; readiness requires this head. No provider transport, API route, worker scheduling or status transition is introduced. All allocations remain held, including unknown outcomes; usage reconciliation and verified provider integration remain separate work. The running stack must apply migrations when upgraded; tests use isolated schemas and no paid calls.
+Migration `0004_model_reservations` adds the ledger, bounds and run/month indexes; readiness requires the latest migration head. No provider transport, API route, worker scheduling or status transition is introduced. Unsettled allocations remain held, including unknown outcomes. The running stack must apply migrations when upgraded; tests use isolated schemas and no paid calls.
+
+## Confirmed model usage settlement
+
+Preflight requests carry their verified pricing configuration. New reservations capture the input/output rates and check that the requested estimate matches them. `settle_model_usage(session, attempt_id, input_tokens=..., output_tokens=...)` accepts only confirmed nonnegative integer counts from trusted provider metadata, never model-generated claims. It records observed token counts and an estimated cost at the reservation's original uncached rates; it does not claim to reproduce a provider invoice.
+
+Settlement uses the same transaction lock as admission and commits its usage record/event in the caller's transaction. Identical repeated reports add no event; conflicting reports cannot overwrite confirmed usage. Later admission sums confirmed usage where available and otherwise retains the full hold. Unused token/cost allowances are released, but the attempt count never decreases. Missing/unknown usage is not zero usage. Overruns are recorded without clamping, flagged in the event and included in future budget checks.
+
+Migration `0005_model_usage` adds nullable pricing/usage fields and an all-or-none settlement constraint; readiness requires this head. Existing holds receive no guessed pricing and remain held; they cannot be settled without their original rate snapshot. Apply migrations before using the updated backend. Verified provider selection/tokenization, transport and actual response handling remain later work; no paid calls or new execution endpoints are added here.
 
 ## What this milestone does
 
