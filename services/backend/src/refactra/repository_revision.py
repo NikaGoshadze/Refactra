@@ -23,7 +23,7 @@ class RepositoryRevision:
     commit_sha: str
 
 
-def _validate_branch(branch: str) -> None:
+def validate_branch(branch: str) -> None:
     if (
         not isinstance(branch, str)
         or not branch
@@ -45,7 +45,7 @@ def resolve_revision(
 ) -> RepositoryRevision:
     """Resolve a literal branch name, using the repository default only when omitted."""
     if base_branch is not None:
-        _validate_branch(base_branch)
+        validate_branch(base_branch)
     try:
         if (
             type(token.repository_id) is not int
@@ -80,7 +80,7 @@ def resolve_revision(
                 or any(part in {".", ".."} for part in name.split("/"))
             ):
                 raise ValueError("Unexpected repository identity")
-            _validate_branch(default_branch)
+            validate_branch(default_branch)
             branch = default_branch if base_branch is None else base_branch
             response = client.get(f"/repos/{name}/git/ref/{quote('heads/' + branch, safe='')}")
             response.raise_for_status()
