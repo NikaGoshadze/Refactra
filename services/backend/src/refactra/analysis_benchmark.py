@@ -1,4 +1,4 @@
-"""Durable operator benchmark core. CLI/schema setup and reporting are separate."""
+"""Durable operator benchmark core with local untrusted response artifacts."""
 
 import json
 import tomllib

@@ -2,8 +2,8 @@
 
 Compare GPT-5.4 mini and DeepSeek V4.1 Flash on five synthetic, owner-authored cases.
 This suite measures analysis, not generated-code correctness or completed refactoring.
-The execution core is available; CLI/schema setup and reporting are a separate batch.
-Reading these files makes no API calls.
+The operator command runs the execution core and produces metadata-only summaries.
+Reading these files makes no API calls; paid execution requires `--run`.
 
 ## Inputs and grading
 
@@ -45,6 +45,39 @@ Resume skips saved results. A ledger receipt with a missing result becomes unkno
 without resending; confirmed usage survives but missing response text is not recovered.
 Unknown usage retains its full hold. Budget rejection stops the pass. JSON artifacts
 are untrusted data, never executable; anonymization, grading and reports are later work.
+
+## Operator command
+
+From the repository root, start local PostgreSQL and install the locked backend
+dependencies. The ignored `.env` must contain the host `REFACTRA_DATABASE_URL` and
+`REFACTRA_OPENAI_API_KEY` / `REFACTRA_DEEPSEEK_API_KEY`. Download the pinned tokenizer
+as described in the root README; `REFACTRA_DEEPSEEK_TOKENIZER_PATH` defaults to
+`.runtime/deepseek-v41-tokenizer.json`. Literal plain/quoted `.env` values are supported,
+without shell expansion; process environment values take precedence. Never pass keys
+as command arguments. Paths are relative to the current working directory.
+
+```powershell
+# Paid execution: up to 30 initial requests; reuses receipts and the $1 ledger cap.
+uv run --project services/backend python -m refactra.benchmark_operator --run
+
+# No provider calls or credentials required; substitute the printed hash directory.
+uv run --project services/backend python -m refactra.benchmark_operator --summary .runtime/benchmarks/HASH
+```
+
+`--env-file PATH` selects another local configuration file. The command only accepts
+loopback PostgreSQL hosts and creates/migrates the persistent `refactra_benchmark`
+schema with a search path excluding `public`. Application tables are not migrated.
+Do not drop this schema to retry: it preserves budget holds across interrupted runs.
+Outputs and `summary.json` stay under ignored `.runtime/benchmarks/HASH` by default.
+
+Summaries show completion against 15 planned requests per provider, missing/error
+statuses, confirmed token totals, available cache metadata, conservative settled
+estimates and unknown-cost holds separately. Latency includes recorded successful
+and failed attempts from counting through settlement; recovered unknown results have
+no invented timings. Artifact totals may omit interrupted attempts without files;
+PostgreSQL admission remains authoritative. No response text or secrets are printed;
+quality remains ungraded and no winner is assigned. `--run` exits nonzero for incomplete runs; `--summary` can inspect
+them without resending. Anonymization and rubric grading remain separate work.
 
 ## Grade collected responses
 
