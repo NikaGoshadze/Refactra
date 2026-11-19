@@ -156,7 +156,11 @@ Missing/invalid branch references and GitHub failures stop resolution without fa
 
 The internal `create_repository_run(session, identity=..., installation_id=..., revision=..., task_text=...)` service persists the requesting user, installation/repository IDs, selected base branch, exact SHA, task and initial `CREATED` state, plus a `RUN_CREATED` event in the caller's transaction. Callers must first verify session/tester/repository eligibility and current GitHub permission, then pass the revision resolved with that installation's scoped token. Only numeric identities and revision/task data are stored; credentials are not accepted by this service.
 
-Repository records use `repository-v0.1`, separate from mock runs, and enqueue no worker command. The live-run endpoint remains disabled. Later source retrieval must load `base_sha` from PostgreSQL rather than resolve the branch again. API/UI wiring and bounded source retrieval remain later batches.
+Repository records use `repository-v0.1`, separate from mock runs, and enqueue no worker command. The live-run endpoint remains disabled. Source retrieval loads `base_sha` from PostgreSQL rather than resolving the branch again. API/UI wiring remains a later batch.
+
+The internal `fetch_source_snapshot(run, token)` reader accepts a run loaded from PostgreSQL and a fresh scoped token after current access checks. It requests [GitHub's ZIP archive](https://docs.github.com/en/rest/repos/contents#download-a-repository-archive-zip) at the saved SHA, accepts one HTTPS redirect to `codeload.github.com`, and keeps the installation token on the API request only. Downloads stop above 10 MiB; archive-wide limits are 20 MiB uncompressed, 1,000 regular files and 2 MiB per file, including entries in skipped directories. Common dependency/build directories (`node_modules`, `.venv`, `venv`, `__pycache__`, `.next`, `dist`, `build`, `coverage`, `.git`) are omitted from the returned files.
+
+The reader rejects unsafe paths, duplicate/mixed archive roots, links, special/encrypted entries, unsupported compression and corrupt ZIPs. Files are returned as an immutable, sorted in-memory snapshot with repository ID and commit SHA; failures return no partial snapshot. No files are written or executed, and source bytes are excluded from object representations. Source persistence, text/tooling analysis and workflow/API/UI wiring remain later work; binary contents must be filtered before any model input.
 
 ## What this milestone does
 
