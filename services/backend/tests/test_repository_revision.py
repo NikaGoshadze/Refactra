@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from refactra.github_app import GitHubAppError, InstallationToken
-from refactra.repository_revision import resolve_default_revision
+from refactra.repository_revision import resolve_default_revision, resolve_revision
 
 SHA = "a" * 40
 
@@ -37,6 +37,7 @@ def test_resolution_selects_the_exact_branch_and_encodes_its_name(token, branch)
     revision = resolve_default_revision(token, transport=httpx.MockTransport(handler))
     assert revision.repository_id == 42 and revision.full_name == "fixture/example"
     assert revision.default_branch == branch and revision.commit_sha == SHA
+    assert revision.base_branch == branch
     assert paths == [
         "/repositories/42",
         f"/repos/fixture/example/git/ref/heads%2F{branch.replace('/', '%2F')}",
@@ -134,3 +135,82 @@ def test_expired_token_is_rejected_before_any_request():
 
     with pytest.raises(GitHubAppError):
         resolve_default_revision(token, transport=httpx.MockTransport(handler))
+
+
+@pytest.mark.parametrize(
+    "branch,encoded",
+    [
+        ("develop", "heads%2Fdevelop"),
+        ("feature/refactor", "heads%2Ffeature%2Frefactor"),
+        ("fix/issue#12", "heads%2Ffix%2Fissue%2312"),
+    ],
+)
+def test_selected_branch_is_distinct_from_the_repository_default(token, branch, encoded):
+    repository, reference = payloads(branch, "b" * 40)
+    repository["default_branch"] = "main"
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.raw_path.decode())
+        return httpx.Response(200, json=repository if len(paths) == 1 else reference)
+
+    revision = resolve_revision(token, base_branch=branch, transport=httpx.MockTransport(handler))
+    assert revision.default_branch == "main"
+    assert revision.base_branch == branch and revision.commit_sha == "b" * 40
+    assert paths == ["/repositories/42", f"/repos/fixture/example/git/ref/{encoded}"]
+
+
+@pytest.mark.parametrize(
+    "branch",
+    [
+        "",
+        " topic",
+        "topic ",
+        "-topic",
+        "main~1",
+        "main^",
+        "../main",
+        "feature//x",
+        "feature/.hidden",
+        "feature/test.lock",
+        "@{-1}",
+        "@",
+        "HEAD",
+        "feature/x?",
+        "feature\\x",
+        "feature/x\n",
+        41,
+    ],
+)
+def test_invalid_selection_is_rejected_before_any_github_request(token, branch):
+    def handler(request):
+        pytest.fail("Invalid branch must not reach GitHub")
+
+    with pytest.raises(ValueError, match="literal branch name"):
+        resolve_revision(token, base_branch=branch, transport=httpx.MockTransport(handler))
+
+
+def test_a_missing_selected_branch_does_not_fall_back_to_the_default(token):
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.raw_path.decode())
+        return httpx.Response(200, json=payloads()[0]) if len(paths) == 1 else httpx.Response(404)
+
+    with pytest.raises(GitHubAppError):
+        resolve_revision(
+            token, base_branch="missing-branch", transport=httpx.MockTransport(handler)
+        )
+    assert paths == ["/repositories/42", "/repos/fixture/example/git/ref/heads%2Fmissing-branch"]
+
+
+def test_default_branch_reference_cannot_satisfy_a_different_selection(token):
+    repository, reference = payloads("main")
+
+    def handler(request):
+        return httpx.Response(
+            200, json=repository if request.url.path == "/repositories/42" else reference
+        )
+
+    with pytest.raises(GitHubAppError):
+        resolve_revision(token, base_branch="develop", transport=httpx.MockTransport(handler))
