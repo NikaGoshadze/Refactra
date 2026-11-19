@@ -168,7 +168,15 @@ The reader rejects unsafe paths, duplicate/mixed archive roots, links, special/e
 
 For manifests up to 64 KiB, JSON/TOML parsing reports npm dependency/script names and Python `project.dependencies`, `project.scripts` names and `[tool]` keys. Script bodies, dependency versions and source text are omitted. Requirements/lock/config files are listed without executing or resolving them; Python optional/development groups and dynamic metadata are not resolved in this first inventory. Invalid, oversized or non-text manifests produce sanitized warnings while preserving the rest of the inventory. Other files failing UTF-8 decoding or containing unsupported control bytes stay in the file list but are excluded from text/language/test candidates.
 
-These observations establish context, not installed tools, passing tests, an execution profile or approved commands. Task-specific file selection, bounded content/symbol retrieval, analysis persistence and workflow/API/UI integration remain later batches. Text candidacy alone does not authorize sending a file to a model; secret/configuration exclusions and context budgets belong to the subsequent selection boundary.
+These observations establish context, not installed tools, passing tests, an execution profile or approved commands. Bounded content/symbol retrieval, analysis persistence and workflow/API/UI integration remain later batches. Text candidacy alone does not authorize sending a file to a model.
+
+## Task file selection foundation
+
+`select_task_files(snapshot, inventory, task_text)` requires matching repository IDs/SHAs and a nonblank task of at most 4,000 characters. It returns immutable file references with roles, reasons and byte sizes, preserving the revision. This initial heuristic uses up to 32 task terms to rank path/content matches, takes up to three source files, adds up to three test-name/task matches and two metadata files from ancestor directories. Without source matches it falls back to conventional entry points or sorted source files. The AI can reassess this initial shortlist; it is not semantic analysis or a complete dependency graph.
+
+Default limits are eight files, 64 KiB per file and 128 KiB in total. Oversized files are skipped rather than truncated; `budget_omitted` counts eligible files excluded for size and shortlisted files that fail the final budget pass. Lockfiles, common generated/dependency paths, minified files, known sensitive paths/names and unsupported file types are excluded; only inventory text candidates are eligible. Manifests and test/tool configuration are metadata references, not edit targets. No file contents, commands or task terms are returned or logged by the helper.
+
+This is a conservative filename policy, not a general secret scanner. References do not grant read/edit approval or authorize model calls. Later content retrieval must recheck its policy and model-token budget, and must not treat repository instructions as authorization. The selector performs no network, execution or imports of repository code, installs or model calls; content/symbol retrieval and workflow/API/UI wiring remain separate work.
 
 ## What this milestone does
 
