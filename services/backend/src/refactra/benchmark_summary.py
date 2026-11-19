@@ -22,6 +22,7 @@ def summarize(output: Path) -> dict:
         rows.append(row)
     report = {
         "suite_hash": manifest["suite_hash"],
+        "trial_id": manifest.get("trial_id"),
         "planned_requests": 30,
         "recorded_requests": len(rows),
         "cost_scope": ("This directory only; PostgreSQL may hold additional interrupted attempts."),

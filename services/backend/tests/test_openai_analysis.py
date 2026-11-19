@@ -48,6 +48,18 @@ def test_cached_usage_is_validated_provider_metadata(cached, expected):
     assert result.cached_input_tokens == expected
 
 
+@pytest.mark.parametrize("response_id", [None, 123, "", " \n"])
+def test_missing_or_blank_response_ids_are_rejected_with_confirmed_usage(response_id):
+    payload = response()
+    payload["id"] = response_id
+    provider = OpenAIAnalysisProvider(
+        "private-key", httpx.MockTransport(lambda _: httpx.Response(200, json=payload))
+    )
+    with pytest.raises(AnalysisProviderError) as error:
+        provider._generate(AnalysisModelInput(PRICING.model, "instructions", "{}", 3000))
+    assert error.value.usage == (100, 20)
+
+
 @pytest.mark.parametrize(
     "outcome",
     [

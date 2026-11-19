@@ -70,6 +70,14 @@ schema with a search path excluding `public`. Application tables are not migrate
 Do not drop this schema to retry: it preserves budget holds across interrupted runs.
 Outputs and `summary.json` stay under ignored `.runtime/benchmarks/HASH` by default.
 
+For an explicitly requested clean comparison after an adapter fix, use
+`--run --trial response-id-fix-1`. A new label creates separate attempts/artifacts
+while preserving all earlier results and costs in the same capped ledger. Reusing
+a label resumes it; omitting the flag retains the original trial identity. Never
+delete prior failure records or reservations to retry. Response IDs are opaque
+nonblank strings: OpenAI's `resp_` prefix and DeepSeek's UUID IDs are both accepted.
+Tests cover DeepSeek's documented UUID shape; the original OpenAI-shaped mock missed it.
+
 Summaries show completion against 15 planned requests per provider, missing/error
 statuses, confirmed token totals, available cache metadata, conservative settled
 estimates and unknown-cost holds separately. Latency includes recorded successful

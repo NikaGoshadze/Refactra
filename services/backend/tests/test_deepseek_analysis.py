@@ -77,6 +77,7 @@ def test_deepseek_uses_committed_provider_budget_and_never_resends(
         if outcome == "http":
             return httpx.Response(429, text="private source")
         payload = response()
+        payload["id"] = "387b53c1-7ad2-4259-9298-61b139f5bd20"
         payload["model"] = "deepseek-flash"
         payload.pop("service_tier")
         if outcome == "incomplete":
@@ -96,6 +97,7 @@ def test_deepseek_uses_committed_provider_budget_and_never_resends(
     )
     if outcome == "success":
         result = execute_read_only_analysis(session_factory, run_id, attempt, provider)
+        assert result.response_id == "387b53c1-7ad2-4259-9298-61b139f5bd20"
         assert result.usage == (100, 20) and "src/cart.py:1" in result.text
     else:
         with pytest.raises(AnalysisProviderError) as error:

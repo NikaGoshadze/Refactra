@@ -29,7 +29,9 @@ def _write(path, payload):
     temporary.replace(path)
 
 
-def run_benchmark(engine, providers, output_root: Path, *, suite_root=SUITE_ROOT) -> Path:
+def run_benchmark(
+    engine, providers, output_root: Path, *, suite_root=SUITE_ROOT, trial_id: str | None = None
+) -> Path:
     """Use an already-migrated, dedicated PostgreSQL schema, never the app's ledger.
 
     Only synthetic fixtures are loaded. Outputs are untrusted local artifacts; they
@@ -40,12 +42,24 @@ def run_benchmark(engine, providers, output_root: Path, *, suite_root=SUITE_ROOT
     raw = (suite_root / "cases.toml").read_bytes()
     grading = (suite_root / "grading.toml").read_bytes()
     profiles = {name: asdict(provider.pricing) for name, provider in providers.items()}
-    configuration = json.dumps(
-        {"format": "analysis-benchmark-v1", "instructions": INSTRUCTIONS, "profiles": profiles},
-        sort_keys=True,
-        default=str,
-    ).encode()
-    suite_hash = sha256(raw + b"\0" + grading + b"\0" + configuration).hexdigest()
+    configuration = {
+        "format": "analysis-benchmark-v1",
+        "instructions": INSTRUCTIONS,
+        "profiles": profiles,
+    }
+    # Preserve the original fingerprint when no new trial is explicitly requested.
+    if trial_id is not None:
+        if (
+            not 1 <= len(trial_id) <= 40
+            or not trial_id.isascii()
+            or not all(char.isalnum() or char in "-_" for char in trial_id)
+        ):
+            raise ValueError(
+                "Trial labels require 1-40 ASCII letters, digits, hyphens or underscores."
+            )
+        configuration["trial_id"] = trial_id
+    encoded_configuration = json.dumps(configuration, sort_keys=True, default=str).encode()
+    suite_hash = sha256(raw + b"\0" + grading + b"\0" + encoded_configuration).hexdigest()
     cases = tomllib.loads(raw.decode())["cases"]
     if len(cases) != 5 or len({case["id"] for case in cases}) != 5:
         raise ValueError("Five distinct benchmark cases are required.")
@@ -62,6 +76,7 @@ def run_benchmark(engine, providers, output_root: Path, *, suite_root=SUITE_ROOT
             output.mkdir(parents=True, exist_ok=True)
             manifest = {
                 "suite_hash": suite_hash,
+                "trial_id": trial_id,
                 "cases_sha256": sha256(raw).hexdigest(),
                 "grading_sha256": sha256(grading).hexdigest(),
                 "profiles": profiles,
