@@ -168,7 +168,7 @@ The reader rejects unsafe paths, duplicate/mixed archive roots, links, special/e
 
 For manifests up to 64 KiB, JSON/TOML parsing reports npm dependency/script names and Python `project.dependencies`, `project.scripts` names and `[tool]` keys. Script bodies, dependency versions and source text are omitted. Requirements/lock/config files are listed without executing or resolving them; Python optional/development groups and dynamic metadata are not resolved in this first inventory. Invalid, oversized or non-text manifests produce sanitized warnings while preserving the rest of the inventory. Other files failing UTF-8 decoding or containing unsupported control bytes stay in the file list but are excluded from text/language/test candidates.
 
-These observations establish context, not installed tools, passing tests, an execution profile or approved commands. Symbol inspection, analysis persistence and workflow/API/UI integration remain later batches. Text candidacy alone does not authorize sending a file to a model.
+These observations establish context, not installed tools, passing tests, an execution profile or approved commands. Analysis persistence and workflow/API/UI integration remain later batches. Text candidacy alone does not authorize sending a file to a model.
 
 ## Task file selection foundation
 
@@ -176,7 +176,7 @@ These observations establish context, not installed tools, passing tests, an exe
 
 Default limits are eight files, 64 KiB per file and 128 KiB in total. Oversized files are skipped rather than truncated; `budget_omitted` counts eligible files excluded for size and shortlisted files that fail the final budget pass. Lockfiles, common generated/dependency paths, minified files, known sensitive paths/names and unsupported file types are excluded; only inventory text candidates are eligible. Manifests and test/tool configuration are metadata references, not edit targets. No file contents, commands or task terms are returned or logged by the helper.
 
-This is a conservative filename policy, not a general secret scanner. References do not grant read/edit approval or authorize model calls. Content retrieval rechecks its policy; model callers must enforce token budgets and must not treat repository instructions as authorization. The selector performs no network, execution or imports of repository code, installs or model calls; symbol inspection and workflow/API/UI wiring remain separate work.
+This is a conservative filename policy, not a general secret scanner. References do not grant read/edit approval or authorize model calls. Content retrieval rechecks its policy; model callers must enforce token budgets and must not treat repository instructions as authorization. The selector performs no network, execution or imports of repository code, installs or model calls; workflow/API/UI wiring remains separate work.
 
 ## Bounded content retrieval foundation
 
@@ -184,7 +184,15 @@ This is a conservative filename policy, not a general secret scanner. References
 
 Returned immutable records carry repository ID/SHA, path, role, original byte size, full text and a one-based start/end line range. UTF-8 BOMs are removed; original newline characters are retained, with physical LF/CRLF/CR line counting. Text is excluded from object representations. Common private-key headers, literal credential assignments and HTTP basic-auth URLs cause the entire file to be withheld as `possible_secret`; this conservative check can have false positives and is not a general secret scanner.
 
-The result is untrusted repository data, not instructions or edit/command approval. The helper performs no filesystem/network reads, repository execution or model calls. Byte bounds do not establish a model-token budget; model-specific token accounting, Python symbol/AST inspection, persistence and workflow/API/UI integration remain later work.
+The result is untrusted repository data, not instructions or edit/command approval. The helper performs no filesystem/network reads, repository execution or model calls. Byte bounds do not establish a model-token budget; model-specific token accounting, persistence and workflow/API/UI integration remain later work.
+
+## Python structural inspection foundation
+
+`inspect_python_symbols(content)` consumes policy-checked `RetrievedContent` and uses [Python 3.12's AST parser](https://docs.python.org/3.12/library/ast.html) on `.py`/`.pyi` files. Its immutable report preserves the repository ID/SHA, file paths/roles and upstream skip reasons. Definitions include classes, synchronous/async functions, lexical dotted names and inclusive line spans that include decorators. Import declarations retain modules, imported names, aliases, relative levels (as leading dots), lexical scope and line spans. Source bodies, defaults, literals and docstrings are not returned.
+
+Each file is limited to 10,000 visited AST nodes and 200 combined definition/import records. Exceeding a limit or encountering parser recursion discards that file's partial index with `inspection_limit`; invalid syntax records `syntax_error` and its line without echoing source/errors. Parser syntax warnings are suppressed to avoid source-line logging. Other files remain available, and non-Python files receive `unsupported_language` skips.
+
+This is structural evidence, not semantic analysis, a resolved dependency/call graph, compiler validation or passing tests. Imports are not resolved, decorators/defaults are not evaluated and target code is never executed. Dynamic imports and lambda/variable bindings are not indexed. Model calls, token accounting, persistent analysis and workflow/API/UI wiring remain later work.
 
 ## What this milestone does
 
