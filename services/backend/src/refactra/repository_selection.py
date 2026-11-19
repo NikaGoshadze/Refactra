@@ -61,6 +61,21 @@ def _blocked(path: PurePosixPath) -> bool:
     )
 
 
+def eligible_file_role(path: str, inventory: RepositoryInventory) -> str | None:
+    """Shared path/type policy only; callers must separately validate content and budgets."""
+    if (
+        path not in inventory.file_paths
+        or _blocked(PurePosixPath(path))
+        or path in inventory.lockfile_paths
+    ):
+        return None
+    if path in inventory.manifest_paths or path in inventory.configuration_paths:
+        return "metadata"
+    if PurePosixPath(path).suffix not in LANGUAGES:
+        return None
+    return "test" if path in inventory.test_candidates else "source"
+
+
 def select_task_files(
     snapshot: SourceSnapshot, inventory: RepositoryInventory, task_text: str
 ) -> FileSelection:
@@ -79,26 +94,11 @@ def select_task_files(
         raise ValueError("A nonblank task of at most 4000 characters is required.")
     terms = set(sorted(_words(task_text))[:32])
     text_paths = set(inventory.text_paths)
-    metadata_paths = set(inventory.manifest_paths + inventory.configuration_paths)
-    test_paths = set(inventory.test_candidates)
     entry_paths = set(inventory.entry_point_candidates)
     candidates, oversized = [], 0
     for source in sorted(snapshot.files, key=lambda file: file.path):
-        path = PurePosixPath(source.path)
-        if (
-            source.path not in text_paths
-            or _blocked(path)
-            or source.path in inventory.lockfile_paths
-        ):
-            continue
-        role = (
-            "metadata"
-            if source.path in metadata_paths
-            else "test"
-            if source.path in test_paths
-            else "source"
-        )
-        if role != "metadata" and path.suffix not in LANGUAGES:
+        role = eligible_file_role(source.path, inventory)
+        if source.path not in text_paths or role is None:
             continue
         if len(source.content) > MAX_FILE_BYTES:
             oversized += 1

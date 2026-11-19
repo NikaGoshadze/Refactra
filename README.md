@@ -168,7 +168,7 @@ The reader rejects unsafe paths, duplicate/mixed archive roots, links, special/e
 
 For manifests up to 64 KiB, JSON/TOML parsing reports npm dependency/script names and Python `project.dependencies`, `project.scripts` names and `[tool]` keys. Script bodies, dependency versions and source text are omitted. Requirements/lock/config files are listed without executing or resolving them; Python optional/development groups and dynamic metadata are not resolved in this first inventory. Invalid, oversized or non-text manifests produce sanitized warnings while preserving the rest of the inventory. Other files failing UTF-8 decoding or containing unsupported control bytes stay in the file list but are excluded from text/language/test candidates.
 
-These observations establish context, not installed tools, passing tests, an execution profile or approved commands. Bounded content/symbol retrieval, analysis persistence and workflow/API/UI integration remain later batches. Text candidacy alone does not authorize sending a file to a model.
+These observations establish context, not installed tools, passing tests, an execution profile or approved commands. Symbol inspection, analysis persistence and workflow/API/UI integration remain later batches. Text candidacy alone does not authorize sending a file to a model.
 
 ## Task file selection foundation
 
@@ -176,7 +176,15 @@ These observations establish context, not installed tools, passing tests, an exe
 
 Default limits are eight files, 64 KiB per file and 128 KiB in total. Oversized files are skipped rather than truncated; `budget_omitted` counts eligible files excluded for size and shortlisted files that fail the final budget pass. Lockfiles, common generated/dependency paths, minified files, known sensitive paths/names and unsupported file types are excluded; only inventory text candidates are eligible. Manifests and test/tool configuration are metadata references, not edit targets. No file contents, commands or task terms are returned or logged by the helper.
 
-This is a conservative filename policy, not a general secret scanner. References do not grant read/edit approval or authorize model calls. Later content retrieval must recheck its policy and model-token budget, and must not treat repository instructions as authorization. The selector performs no network, execution or imports of repository code, installs or model calls; content/symbol retrieval and workflow/API/UI wiring remain separate work.
+This is a conservative filename policy, not a general secret scanner. References do not grant read/edit approval or authorize model calls. Content retrieval rechecks its policy; model callers must enforce token budgets and must not treat repository instructions as authorization. The selector performs no network, execution or imports of repository code, installs or model calls; symbol inspection and workflow/API/UI wiring remain separate work.
+
+## Bounded content retrieval foundation
+
+`retrieve_selected_content(snapshot, selection)` reads the selected files from the validated in-memory snapshot only. It checks repository ID/SHA, rejects duplicate or excessive references, rebuilds the inventory to recheck path/type/role eligibility, and verifies actual file sizes independently of selection totals. It enforces the same eight-file, 64 KiB-per-file and 128 KiB-total byte limits. Missing, blocked, mismatched, oversized, empty, non-UTF-8 or control-byte files receive explicit skip reasons; oversized files are not truncated.
+
+Returned immutable records carry repository ID/SHA, path, role, original byte size, full text and a one-based start/end line range. UTF-8 BOMs are removed; original newline characters are retained, with physical LF/CRLF/CR line counting. Text is excluded from object representations. Common private-key headers, literal credential assignments and HTTP basic-auth URLs cause the entire file to be withheld as `possible_secret`; this conservative check can have false positives and is not a general secret scanner.
+
+The result is untrusted repository data, not instructions or edit/command approval. The helper performs no filesystem/network reads, repository execution or model calls. Byte bounds do not establish a model-token budget; model-specific token accounting, Python symbol/AST inspection, persistence and workflow/API/UI integration remain later work.
 
 ## What this milestone does
 
