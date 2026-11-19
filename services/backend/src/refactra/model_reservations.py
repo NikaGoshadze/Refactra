@@ -42,15 +42,27 @@ def _lock_budget(session: Session) -> None:
 
 
 def reserve_analysis_request(
-    session: Session, reservation_id: UUID, request: PreparedAnalysisRequest
+    session: Session,
+    reservation_id: UUID,
+    request: PreparedAnalysisRequest,
+    *,
+    ledger_limit_usd: Decimal | None = None,
 ) -> ReservationReceipt:
     """Use trusted preflight output; disregard its potentially stale usage snapshots.
 
     The caller owns a short transaction. No timeout, retry or restart releases an
     unknown charge; only confirmed usage can replace a hold in budget calculations.
+    An optional ledger limit also caps lifetime effective cost across this schema,
+    under the same lock; use a dedicated schema for benchmark-wide admission.
     """
     if not isinstance(reservation_id, UUID):
         raise ValueError("A stable attempt UUID is required.")
+    if ledger_limit_usd is not None and (
+        not isinstance(ledger_limit_usd, Decimal)
+        or not ledger_limit_usd.is_finite()
+        or ledger_limit_usd <= 0
+    ):
+        raise ValueError("Ledger limit must be a finite positive Decimal.")
     if request.pricing.model != request.model_input.model:
         raise ValueError("Pricing must describe the requested model.")
     pricing = {
@@ -88,6 +100,21 @@ def reserve_analysis_request(
         ):
             raise ValueError("Attempt UUID is already bound to a different request.")
         return ReservationReceipt(reservation_id, False)
+    if ledger_limit_usd is not None:
+        committed = session.scalar(
+            select(
+                func.coalesce(
+                    func.sum(
+                        func.coalesce(
+                            ModelReservation.actual_cost_usd, ModelReservation.maximum_cost_usd
+                        )
+                    ),
+                    0,
+                )
+            )
+        )
+        if committed + cost > ledger_limit_usd:
+            raise BudgetExceeded("benchmark_cost")
     context = load_analysis_context(session, request.run_id)
     if (
         context is None
