@@ -226,14 +226,24 @@ Settlement uses the same transaction lock as admission and commits its usage rec
 
 Migration `0005_model_usage` adds nullable pricing/usage fields and an all-or-none settlement constraint; readiness requires this head. Existing holds receive no guessed pricing and remain held; they cannot be settled without their original rate snapshot. Apply migrations before using the updated backend. Verified provider selection/tokenization, transport and actual response handling remain later work; no paid calls or new execution endpoints are added here.
 
-## What this milestone does
+## Read-only OpenAI analysis adapter
+
+`execute_read_only_analysis(session_factory, run_id, attempt_id, provider)` reloads the saved context, counts the complete input through OpenAI's `/v1/responses/input_tokens` endpoint, commits durable admission, and then makes one Responses API call outside database transactions. A trusted operator must authorize repository access first. Construct `OpenAIAnalysisProvider` with the server-only `REFACTRA_OPENAI_API_KEY` from your environment; host Python commands do not load `.env` automatically. No new dependency is required.
+
+The initial fixed profile is `gpt-5.4-mini-2026-03-17`, with reasoning disabled, a 400,000-token context window and standard uncached estimates of $0.75/$4.50 per million input/output tokens. Rates and snapshot were checked on 2026-11-19 against [model documentation](https://developers.openai.com/api/docs/models/gpt-5.4-mini) and [pricing](https://developers.openai.com/api/docs/pricing). At the existing 12k/3k request limits, the maximum estimated reservation is $0.0225. [Input counting](https://developers.openai.com/api/docs/guides/token-counting) includes instructions and the same input envelope used for generation; excessive input is rejected, not truncated.
+
+Calls use the default service tier, `store=false`, no tools and no automatic retries or redirects. Confirmed usage settles the original reservation even for incomplete/refused responses; missing/invalid usage, unexpected model/tier, transport errors and timeouts retain the full hold. Existing receipts never authorize resending. Errors and object representations omit credentials, source and response text. Estimates do not reproduce the provider invoice, and `store=false` is not a zero-retention guarantee.
+
+This is an operator-invoked integration, not an enabled API/worker workflow. Results are returned as untrusted text and are not yet saved as analysis checkpoints; structured results, recovery and orchestration are separate work. Automated tests use mocked HTTP and isolated PostgreSQL schemas, never paid calls. Local operator checks retain their context/usage ledger in a separate `refactra_operator` schema; its spend is separate from the application's ledger.
+
+## What the interactive mock does
 
 1. The UI submits a clearly labeled mock task with an idempotency key.
 2. The API atomically inserts a run, START command and creation event.
 3. A separate worker claims work using a short PostgreSQL `FOR UPDATE SKIP LOCKED` transaction and a 60-second lease.
 4. The deterministic stub records its activity and stops at `NEEDS_HUMAN_REVIEW` with reason `mock_boundary`. The UI polls the persisted status/events and restores the last run after a page reload.
 
-There is no repository checkout, model call, plan, human approval, code edit, test execution against a target repository, or PR publication. Validation and PR fields remain null. A mock run reaching its boundary is not a completed refactoring. The worker has no tools that can perform those actions.
+The interactive mock has no repository checkout, model call, plan, human approval, code edit, test execution against a target repository, or PR publication. Validation and PR fields remain null. A mock run reaching its boundary is not a completed refactoring. The worker has no tools that can perform those actions.
 
 The initial migration implements three foundation tables: `runs`, `run_commands` and `run_events`. Artifact/approval tables and the full lifecycle will arrive with the actual workflow. LangGraph checkpoints are deliberately deferred to that milestone; activity events are not checkpoints.
 
