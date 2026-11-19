@@ -2,7 +2,8 @@
 
 Compare GPT-5.4 mini and DeepSeek V4.1 Flash on five synthetic, owner-authored cases.
 This suite measures analysis, not generated-code correctness or completed refactoring.
-There is no provider runner in this batch and reading these files makes no API calls.
+The execution core is available; CLI/schema setup and reporting are a separate batch.
+Reading these files makes no API calls.
 
 ## Inputs and grading
 
@@ -20,7 +21,32 @@ Before collecting answers, freeze both TOML files at a recorded Git commit/hash.
 Plan three fresh-context attempts per case per model (30 initial requests), alternate provider
 order, disable thinking explicitly for both and allow at most 3,000 output tokens.
 Inputs must fit both providers' token limits without truncation. Cap total spend at $1;
-actual calls still require the later budget-controlled runner. Do not silently retry.
+actual calls require an explicit operator invocation. Do not silently retry.
+
+## Execution core
+
+`refactra.analysis_benchmark.run_benchmark(engine, providers, output_root)` accepts
+the two adapters keyed `openai`/`deepseek` and an already-migrated dedicated PostgreSQL
+schema. It rejects the default `public` schema; the caller must provision isolation.
+Use ignored `.runtime/benchmarks` for output_root. Synthetic run/repository identities
+are local benchmark metadata, not authorized GitHub repositories. No GitHub call occurs.
+One persisted context is shared by each provider pair, with 15 contexts/30 attempts.
+
+The core fingerprints inputs, evaluator-key bytes and pricing/instruction configuration;
+only the key's hash is recorded, never its contents in prompts. Stable attempt IDs and
+a session execution lock prevent duplicate/overlapping runs. PostgreSQL admission caps
+the schema's lifetime settled estimates plus unknown holds at $1 before sending.
+Outputs are atomically replaced JSON artifacts containing status, response text/ID,
+prompt hash, tokens/cache metadata, reservation/settled estimates and elapsed time from
+input counting through usage settlement. Estimates use configured uncached/peak rates,
+not provider invoices or cache/off-peak discounts. Provider failures remain recorded.
+
+Resume skips saved results. A ledger receipt with a missing result becomes unknown_result
+without resending; confirmed usage survives but missing response text is not recovered.
+Unknown usage retains its full hold. Budget rejection stops the pass. JSON artifacts
+are untrusted data, never executable; anonymization, grading and reports are later work.
+
+## Grade collected responses
 
 Grade anonymized answers against each case's ten checks. Each check earns 0 (missing
 or wrong), 0.5 (partly correct) or 1 (fully correct); record evidence for deductions.

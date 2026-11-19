@@ -32,6 +32,7 @@ class AnalysisResult:
     response_id: str
     text: str = field(repr=False)
     usage: tuple[int, int]
+    cached_input_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -146,10 +147,16 @@ class OpenAIAnalysisProvider:
                 raise ValueError
         except (KeyError, TypeError, ValueError):
             raise AnalysisProviderError(counts) from None
-        return AnalysisResult(response_id, text, counts)
+        details = usage.get("input_tokens_details")
+        cached = details.get("cached_tokens") if isinstance(details, dict) else None
+        if type(cached) is not int or not 0 <= cached <= counts[0]:
+            cached = None
+        return AnalysisResult(response_id, text, counts, cached)
 
 
-def execute_read_only_analysis(session_factory, run_id: UUID, attempt_id: UUID, provider):
+def execute_read_only_analysis(
+    session_factory, run_id: UUID, attempt_id: UUID, provider, *, ledger_limit_usd=None
+):
     """Trusted caller must authorize repository access before invoking this helper.
 
     Reload saved input, count it, commit admission, then make one physical call outside
@@ -169,7 +176,9 @@ def execute_read_only_analysis(session_factory, run_id: UUID, attempt_id: UUID, 
     )
     # Durable admission recalculates real balances; preflight snapshots are not authority.
     with session_factory.begin() as session:
-        receipt = reserve_analysis_request(session, attempt_id, request)
+        receipt = reserve_analysis_request(
+            session, attempt_id, request, ledger_limit_usd=ledger_limit_usd
+        )
     if not receipt.created:
         raise ValueError("This attempt already has a receipt; resending is forbidden.")
     try:

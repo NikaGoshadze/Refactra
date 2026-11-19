@@ -37,6 +37,17 @@ def response():
     }
 
 
+@pytest.mark.parametrize("cached,expected", [(20, 20), (True, None), (101, None)])
+def test_cached_usage_is_validated_provider_metadata(cached, expected):
+    payload = response()
+    payload["usage"]["input_tokens_details"] = {"cached_tokens": cached}
+    provider = OpenAIAnalysisProvider(
+        "private-key", httpx.MockTransport(lambda _: httpx.Response(200, json=payload))
+    )
+    result = provider._generate(AnalysisModelInput(PRICING.model, "instructions", "{}", 3000))
+    assert result.cached_input_tokens == expected
+
+
 @pytest.mark.parametrize(
     "outcome",
     [
