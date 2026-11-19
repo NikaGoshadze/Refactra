@@ -92,6 +92,13 @@ class ModelReservation(Base):
             "AND maximum_cost_usd BETWEEN 0 AND 0.75",
             name="ck_model_reservation_bounds",
         ),
+        CheckConstraint(
+            "num_nonnulls(actual_input_tokens, actual_output_tokens, actual_cost_usd, settled_at) "
+            "IN (0, 4) "
+            "AND (actual_input_tokens IS NULL OR (actual_input_tokens >= 0 "
+            "AND actual_output_tokens >= 0 AND actual_cost_usd >= 0 AND pricing IS NOT NULL))",
+            name="ck_model_settlement_complete",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
@@ -102,6 +109,11 @@ class ModelReservation(Base):
     input_tokens: Mapped[int] = mapped_column(Integer)
     output_tokens: Mapped[int] = mapped_column(Integer)
     maximum_cost_usd: Mapped[Decimal] = mapped_column(Numeric(18, 12))
+    pricing: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    actual_input_tokens: Mapped[int | None] = mapped_column(Integer)
+    actual_output_tokens: Mapped[int | None] = mapped_column(Integer)
+    actual_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 12))
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

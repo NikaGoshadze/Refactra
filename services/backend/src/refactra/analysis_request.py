@@ -81,6 +81,7 @@ class PreparedAnalysisRequest:
     maximum_cost_usd: Decimal
     reserved_usage: BudgetUsage
     monthly_committed_usd: Decimal
+    pricing: ModelPricing
 
 
 class BudgetExceeded(ValueError):
@@ -144,5 +145,5 @@ def prepare_analysis_request(
         usage.committed_usd + cost,
     )
     return PreparedAnalysisRequest(
-        context.run_id, model_input, tokens, cost, reserved, monthly_committed_usd + cost
+        context.run_id, model_input, tokens, cost, reserved, monthly_committed_usd + cost, pricing
     )
