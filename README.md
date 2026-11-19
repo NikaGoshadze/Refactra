@@ -152,7 +152,11 @@ The backend revision resolver accepts an already-authorized, repository-scoped r
 
 The immutable result keeps `default_branch` (repository metadata) and `base_branch` (the actual selection) separate, alongside repository ID/name and the full 40-character commit SHA. Later source reads must use that returned SHA, so a moving branch does not change an existing resolved revision. Branch selections are literal names, including names with `/`; invalid names raise a sanitized `ValueError` before network access. Empty selections are rejected, and missing branches never silently fall back to the default or to a tag. Validation follows [Git's branch/ref naming rules](https://git-scm.com/docs/git-check-ref-format).
 
-This helper is not exposed by the metadata API or UI yet. It does not persist a run's revision, download source or execute repository code. Persistence and bounded retrieval remain later batches. Missing/invalid branch references and GitHub failures stop resolution without falling back to another branch or tag.
+Missing/invalid branch references and GitHub failures stop resolution without falling back to another branch or tag. The resolver is not exposed by the metadata API or UI yet.
+
+The internal `create_repository_run(session, identity=..., installation_id=..., revision=..., task_text=...)` service persists the requesting user, installation/repository IDs, selected base branch, exact SHA, task and initial `CREATED` state, plus a `RUN_CREATED` event in the caller's transaction. Callers must first verify session/tester/repository eligibility and current GitHub permission, then pass the revision resolved with that installation's scoped token. Only numeric identities and revision/task data are stored; credentials are not accepted by this service.
+
+Repository records use `repository-v0.1`, separate from mock runs, and enqueue no worker command. The live-run endpoint remains disabled. Later source retrieval must load `base_sha` from PostgreSQL rather than resolve the branch again. API/UI wiring and bounded source retrieval remain later batches.
 
 ## What this milestone does
 

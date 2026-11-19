@@ -49,7 +49,7 @@ class Run(Base):
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    # These are controlled mock identities, never authenticated GitHub identities.
+    # Zero identities and fixture revision defaults are for mock runs only.
     requested_by: Mapped[int] = mapped_column(BigInteger, default=0)
     github_installation_id: Mapped[int] = mapped_column(BigInteger, default=0)
     github_repository_id: Mapped[int] = mapped_column(BigInteger, default=0)
