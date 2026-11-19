@@ -148,7 +148,9 @@ That recreates only the API with the base configuration; it preserves the Postgr
 
 ## Repository revision foundation
 
-The backend revision resolver accepts an already-authorized, repository-scoped read token, validates repository identity, and reads the exact default-branch head through [GitHub's reference endpoint](https://docs.github.com/en/rest/git/refs#get-a-reference). It returns an immutable value containing the repository ID/name, default branch and full 40-character commit SHA. Later source reads must use that returned SHA, so a moving branch does not change an existing resolved revision.
+The backend revision resolver accepts an already-authorized, repository-scoped read token, validates repository identity, and reads the exact branch head through [GitHub's reference endpoint](https://docs.github.com/en/rest/git/refs#get-a-reference). Use `resolve_revision(token, base_branch="develop")` for an explicit selection, or omit `base_branch` to use the repository default. The existing `resolve_default_revision(token)` helper also selects the default.
+
+The immutable result keeps `default_branch` (repository metadata) and `base_branch` (the actual selection) separate, alongside repository ID/name and the full 40-character commit SHA. Later source reads must use that returned SHA, so a moving branch does not change an existing resolved revision. Branch selections are literal names, including names with `/`; invalid names raise a sanitized `ValueError` before network access. Empty selections are rejected, and missing branches never silently fall back to the default or to a tag. Validation follows [Git's branch/ref naming rules](https://git-scm.com/docs/git-check-ref-format).
 
 This helper is not exposed by the metadata API or UI yet. It does not persist a run's revision, download source or execute repository code. Persistence and bounded retrieval remain later batches. Missing/invalid branch references and GitHub failures stop resolution without falling back to another branch or tag.
 
