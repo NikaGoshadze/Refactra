@@ -236,6 +236,22 @@ Calls use the default service tier, `store=false`, no tools and no automatic ret
 
 This is an operator-invoked integration, not an enabled API/worker workflow. Results are returned as untrusted text and are not yet saved as analysis checkpoints; structured results, recovery and orchestration are separate work. Automated tests use mocked HTTP and isolated PostgreSQL schemas, never paid calls. Local operator checks retain their context/usage ledger in a separate `refactra_operator` schema; its spend is separate from the application's ledger.
 
+## DeepSeek analysis option
+
+`DeepSeekAnalysisProvider(api_key, tokenizer_path=Path(...))` uses the same `execute_read_only_analysis` entry point and PostgreSQL ledger with its own trusted pricing profile. Supply the server-only `REFACTRA_DEEPSEEK_API_KEY`; host Python commands do not load `.env` automatically. The hosted `deepseek-flash` alias currently identifies V4.1 Flash-1017; unlike the OpenAI snapshot, this alias is not an immutable version pin. Record the response model and evaluation date when benchmarking.
+
+Requests go only to `https://api.deepseek.com/responses`, with reasoning disabled, no tools and no automatic retries. Unsupported OpenAI options (`store`, `service_tier`, `truncation`) are omitted; DeepSeek documents its Responses API as stateless. Confirmed input/output usage settles the reservation, including incomplete/refused responses; unknown usage or a different response model retains the hold. Rates checked on 2026-11-19 use conservative **peak, uncached** estimates of $0.30/$1.20 per million input/output tokens, at most $0.0072 for a 12k/3k request. Off-peak/cache discounts are not applied to this ledger estimate. See [DeepSeek pricing](https://api-docs.deepseek.com/quick_start/pricing/) and [Responses compatibility](https://api-docs.deepseek.com/guides/responses_api/).
+
+DeepSeek's documented token counting uses an offline tokenizer. The adapter requires a local file matching SHA-256 `81f64d1248a68ce3663e07ab3ee48b851e5df0e32d27cb98e4c9a268151e8d99`; it does not download at runtime or use character-count estimates. Download the pinned publisher asset into ignored `.runtime`:
+
+```powershell
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/deepseek-ai/deepseek-recipe/935817c66f5d6e64838f419692545f06787e485f/static/tokenizers/v41/tokenizer.json" -OutFile .runtime/deepseek-v41-tokenizer.json
+```
+
+Pass that path (the `.env.example` setting is `REFACTRA_DEEPSEEK_TOKENIZER_PATH`) to the constructor. Counting follows the publisher's [V4.1 encoding](https://github.com/deepseek-ai/deepseek-recipe/blob/935817c66f5d6e64838f419692545f06787e485f/deepseek-recipe-encoding/src/v4/dsv41.rs) for exactly one system instruction and one user text message, including five control tokens. Literal control-token spellings inside source are encoded as ordinary text. This counter does not support images, tools, thinking or conversation history. Offline checks matched the publisher's encoder on all five benchmark inputs and four additional text cases; that does not establish agreement with a future hosted model revision.
+
+The portable `tokenizers` dependency and its lockfile are required; the 6.4 MB publisher asset stays local rather than being redistributed. Automated transport/ledger tests use a tiny synthetic tokenizer and make no paid calls. No benchmark runner, new execution endpoint or worker command is enabled by this option.
+
 ## What the interactive mock does
 
 1. The UI submits a clearly labeled mock task with an idempotency key.
