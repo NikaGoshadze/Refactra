@@ -160,7 +160,7 @@ Repository records use `repository-v0.1`, separate from mock runs, and enqueue n
 
 The internal `fetch_source_snapshot(run, token)` reader accepts a run loaded from PostgreSQL and a fresh scoped token after current access checks. It requests [GitHub's ZIP archive](https://docs.github.com/en/rest/repos/contents#download-a-repository-archive-zip) at the saved SHA, accepts one HTTPS redirect to `codeload.github.com`, and keeps the installation token on the API request only. Downloads stop above 10 MiB; archive-wide limits are 20 MiB uncompressed, 1,000 regular files and 2 MiB per file, including entries in skipped directories. Common dependency/build directories (`node_modules`, `.venv`, `venv`, `__pycache__`, `.next`, `dist`, `build`, `coverage`, `.git`) are omitted from the returned files.
 
-The reader rejects unsafe paths, duplicate/mixed archive roots, links, special/encrypted entries, unsupported compression and corrupt ZIPs. Files are returned as an immutable, sorted in-memory snapshot with repository ID and commit SHA; failures return no partial snapshot. No files are written or executed, and source bytes are excluded from object representations. Source persistence and workflow/API/UI wiring remain later work; binary contents must be filtered before any model input.
+The reader rejects unsafe paths, duplicate/mixed archive roots, links, special/encrypted entries, unsupported compression and corrupt ZIPs. Files are returned as an immutable, sorted in-memory snapshot with repository ID and commit SHA; failures return no partial snapshot. No files are written or executed, and source bytes are excluded from object representations. Full-snapshot persistence and workflow/API/UI wiring remain later work; binary contents must be filtered before any model input.
 
 ## Repository inventory foundation
 
@@ -168,7 +168,7 @@ The reader rejects unsafe paths, duplicate/mixed archive roots, links, special/e
 
 For manifests up to 64 KiB, JSON/TOML parsing reports npm dependency/script names and Python `project.dependencies`, `project.scripts` names and `[tool]` keys. Script bodies, dependency versions and source text are omitted. Requirements/lock/config files are listed without executing or resolving them; Python optional/development groups and dynamic metadata are not resolved in this first inventory. Invalid, oversized or non-text manifests produce sanitized warnings while preserving the rest of the inventory. Other files failing UTF-8 decoding or containing unsupported control bytes stay in the file list but are excluded from text/language/test candidates.
 
-These observations establish context, not installed tools, passing tests, an execution profile or approved commands. Analysis persistence and workflow/API/UI integration remain later batches. Text candidacy alone does not authorize sending a file to a model.
+These observations establish context, not installed tools, passing tests, an execution profile or approved commands. AI analysis and workflow/API/UI integration remain later batches. Text candidacy alone does not authorize sending a file to a model.
 
 ## Task file selection foundation
 
@@ -184,7 +184,7 @@ This is a conservative filename policy, not a general secret scanner. References
 
 Returned immutable records carry repository ID/SHA, path, role, original byte size, full text and a one-based start/end line range. UTF-8 BOMs are removed; original newline characters are retained, with physical LF/CRLF/CR line counting. Text is excluded from object representations. Common private-key headers, literal credential assignments and HTTP basic-auth URLs cause the entire file to be withheld as `possible_secret`; this conservative check can have false positives and is not a general secret scanner.
 
-The result is untrusted repository data, not instructions or edit/command approval. The helper performs no filesystem/network reads, repository execution or model calls. Byte bounds do not establish a model-token budget; model-specific token accounting, persistence and workflow/API/UI integration remain later work.
+The result is untrusted repository data, not instructions or edit/command approval. The helper performs no filesystem/network reads, repository execution or model calls. Byte bounds do not establish a model-token budget; model-specific token accounting and workflow/API/UI integration remain later work.
 
 ## Python structural inspection foundation
 
@@ -192,7 +192,15 @@ The result is untrusted repository data, not instructions or edit/command approv
 
 Each file is limited to 10,000 visited AST nodes and 200 combined definition/import records. Exceeding a limit or encountering parser recursion discards that file's partial index with `inspection_limit`; invalid syntax records `syntax_error` and its line without echoing source/errors. Parser syntax warnings are suppressed to avoid source-line logging. Other files remain available, and non-Python files receive `unsupported_language` skips.
 
-This is structural evidence, not semantic analysis, a resolved dependency/call graph, compiler validation or passing tests. Imports are not resolved, decorators/defaults are not evaluated and target code is never executed. Dynamic imports and lambda/variable bindings are not indexed. Model calls, token accounting, persistent analysis and workflow/API/UI wiring remain later work.
+This is structural evidence, not semantic analysis, a resolved dependency/call graph, compiler validation or passing tests. Imports are not resolved, decorators/defaults are not evaluated and target code is never executed. Dynamic imports and lambda/variable bindings are not indexed. Model calls, token accounting and workflow/API/UI wiring remain later work.
+
+## Durable run analysis context
+
+`prepare_analysis_context(run, snapshot)` packages the inventory, shortlist, policy-checked retrieved text and Python inspection into versioned JSON bound to the saved run ID, repository ID, commit SHA and task. Prepare outside the write transaction after authorizing repository access and fetching the pinned snapshot. Its immutable bytes are excluded from normal object representations. The package is capped at 2 MiB; it retains only the source text admitted by retrieval, not the entire snapshot.
+
+`save_analysis_context(session, prepared)` locks the run for the short save, rechecks its identity, and writes one `run_analysis_contexts` row plus an `ANALYSIS_CONTEXT_SAVED` event in the caller's transaction. Identical retries reuse the row without adding an event; different payloads cannot replace it through this helper. `load_analysis_context(session, run_id)` reloads the saved package after validating its run/revision/task, without GitHub access or recomputing the earlier steps. Event payloads contain only version/size metadata. This is a structured input checkpoint; reviewable analysis/plan/diff artifacts remain separate later work.
+
+Migration `0003_analysis_contexts` adds the table and database format/size constraints; apply migrations before using the updated backend (readiness requires the new head). No API or worker command is added, run status remains unchanged and real execution stays disabled. Source text is now retained in the local PostgreSQL context row, so existing authorization/content policies still apply; model-token accounting and actual agent orchestration remain subsequent work.
 
 ## What this milestone does
 
