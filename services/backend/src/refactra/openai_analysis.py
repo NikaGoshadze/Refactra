@@ -126,7 +126,8 @@ class OpenAIAnalysisProvider:
             if counts is None or payload["status"] != "completed" or payload.get("error"):
                 raise ValueError
             response_id = payload["id"]
-            if not isinstance(response_id, str) or not response_id.startswith("resp_"):
+            # Provider IDs are opaque strings; DeepSeek uses UUIDs rather than resp_ IDs.
+            if not isinstance(response_id, str) or not response_id.strip():
                 raise ValueError
             texts = []
             for item in payload["output"]:

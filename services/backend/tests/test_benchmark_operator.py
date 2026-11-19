@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import func, select, text
 
 from refactra import benchmark_operator as operator
+from refactra.analysis_benchmark import run_benchmark
 from refactra.benchmark_summary import summarize
 from refactra.models import ModelReservation
 
@@ -116,9 +117,16 @@ def test_operator_migrates_isolated_schema_and_resume_does_not_resend(
         assert operator.main(["--run"]) == 0
         assert operator.main(["--run"]) == 0
         assert len(calls) == 30
+        original = next((tmp_path / ".runtime/benchmarks").iterdir())
+        before = {path.name: path.read_bytes() for path in original.glob("*.json")}
+        assert operator.main(["--run", "--trial", "response-id-fix-1"]) == 0
+        assert operator.main(["--run", "--trial", "response-id-fix-1"]) == 0
+        assert len(calls) == 60
+        assert len(list((tmp_path / ".runtime/benchmarks").iterdir())) == 2
+        assert before == {path.name: path.read_bytes() for path in original.glob("*.json")}
         with database.connect() as connection:
             assert (
-                connection.scalar(text(f'SELECT count(*) FROM "{schema}".model_reservations')) == 30
+                connection.scalar(text(f'SELECT count(*) FROM "{schema}".model_reservations')) == 60
             )
             assert connection.scalar(select(func.count()).select_from(ModelReservation)) == 0
         printed = capsys.readouterr().out
@@ -126,3 +134,10 @@ def test_operator_migrates_isolated_schema_and_resume_does_not_resend(
     finally:
         with database.begin() as connection:
             connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+
+
+def test_trial_labels_are_explicit_and_validated_before_execution(database, tmp_path):
+    with pytest.raises(SystemExit):
+        operator.main(["--summary", str(tmp_path), "--trial", "new"])
+    with pytest.raises(ValueError, match="Trial labels"):
+        run_benchmark(database, providers([]), tmp_path, trial_id="../invalid")

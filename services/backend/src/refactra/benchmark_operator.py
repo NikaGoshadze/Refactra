@@ -50,7 +50,7 @@ def configured_providers(settings):
     }
 
 
-def execute(settings, output_root: Path) -> Path:
+def execute(settings, output_root: Path, *, trial_id=None) -> Path:
     url = make_url(settings["REFACTRA_DATABASE_URL"])
     if url.drivername != "postgresql+psycopg" or url.host not in {"localhost", "127.0.0.1", "::1"}:
         raise ValueError("A local PostgreSQL database is required.")
@@ -70,7 +70,7 @@ def execute(settings, output_root: Path) -> Path:
             config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
             config.attributes["connection"] = connection
             command.upgrade(config, "head")
-        return run_benchmark(engine, providers, output_root)
+        return run_benchmark(engine, providers, output_root, trial_id=trial_id)
     finally:
         engine.dispose()
 
@@ -83,9 +83,16 @@ def main(argv=None) -> int:
     )
     mode.add_argument("--summary", type=Path, help="Summarize a result directory without API calls")
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
+    parser.add_argument(
+        "--trial", help="Explicit new trial label; preserves prior results and costs"
+    )
     args = parser.parse_args(argv)
+    if args.trial is not None and not args.run:
+        parser.error("--trial requires --run")
     try:
-        output = args.summary or execute(load_settings(args.env_file), Path(".runtime/benchmarks"))
+        output = args.summary or execute(
+            load_settings(args.env_file), Path(".runtime/benchmarks"), trial_id=args.trial
+        )
         report = summarize(output)
         (output / "summary.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(json.dumps({"output": str(output), "summary": report}, indent=2))
