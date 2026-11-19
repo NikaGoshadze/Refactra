@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import ClassVar
 from uuid import UUID
 
 import httpx
@@ -35,16 +36,18 @@ class AnalysisResult:
 
 @dataclass(frozen=True)
 class OpenAIAnalysisProvider:
+    pricing: ClassVar[ModelPricing] = PRICING
+    responses_url: ClassVar[str] = "https://api.openai.com/v1/responses"
     api_key: str = field(repr=False)
     transport: httpx.BaseTransport | None = field(default=None, repr=False)
 
     def __post_init__(self):
         if not isinstance(self.api_key, str) or not self.api_key.strip():
-            raise ValueError("A server-side OpenAI API key is required.")
+            raise ValueError("A server-side provider API key is required.")
 
     def _input(self, request: AnalysisModelInput) -> dict:
         if (
-            request.model != PRICING.model
+            request.model != self.pricing.model
             or not 1 <= request.max_output_tokens <= MAX_REQUEST_OUTPUT
         ):
             raise ValueError("Unsupported read-only model configuration.")
@@ -62,7 +65,7 @@ class OpenAIAnalysisProvider:
             ) as client:
                 with client.stream(
                     "POST",
-                    f"https://api.openai.com/v1/responses{path}",
+                    f"{self.responses_url}{path}",
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json=body,
                 ) as response:
@@ -90,24 +93,26 @@ class OpenAIAnalysisProvider:
             raise AnalysisProviderError
         return tokens
 
-    def _generate(self, request: AnalysisModelInput) -> AnalysisResult:
-        payload = self._post(
-            "",
-            self._input(request)
-            | {
-                "max_output_tokens": request.max_output_tokens,
-                "store": False,
-                "service_tier": "default",
-                "truncation": "disabled",
-                "tools": [],
-            },
+    def _generation_options(self, request: AnalysisModelInput) -> dict:
+        return {
+            "max_output_tokens": request.max_output_tokens,
+            "store": False,
+            "service_tier": "default",
+            "truncation": "disabled",
+            "tools": [],
+        }
+
+    def _response_matches_profile(self, payload: dict) -> bool:
+        return (
+            payload.get("object") == "response"
+            and payload.get("model") == self.pricing.model
+            and payload.get("service_tier") == "default"
         )
-        # Only metadata for the pinned model/tier can release this rate snapshot's hold.
-        if (
-            payload.get("object") != "response"
-            or payload.get("model") != PRICING.model
-            or payload.get("service_tier") != "default"
-        ):
+
+    def _generate(self, request: AnalysisModelInput) -> AnalysisResult:
+        payload = self._post("", self._input(request) | self._generation_options(request))
+        # Only metadata for this provider's model/profile can release the saved hold.
+        if not self._response_matches_profile(payload):
             raise AnalysisProviderError
         usage = payload.get("usage")
         counts = None
@@ -157,7 +162,7 @@ def execute_read_only_analysis(session_factory, run_id: UUID, attempt_id: UUID, 
         raise ValueError("A saved analysis context is required.")
     request = prepare_analysis_request(
         context,
-        PRICING,
+        provider.pricing,
         BudgetUsage(),
         monthly_committed_usd=Decimal("0"),
         count_input_tokens=provider.count_input_tokens,
