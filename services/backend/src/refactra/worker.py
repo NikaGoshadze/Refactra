@@ -1,4 +1,4 @@
-"""Process mock commands or opt in to read-only repository analysis."""
+"""Process mock commands, repository analysis, or approved plan handoffs."""
 
 import argparse
 import json
@@ -16,13 +16,20 @@ from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.models import Run, RunCommand, RunEvent
 from refactra.openai_analysis import OpenAIAnalysisProvider
-from refactra.repository_analysis_worker import WORKFLOW, process_repository_analysis
+from refactra.refactoring_plan import APPLY_PLAN_APPROVAL
+from refactra.repository_analysis_worker import (
+    WORKFLOW,
+    process_repository_analysis,
+    process_repository_plan_approval,
+)
 
 logger = logging.getLogger("refactra.worker")
 WORKER_LOCK = 72341001
 
 
-def claim_command(session_factory, worker_id: str, *, workflow="mock-v0.1") -> UUID | None:
+def claim_command(
+    session_factory, worker_id: str, *, workflow="mock-v0.1", kind="START"
+) -> UUID | None:
     # Commit this short claim before executing work; never hold a queue row lock while idle.
     with session_factory.begin() as session:
         now = session.scalar(select(func.now()))
@@ -30,6 +37,7 @@ def claim_command(session_factory, worker_id: str, *, workflow="mock-v0.1") -> U
             select(RunCommand)
             .where(
                 RunCommand.run_id.in_(select(Run.id).where(Run.workflow_version == workflow)),
+                RunCommand.kind == kind,
                 RunCommand.available_at <= now,
                 or_(
                     RunCommand.status == "PENDING",
@@ -115,22 +123,31 @@ def process_command(session_factory, command_id: UUID, worker_id: str) -> bool:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true", help="Process at most one command and exit.")
-    parser.add_argument(
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument(
         "--repository-analysis", action="store_true", help="Process prepared repository runs."
+    )
+    modes.add_argument(
+        "--repository-approval", action="store_true", help="Verify approved plan handoffs."
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     settings = Settings.from_env()
     provider = None
+    mode = "mock"
+    kind = "START"
     if args.repository_analysis:
         key = os.getenv("REFACTRA_OPENAI_API_KEY", "").strip()
         if not key:
             raise SystemExit("Repository analysis requires REFACTRA_OPENAI_API_KEY.")
         provider = OpenAIAnalysisProvider(key)
+        mode = "repository_analysis"
+    elif args.repository_approval:
+        mode = "repository_approval"
+        kind = APPLY_PLAN_APPROVAL
     elif not settings.enable_mock:
         raise SystemExit("Mock mode is disabled.")
-    workflow = WORKFLOW if provider is not None else "mock-v0.1"
-    mode = "repository_analysis" if provider is not None else "mock"
+    workflow = "mock-v0.1" if mode == "mock" else WORKFLOW
     engine = make_engine(settings.database_url)
     session_factory = sessions(engine)
     worker_id = str(uuid4())
@@ -145,9 +162,13 @@ def main():
             logger.info(json.dumps({"event": "worker_started", "mode": mode}))
             while not stopped.is_set():
                 guard.execute(text("SELECT 1"))  # Loss of the lock connection stops this worker.
-                command_id = claim_command(session_factory, worker_id, workflow=workflow)
+                command_id = claim_command(session_factory, worker_id, workflow=workflow, kind=kind)
                 if command_id:
-                    if provider is None:
+                    if args.repository_approval:
+                        processed = process_repository_plan_approval(
+                            session_factory, command_id, worker_id
+                        )
+                    elif provider is None:
                         processed = process_command(session_factory, command_id, worker_id)
                     else:
                         processed = process_repository_analysis(

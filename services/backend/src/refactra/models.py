@@ -171,7 +171,7 @@ class RunPlanApproval(Base):
 class RunCommand(Base):
     __tablename__ = "run_commands"
     __table_args__ = (
-        CheckConstraint("kind = 'START'", name="ck_commands_foundation_kind"),
+        CheckConstraint("kind IN ('START', 'APPLY_PLAN_APPROVAL')", name="ck_commands_kind"),
         CheckConstraint(
             "status IN ('PENDING', 'CLAIMED', 'DONE', 'FAILED')", name="ck_commands_status"
         ),

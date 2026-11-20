@@ -1,20 +1,24 @@
 import json
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from uuid import uuid5
 
 import httpx
 import pytest
+from alembic import command
 from sqlalchemy import select
 
 import refactra.repository_plan_worker as planner
 from refactra.analysis_context import save_analysis_context
 from refactra.model_reservations import settle_model_usage
-from refactra.models import ModelReservation, RunEvent
+from refactra.models import ModelReservation, RunCommand, RunEvent, RunPlanApproval
 from refactra.openai_analysis import OpenAIAnalysisProvider
 from refactra.planning_request import PLAN_INSTRUCTIONS
 from refactra.refactoring_plan import (
+    APPLY_PLAN_APPROVAL,
     PlanProposal,
+    approve_refactoring_plan,
     evaluate_plan_readiness,
     load_refactoring_plan,
     save_refactoring_plan,
@@ -23,9 +27,11 @@ from refactra.repository_analysis_worker import (
     WORKFLOW,
     enqueue_repository_analysis,
     process_repository_analysis,
+    process_repository_plan_approval,
 )
 from refactra.worker import claim_command
 
+from .conftest import migration_config
 from .test_analysis_context import prepare
 from .test_openai_analysis import response
 
@@ -102,6 +108,68 @@ def analyze_fixture_run(session_factory):
     provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(mock_model))
     command = claim_command(session_factory, "fixture", workflow=WORKFLOW)
     assert process_repository_analysis(session_factory, command, "fixture", provider)
+
+
+@pytest.mark.parametrize("scenario", ["new", "legacy", "mismatch"])
+def test_approval_worker_recovers_and_checks_the_saved_plan(
+    database, session_factory, proposal, scenario
+):
+    run, _, context = prepare(session_factory)
+    with session_factory.begin() as session:
+        save_analysis_context(session, context)
+        enqueue_repository_analysis(session, run.id)
+    analyze_fixture_run(session_factory)
+    with session_factory.begin() as session:
+        plan = save_refactoring_plan(session, run.id, proposal, expected_revision=0)
+        approval = approve_refactoring_plan(
+            session,
+            run.id,
+            plan_id=plan.id,
+            revision=1,
+            sha256=plan.sha256,
+            actor_id=run.requested_by,
+        )
+        if scenario == "mismatch":
+            approval.sha256 = "a" * 64
+    if scenario == "legacy":
+        with database.begin() as connection:
+            config = migration_config(connection)
+            command.downgrade(config, "0009_plan_approvals")
+            command.upgrade(config, "head")
+    assert claim_command(session_factory, "analysis", workflow=WORKFLOW) is None
+    command_id = claim_command(session_factory, "old", workflow=WORKFLOW, kind=APPLY_PLAN_APPROVAL)
+    assert command_id is not None
+    with session_factory.begin() as session:
+        session.get(RunCommand, command_id).lease_until = datetime.now(UTC) - timedelta(minutes=1)
+    assert (
+        claim_command(session_factory, "new", workflow=WORKFLOW, kind=APPLY_PLAN_APPROVAL)
+        == command_id
+    )
+    assert not process_repository_plan_approval(session_factory, command_id, "old")
+    assert process_repository_plan_approval(session_factory, command_id, "new")
+    assert not process_repository_plan_approval(session_factory, command_id, "new")
+    assert (
+        claim_command(session_factory, "new", workflow=WORKFLOW, kind=APPLY_PLAN_APPROVAL) is None
+    )
+    with session_factory() as session:
+        event = session.scalar(
+            select(RunEvent).where(RunEvent.payload["command_id"].astext == str(command_id))
+        )
+        expected_status, expected_event = (
+            ("FAILED", "PLAN_APPROVAL_REJECTED")
+            if scenario == "mismatch"
+            else ("DONE", "PLAN_APPROVAL_VERIFIED")
+        )
+        assert session.get(RunPlanApproval, run.id).approved_at == approval.approved_at
+        assert session.get(RunCommand, command_id).status == expected_status
+        assert event.event_type == expected_event
+        if scenario != "mismatch":
+            assert event.payload == {
+                "plan_id": str(plan.id),
+                "revision": 1,
+                "sha256": plan.sha256,
+                "command_id": str(command_id),
+            }
 
 
 @pytest.mark.parametrize("invalid", ["traversal", "unknown_criterion", "supplied_identity"])

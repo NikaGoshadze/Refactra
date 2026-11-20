@@ -406,7 +406,7 @@ def test_approval_binds_the_latest_ready_revision_and_locks_edits(
         ).all()
         assert len(events) == 1
         assert events[0].payload == approval | {"approved_by": 12345}
-        assert session.scalar(select(func.count()).select_from(RunCommand)) == 1
+        assert session.scalar(select(func.count()).select_from(RunCommand)) == 2
 
 
 @pytest.mark.parametrize(
