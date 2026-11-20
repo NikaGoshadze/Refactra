@@ -117,6 +117,17 @@ class ModelReservation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class RunAnalysisResult(Base):
+    __tablename__ = "run_analysis_results"
+
+    run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("run_analysis_contexts.run_id"), primary_key=True
+    )
+    reservation_id: Mapped[UUID] = mapped_column(ForeignKey("model_reservations.id"), unique=True)
+    response_id: Mapped[str] = mapped_column(Text)
+    analysis_text: Mapped[str] = mapped_column(Text, deferred=True)
+
+
 class RunCommand(Base):
     __tablename__ = "run_commands"
     __table_args__ = (
