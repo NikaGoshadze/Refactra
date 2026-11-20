@@ -32,9 +32,12 @@ from refactra.models import (
 )
 from refactra.publication_target import (
     PublicationApproval,
+    PublicationBranchRead,
+    PublicationDraftRead,
     PublicationTargetError,
     approve_publication_target,
     load_publication_approval,
+    load_publication_progress,
 )
 from refactra.refactoring_plan import (
     PlanContent,
@@ -130,6 +133,7 @@ class CandidateResultRead(ArtifactReference):
     validation: list[ValidationResult]
     publication_target: PublicationTargetRead | None
     publication_approval: PublicationApproval | None
+    publication: PublicationBranchRead | PublicationDraftRead | None
 
 
 class PlanApprovalRead(BaseModel):
@@ -469,7 +473,29 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
 
             try:
                 saved = json.loads(result.document)
-                target = session.get(RunPublicationTarget, result.id)
+                stored_target = session.get(RunPublicationTarget, result.id)
+                target = (
+                    PublicationTargetRead(
+                        sha256=stored_target.sha256, **json.loads(stored_target.document)
+                    )
+                    if stored_target is not None
+                    else None
+                )
+                approval = load_publication_approval(session, run_id)
+                publication = None
+                if (
+                    target is not None
+                    and approval is not None
+                    and (approval.result_id, approval.result_revision, approval.target_sha256)
+                    == (result.id, result.revision, target.sha256)
+                ):
+                    publication = load_publication_progress(
+                        session,
+                        run_id,
+                        target_sha256=target.sha256,
+                        commit_sha=target.commit_sha,
+                        head_branch=target.destination.head_branch,
+                    )
                 payload = CandidateResultRead(
                     id=result.id,
                     run_id=run_id,
@@ -481,12 +507,9 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                     diff=saved["diff"],
                     diff_sha256=saved["diff_sha256"],
                     validation=saved["validation"],
-                    publication_target=(
-                        PublicationTargetRead(sha256=target.sha256, **json.loads(target.document))
-                        if target is not None
-                        else None
-                    ),
-                    publication_approval=load_publication_approval(session, run_id),
+                    publication_target=target,
+                    publication_approval=approval,
+                    publication=publication,
                 )
             except (ValueError, KeyError, TypeError):
                 return error(

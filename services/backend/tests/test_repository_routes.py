@@ -15,7 +15,12 @@ from refactra.config import Settings
 from refactra.github_app import GitHubAppClient, InstallationToken
 from refactra.models import Run, RunAnalysisContext, RunCommand, RunEvent
 from refactra.openai_analysis import OpenAIAnalysisProvider
-from refactra.publication_target import PUBLICATION_APPROVED, save_publication_target
+from refactra.publication_target import (
+    PUBLICATION_APPROVED,
+    PUBLICATION_BRANCH_PUSHED,
+    PUBLICATION_PR_OPENED,
+    save_publication_target,
+)
 from refactra.refactoring_plan import approve_refactoring_plan, save_refactoring_plan
 from refactra.repository_analysis_worker import WORKFLOW, process_repository_analysis
 from refactra.repository_validation import ValidationResult
@@ -473,6 +478,7 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
         assert data["validation"][0]["output"] == "1 passed"
         assert data["validation"][0]["exit_code"] == 0
         assert data["publication_target"] is None and data["publication_approval"] is None
+        assert data["publication"] is None
         assert "candidate" not in data
     assert client.get(f"{url}?revision=3").status_code == 404
 
@@ -507,11 +513,41 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
         assert approved.status_code == 200 and approved.headers["cache-control"] == "no-store"
         assert approved.json() == {**body, "result_revision": 2, "approved_by": 12345}
     assert client.get(url).json()["publication_approval"] == approved.json()
+    assert client.get(url).json()["publication"] is None
     with session_factory() as session:
         events = session.scalars(
             select(RunEvent).where(RunEvent.event_type == PUBLICATION_APPROVED)
         ).all()
         assert [event.payload for event in events] == [approved.json()]
+
+    pushed = {
+        "target_sha256": target_sha,
+        "commit_sha": target["commit_sha"],
+        "head_branch": target["destination"]["head_branch"],
+        "repository": "fixture/example",
+    }
+    link = "https://github.com/fixture/example/pull/7"
+    draft = {**pushed, "pull_request_number": 7, "pull_request_url": link}
+    with session_factory.begin() as session:
+        session.add_all(
+            [
+                RunEvent(run_id=run_id, event_type=PUBLICATION_BRANCH_PUSHED, payload=pushed),
+                RunEvent(
+                    run_id=run_id,
+                    event_type=PUBLICATION_PR_OPENED,
+                    payload={**draft, "commit_sha": "d" * 40},
+                ),
+            ]
+        )
+    assert client.get(url).json()["publication"] == {"status": "branch_pushed"}
+    with session_factory.begin() as session:
+        session.add(RunEvent(run_id=run_id, event_type=PUBLICATION_PR_OPENED, payload=draft))
+    assert client.get(url).json()["publication"] == {
+        "status": "draft_opened",
+        "number": 7,
+        "url": link,
+    }
+    assert client.get(f"{url}?revision=1").json()["publication"] is None
 
 
 @pytest.mark.parametrize(

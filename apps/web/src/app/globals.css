@@ -43,6 +43,7 @@ a { color: inherit; text-decoration: none; }
 .saved-run, .saved-plan { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
 .saved-run summary { cursor: pointer; font-size: 14px; font-weight: 600; }
 .saved-run button { margin-top: 10px; }
+.publication-link { color: var(--blue); text-decoration: underline; }
 .saved-plan { overflow-wrap: anywhere; }
 .saved-plan p, .saved-plan h4 { margin-top: 12px; }
 .saved-plan h4 { font-size: 14px; font-weight: 600; }

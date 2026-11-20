@@ -16,11 +16,13 @@ from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.github_app import GitHubAppError
 from refactra.models import Run, RunCandidateResult, RunEvent, RunPublicationTarget
-from refactra.publication_target import PublicationTargetError, load_publication_approval
+from refactra.publication_target import (
+    PUBLICATION_BRANCH_PUSHED,
+    PublicationTargetError,
+    load_publication_approval,
+)
 from refactra.repository_plan_worker import authorize_run_repository
 from refactra.repository_revision import resolve_revision
-
-PUBLICATION_BRANCH_PUSHED = "PUBLICATION_BRANCH_PUSHED"
 
 
 def load_approved_target(session, run_id: UUID):
