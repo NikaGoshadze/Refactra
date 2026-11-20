@@ -37,8 +37,8 @@ class PlanGenerationError(ValueError):
     """Source-free stop reason suitable for operator output."""
 
 
-def authorize_plan(run: Run) -> tuple[InstallationToken, httpx.BaseTransport | None]:
-    """Recheck the pinned run owner's permission and return a scoped read token and transport."""
+def authorize_run_repository(run: Run) -> tuple[GitHubAppClient, InstallationToken]:
+    """Recheck the pinned run owner's permission and return the App and read token."""
     policy = RepositoryAccessPolicy.from_env()
     installation_id = int(os.environ["REFACTRA_GITHUB_INSTALLATION_ID"])
     if (
@@ -55,6 +55,11 @@ def authorize_plan(run: Run) -> tuple[InstallationToken, httpx.BaseTransport | N
     token = require_github_write_access(
         app, installation_id, run.github_repository_id, GitHubIdentity(run.requested_by, "operator")
     )
+    return app, token
+
+
+def authorize_plan(run: Run) -> tuple[InstallationToken, httpx.BaseTransport | None]:
+    app, token = authorize_run_repository(run)
     return token, app.transport
 
 

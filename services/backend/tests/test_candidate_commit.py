@@ -2,17 +2,23 @@ import json
 import shutil
 import subprocess
 from hashlib import sha256
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
 from sqlalchemy import select
 
+import refactra.publication_branch as publication
 from refactra.analysis_context import save_analysis_context
 from refactra.candidate_commit import CandidateCommitError, prepare_candidate_commit
 from refactra.candidate_patch import CandidatePatch
 from refactra.candidate_results import save_validated_candidate
 from refactra.models import RunEvent, RunPublicationTarget
-from refactra.publication_target import PublicationTargetError, save_publication_target
+from refactra.publication_target import (
+    PublicationTargetError,
+    approve_publication_target,
+    save_publication_target,
+)
 from refactra.refactoring_plan import approve_refactoring_plan, save_refactoring_plan
 from refactra.repository_analysis_worker import enqueue_repository_analysis
 from refactra.repository_validation import ValidationResult
@@ -27,10 +33,12 @@ def git(directory, *args):
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="Requires local Git.")
-def test_prepares_the_saved_diff_as_one_pinned_commit(tmp_path, session_factory, proposal):
+def test_prepares_the_saved_diff_as_one_pinned_commit(
+    tmp_path, session_factory, proposal, monkeypatch
+):
     source = tmp_path / "clone"
     source.mkdir()
-    git(source, "init", "--template=", "--object-format=sha1")
+    git(source, "init", "--template=", "--object-format=sha1", "--initial-branch=main")
     (source / "src").mkdir()
     (source / "src" / "cart.py").write_bytes(b"def cart(): return 1\n")
     (source / "old.py").write_bytes(b"# no longer needed")
@@ -100,14 +108,8 @@ def test_prepares_the_saved_diff_as_one_pinned_commit(tmp_path, session_factory,
             "fixture",
         )
         saved = save_validated_candidate(session, run.id, candidate, diff, [check])
-        edit = candidate.edits[0].model_copy(update={"content": "def cart(): return 3\n"})
-        mismatch = candidate.model_copy(update={"edits": [edit, *candidate.edits[1:]]})
-        save_validated_candidate(session, run.id, mismatch, diff, [check])
 
     output = tmp_path / "prepared"
-    with pytest.raises(CandidateCommitError, match="reviewed diff"):
-        prepare_candidate_commit(session_factory, run.id, 2, source, output)
-    assert not output.exists()
     receipt = prepare_candidate_commit(session_factory, run.id, 1, source, output)
     assert json.loads((output / "receipt.json").read_bytes()) == receipt
     assert receipt["result_sha256"] == saved.sha256
@@ -157,6 +159,80 @@ def test_prepares_the_saved_diff_as_one_pinned_commit(tmp_path, session_factory,
         with pytest.raises(PublicationTargetError, match="different publication target"):
             save_publication_target(session, {**receipt, "commit_sha": "f" * 40})
 
+    check_branch_publication(session_factory, run, source, output, registered, monkeypatch)
+
     (output / "receipt.json").write_text("{}", encoding="utf-8")
     with pytest.raises(CandidateCommitError, match="Existing artifact"):
         prepare_candidate_commit(session_factory, run.id, 1, source, output, save_target=True)
+
+    edit = candidate.edits[0].model_copy(update={"content": "def cart(): return 3\n"})
+    mismatch = candidate.model_copy(update={"edits": [edit, *candidate.edits[1:]]})
+    with session_factory.begin() as session:
+        save_validated_candidate(session, run.id, mismatch, diff, [check])
+    invalid_output = tmp_path / "invalid"
+    with pytest.raises(CandidateCommitError, match="reviewed diff"):
+        prepare_candidate_commit(session_factory, run.id, 2, source, invalid_output)
+    assert not invalid_output.exists()
+
+
+def check_branch_publication(session_factory, run, source, artifact, registered, monkeypatch):
+    push = publication.push_approved_branch
+    with pytest.raises(PublicationTargetError, match="owner must approve"):
+        push(session_factory, run.id, artifact)
+    with session_factory.begin() as session:
+        approve_publication_target(
+            session,
+            run.id,
+            result_id=UUID(registered["result_id"]),
+            target_sha256=registered["publication_target_sha256"],
+            actor_id=run.requested_by,
+        )
+
+    upstream = artifact.parent / "upstream.git"
+    git(source, "clone", "--bare", str(source), str(upstream))
+    current_base, commit = run.base_sha, registered["commit_sha"]
+    requested_scope = []
+
+    def mint(installation_id, repository_id):
+        requested_scope.append((installation_id, repository_id))
+        return SimpleNamespace(value="fixture-token")
+
+    def resolve(_reader, *, base_branch, transport):
+        sha = (
+            current_base
+            if base_branch == "main"
+            else git(upstream, "rev-parse", base_branch).decode().strip()
+        )
+        return SimpleNamespace(full_name="fixture/repo", commit_sha=sha)
+
+    real_git = publication._git
+
+    def isolated_git(path, *args, https_auth=None):
+        if args[0] == "push":
+            assert https_auth == ("https://github.com/fixture/repo.git", "fixture-token")
+            args = (*args[:-2], str(upstream), args[-1])
+        return real_git(path, *args)
+
+    app = SimpleNamespace(transport=None, mint_push_token=mint)
+    monkeypatch.setattr(publication, "authorize_run_repository", lambda _run: (app, object()))
+    monkeypatch.setattr(publication, "resolve_revision", resolve)
+    monkeypatch.setattr(publication, "_git", isolated_git)
+    current_base = "f" * 40
+    with pytest.raises(PublicationTargetError, match="base branch moved"):
+        push(session_factory, run.id, artifact)
+    assert not requested_scope
+    current_base = run.base_sha
+    pushed = push(session_factory, run.id, artifact)
+    assert push(session_factory, run.id, artifact) == pushed
+    assert requested_scope == [(run.github_installation_id, run.github_repository_id)] * 2
+    assert pushed["commit_sha"] == commit
+    with session_factory() as session:
+        events = session.scalars(
+            select(RunEvent).where(RunEvent.event_type == publication.PUBLICATION_BRANCH_PUSHED)
+        ).all()
+        assert [event.payload for event in events] == [pushed]
+    ref = f"refs/heads/{pushed['head_branch']}"
+    git(upstream, "update-ref", ref, run.base_sha)
+    with pytest.raises(CandidateCommitError, match="Git could not complete push"):
+        push(session_factory, run.id, artifact)
+    assert git(upstream, "rev-parse", ref).decode().strip() == run.base_sha

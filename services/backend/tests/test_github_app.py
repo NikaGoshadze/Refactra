@@ -35,8 +35,12 @@ def token_response():
     }
 
 
-def test_signed_request_is_downscoped_and_secrets_are_hidden(private_key):
+@pytest.mark.parametrize(
+    ("method", "contents"), [("mint_read_token", "read"), ("mint_push_token", "write")]
+)
+def test_signed_request_is_downscoped_and_secrets_are_hidden(private_key, method, contents):
     payload = token_response()
+    payload["permissions"]["contents"] = contents
     before = int(time())
 
     def handler(request):
@@ -52,12 +56,12 @@ def test_signed_request_is_downscoped_and_secrets_are_hidden(private_key):
         assert before + 540 <= claims["exp"] <= int(time()) + 540
         assert json.loads(request.content) == {
             "repository_ids": [42],
-            "permissions": {"contents": "read", "metadata": "read"},
+            "permissions": {"contents": contents, "metadata": "read"},
         }
         return httpx.Response(201, json=payload)
 
     client = app(private_key, handler)
-    token = client.mint_read_token(7, 42)
+    token = getattr(client, method)(7, 42)
     assert token.value == payload["token"]
     assert token.repository_id == 42
     assert token.expires_at == datetime.fromisoformat(payload["expires_at"])
