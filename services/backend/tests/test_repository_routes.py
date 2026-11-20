@@ -357,7 +357,62 @@ def test_revising_a_plan_appends_once_and_preserves_previous_revision(
     assert historical["content"]["blocking_questions"] == previous["blocking_questions"]
 
 
-@pytest.mark.parametrize(("method", "suffix"), [("GET", ""), ("GET", "/plan"), ("POST", "/plan")])
+@pytest.mark.parametrize("blocker", ["question", "check_id"])
+def test_approval_binds_the_latest_ready_revision_and_locks_edits(
+    browser, session_factory, proposal, blocker
+):
+    client, calls, _, _ = browser
+    receipt = submit(client)
+    url = f"{receipt.headers['Location']}/plan"
+    run_id = UUID(receipt.json()["run_id"])
+    analyze_fixture_run(session_factory)
+    headers = {"Origin": "https://refactra.example", "X-Refactra-CSRF": "1"}
+    draft = dict(proposal)
+    if blocker == "question":
+        draft["blocking_questions"] = ["How should empty carts behave?"]
+    else:
+        draft["validation_checks"] = [dict(proposal["validation_checks"][0], check_id="VC1")]
+    with session_factory.begin() as session:
+        first = save_refactoring_plan(session, run_id, draft, expected_revision=0)
+    old = {"plan_id": str(first.id), "revision": 1, "sha256": first.sha256}
+
+    calls.clear()
+    rejected = client.post(f"{url}/approve", json=old)
+    assert rejected.status_code == 403 and calls == []
+    blocked = client.post(f"{url}/approve", json=old, headers=headers)
+    assert blocked.status_code == 409 and "Resolve blocking questions" in blocked.text
+
+    revised = client.post(url, json={"expected_revision": 1, "proposal": proposal}, headers=headers)
+    artifact = revised.json()["artifact"]
+    approval = {"plan_id": artifact["id"], "revision": 2, "sha256": artifact["sha256"]}
+    for stale in (old, dict(approval, sha256="b" * 64), dict(approval, plan_id=str(uuid4()))):
+        response = client.post(f"{url}/approve", json=stale, headers=headers)
+        assert response.status_code == 409 and "Plan revision changed" in response.text
+
+    approved = client.post(f"{url}/approve", json=approval, headers=headers)
+    assert approved.status_code == 200 and approved.headers["cache-control"] == "no-store"
+    record = approved.json()
+    assert record["revision"] == 2 and record["sha256"] == artifact["sha256"]
+    assert record["approved_by"] == 12345
+    assert client.post(f"{url}/approve", json=approval, headers=headers).json() == record
+    assert client.get(url).json()["approval"] == record
+    assert client.get(f"{url}?revision=1").json()["approval"] is None
+
+    edit = {"expected_revision": 2, "proposal": dict(proposal, summary="A later change")}
+    assert client.post(url, json=edit, headers=headers).status_code == 409
+    with session_factory() as session:
+        events = session.scalars(
+            select(RunEvent).where(RunEvent.event_type == "PLAN_APPROVED")
+        ).all()
+        assert len(events) == 1
+        assert events[0].payload == approval | {"approved_by": 12345}
+        assert session.scalar(select(func.count()).select_from(RunCommand)) == 1
+
+
+@pytest.mark.parametrize(
+    ("method", "suffix"),
+    [("GET", ""), ("GET", "/plan"), ("POST", "/plan"), ("POST", "/plan/approve")],
+)
 @pytest.mark.parametrize(
     "problem,expected",
     [
@@ -388,10 +443,17 @@ def test_run_routes_recheck_access(
         monkeypatch.setenv("REFACTRA_GITHUB_INSTALLATION_ID", "8")
     else:
         switches[problem] = True
+    payload = None
+    if method == "POST":
+        payload = (
+            {"plan_id": str(uuid4()), "revision": 1, "sha256": "a" * 64}
+            if suffix.endswith("/approve")
+            else {"expected_revision": 1, "proposal": proposal}
+        )
     result = client.request(
         method,
         url + suffix,
-        json={"expected_revision": 1, "proposal": proposal} if method == "POST" else None,
+        json=payload,
         headers={"Origin": "https://refactra.example", "X-Refactra-CSRF": "1"},
     )
     assert result.status_code == expected

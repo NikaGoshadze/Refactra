@@ -248,7 +248,7 @@ After verifying repository access, use **Repository analysis** to choose the bas
 
 ## Refactoring plan checkpoint
 
-Migration `0008_run_plans` adds plan revisions and is required for API readiness. After a run has saved analysis, an internal caller can pass a structured proposal to `save_refactoring_plan`. The server binds it to that run and commit. PostgreSQL stores the exact JSON bytes, bounded to 64 KiB, and checks their SHA-256 hash. An identical retry returns the current revision. A changed proposal appends a revision only when the caller's expected revision still matches. A saved proposal is untrusted input for future human review.
+Migration `0008_run_plans` adds plan revisions. After a run has saved analysis, an internal caller can pass a structured proposal to `save_refactoring_plan`. The server binds it to that run and commit. PostgreSQL stores the exact JSON bytes, bounded to 64 KiB, and checks their SHA-256 hash. An identical retry returns the current revision. A changed proposal appends a revision only when the caller's expected revision still matches. A saved proposal is untrusted input for human review.
 
 To generate the first plan as a local operator, run `uv run python -m refactra.repository_plan_worker <run-id>` from `services/backend` after migrating. Set the database URL, OpenAI key, and the protected repository configuration in the process environment, including the PEM path. The command rechecks the submitting user's current GitHub write access, uses the saved analysis and pinned source, and returns plan metadata. Planning requests use OpenAI Structured Outputs and the existing run budget. Local validation still checks rules such as whether the proposed checks reference criteria in the same plan.
 
@@ -261,6 +261,8 @@ The planner and plan read API also report the number of blocking questions, unre
 In the browser, click **Load saved plan** when an analysis is ready for review. To return to an earlier run, verify repository access, choose **Open a saved run**, and enter its run ID. The plan view shows the latest saved revision. Loading it uses the saved analysis and plan without making a model request.
 
 Use **Revise plan draft** to edit the proposal JSON. Record answers in the relevant fields, remove resolved questions, and update any unrecognized validation IDs. The protected `POST /api/v1/runs/{run_id}/plan` takes `{expected_revision, proposal}` and returns the saved draft with updated readiness. A changed draft appends an immutable revision. A stale edit returns 409, and retrying the same saved content returns its existing revision.
+
+Migration `0009_plan_approvals` is required for API readiness. The backend's protected `POST /api/v1/runs/{run_id}/plan/approve` accepts `{plan_id, revision, sha256}` with the active owner's session, trusted Origin, and `X-Refactra-CSRF: 1`. The latest revision must match all three fields, have zero blocking questions, and use registered validation IDs with a required check. PostgreSQL records one decision and event per run. Plan reads include the receipt for that revision, and new draft edits are locked once approved. This is the approval checkpoint. Browser approval and execution resume are later steps.
 
 ## Read-only OpenAI analysis adapter
 

@@ -8,6 +8,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Identity,
     Index,
     Integer,
@@ -145,6 +146,26 @@ class RunPlan(Base):
     sha256: Mapped[str] = mapped_column(String(64))
     document: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RunPlanApproval(Base):
+    __tablename__ = "run_plan_approvals"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["run_id", "revision"],
+            ["run_plans.run_id", "run_plans.revision"],
+            name="fk_run_plan_approvals_revision",
+        ),
+        CheckConstraint("approved_by > 0", name="ck_run_plan_approvals_actor"),
+    )
+
+    run_id: Mapped[UUID] = mapped_column(primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    approved_by: Mapped[int] = mapped_column(BigInteger)
+    approved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class RunCommand(Base):
