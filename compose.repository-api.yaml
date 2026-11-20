@@ -2,6 +2,7 @@
 services:
   api:
     environment:
+      REFACTRA_ENABLE_REPOSITORY_ANALYSIS: ${REFACTRA_ENABLE_REPOSITORY_ANALYSIS:-false}
       REFACTRA_GITHUB_CLIENT_ID: ${REFACTRA_GITHUB_CLIENT_ID:?Set the App Client ID in .env}
       REFACTRA_ALLOWED_GITHUB_USER_IDS: ${REFACTRA_ALLOWED_GITHUB_USER_IDS:?Set allowed numeric GitHub user IDs in .env}
       REFACTRA_GITHUB_REPOSITORY_ID: ${REFACTRA_GITHUB_REPOSITORY_ID:?Set the selected repository ID in .env}

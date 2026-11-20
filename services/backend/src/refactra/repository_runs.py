@@ -2,10 +2,11 @@
 
 Call only after session/tester/repository and current GitHub permission checks,
 using the installation and revision verified by that flow. This is not an
-authorization boundary and is not exposed through the API yet.
+authorization boundary.
 """
 
 import re
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -21,11 +22,12 @@ def create_repository_run(
     installation_id: int,
     revision: RepositoryRevision,
     task_text: str,
+    run_id: UUID | None = None,
 ) -> Run:
     """Stage the run and event atomically; the caller owns commit/rollback.
 
-    No command is enqueued: real orchestration is not available yet. Later
-    source retrieval must use the stored base_sha without resolving the branch again.
+    The caller may supply a stable ID for submission retries. Source retrieval
+    must use the stored base_sha without resolving the branch again.
     """
     if any(
         type(value) is not int or value <= 0
@@ -40,6 +42,7 @@ def create_repository_run(
     if not isinstance(task_text, str) or not 1 <= len(task_text) <= 4000 or not task_text.strip():
         raise ValueError("A nonblank task of at most 4000 characters is required.")
     run = Run(
+        id=run_id,
         requested_by=identity.user_id,
         github_installation_id=installation_id,
         github_repository_id=revision.repository_id,

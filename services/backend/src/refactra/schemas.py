@@ -4,8 +4,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from refactra.repository_revision import validate_branch
 
-class MockRunCreate(BaseModel):
+
+class RunTask(BaseModel):
     model_config = ConfigDict(extra="forbid")
     task_text: str = Field(min_length=1, max_length=4000)
 
@@ -13,9 +15,32 @@ class MockRunCreate(BaseModel):
     @classmethod
     def nonblank(cls, value: str) -> str:
         value = value.strip()
-        if not value:
+        if not value or "\x00" in value:
             raise ValueError("Enter a nonblank task.")
         return value
+
+
+class MockRunCreate(RunTask):
+    pass
+
+
+class RepositoryRunCreate(RunTask):
+    repository_id: int = Field(strict=True, gt=0, le=2**63 - 1)
+    base_branch: str = Field(min_length=1, max_length=255)
+
+    @field_validator("base_branch")
+    @classmethod
+    def literal_branch(cls, value: str) -> str:
+        validate_branch(value)
+        return value
+
+
+class RepositoryRunReceipt(BaseModel):
+    run_id: UUID
+    repository_id: int
+    base_branch: str
+    base_sha: str
+    created_at: datetime
 
 
 class StopReason(BaseModel):
