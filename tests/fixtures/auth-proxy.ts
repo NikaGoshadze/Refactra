@@ -13,6 +13,10 @@ export const CLEAR_SESSION = "refactra_session=; Path=/; Max-Age=0; HttpOnly; Sa
 export const RUN_ID = "367dfc44-100b-4af2-9ed7-ddf97ae24d52";
 export const RUN_PATH = `/api/v1/runs/${RUN_ID}`;
 export const PLAN_PATH = `${RUN_PATH}/plan`;
+export const PLAN_APPROVAL_PATH = `${PLAN_PATH}/approve`;
+export const REVISED_ARTIFACT = {
+  id: "98c1fd19-7102-4250-a458-b9aa083db613", revision: 2, sha256: "c".repeat(64),
+};
 export const PLAN_PROPOSAL = {
   summary: "<strong>Extract the cart calculation</strong>",
   changes: [{ path: "src/cart.py", action: "MODIFY", intent: "Extract calculation" }],
@@ -23,7 +27,8 @@ export const PLAN_PROPOSAL = {
   blocking_questions: ["Which rounding rule should be preserved?"],
 };
 export const PLAN = {
-  artifact: { revision: 1, sha256: "b".repeat(64) },
+  artifact: { id: "0dee55db-3437-44ca-bf7b-afa8977a06d3", revision: 1, sha256: "b".repeat(64) },
+  approval: null,
   readiness: { blocking_question_count: 1, unsupported_check_ids: ["VC1"], has_required_supported_check: false },
   content: {
     ...PLAN_PROPOSAL, schema_version: "1", run_id: RUN_ID,
@@ -98,7 +103,7 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
           setTimeout(() => response.end(JSON.stringify({ run_id: RUN_ID })), 5500);
         });
         return;
-      } else if (route === PLAN_PATH && request.method === "POST") {
+      } else if ([PLAN_PATH, PLAN_APPROVAL_PATH].includes(route) && request.method === "POST") {
         request.setEncoding("utf8");
         call.body = "";
         request.on("data", (chunk) => { call.body += chunk; });
@@ -107,12 +112,26 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
             response.writeHead(403).end(JSON.stringify({ error: { code: "csrf_rejected" } }));
             return;
           }
+          if (!request.headers.cookie?.includes("refactra_session=fixture-session")) {
+            response.writeHead(401).end(JSON.stringify({ error: { code: "authentication_required" } }));
+            return;
+          }
+          if (route === PLAN_APPROVAL_PATH) {
+            const { plan_id, revision, sha256 } = JSON.parse(call.body!);
+            if (plan_id !== REVISED_ARTIFACT.id || revision !== REVISED_ARTIFACT.revision || sha256 !== REVISED_ARTIFACT.sha256) {
+              response.writeHead(409).end(JSON.stringify({ error: { code: "plan_approval_conflict" } }));
+              return;
+            }
+            response.end(JSON.stringify({ run_id: RUN_ID, approved_by: 12345,
+              approved_at: "2026-11-20T01:00:00Z", revision, sha256 }));
+            return;
+          }
           const { expected_revision, proposal } = JSON.parse(call.body!);
           if (expected_revision !== 1) {
             response.writeHead(409).end(JSON.stringify({ error: { code: "plan_revision_conflict" } }));
             return;
           }
-          response.end(JSON.stringify({ content: { ...PLAN.content, ...proposal }, artifact: { revision: 2, sha256: "c".repeat(64) },
+          response.end(JSON.stringify({ content: { ...PLAN.content, ...proposal }, artifact: REVISED_ARTIFACT, approval: null,
             readiness: { blocking_question_count: 0, unsupported_check_ids: [], has_required_supported_check: true } }));
         });
         return;

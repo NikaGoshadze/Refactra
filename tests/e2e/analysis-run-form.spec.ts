@@ -1,4 +1,4 @@
-import { PLAN, PLAN_PATH, PLAN_PROPOSAL, RUN_ID, RUN_PATH, expect, test } from "../fixtures/auth-proxy";
+import { PLAN, PLAN_APPROVAL_PATH, PLAN_PATH, PLAN_PROPOSAL, REVISED_ARTIFACT, RUN_ID, RUN_PATH, expect, test } from "../fixtures/auth-proxy";
 
 const REPOSITORY_ID = 1001132861;
 const receipt = { run_id: RUN_ID, base_branch: "feature/cart", base_sha: "a".repeat(40) };
@@ -74,7 +74,7 @@ test("submission retry reuses its key and a failed run shows the backend reason"
   await expect(panel.getByRole("alert")).toHaveText("The run reached an analysis budget limit.");
 });
 
-test("opens a saved run, finds its draft, and saves a revision", async ({ page, authProxy }) => {
+test("opens, revises, and approves a saved plan", async ({ page, authProxy }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByText("Open a saved run", { exact: true }).click();
   await page.getByLabel("Run ID", { exact: true }).fill(RUN_ID);
@@ -93,6 +93,7 @@ test("opens a saved run, finds its draft, and saves a revision", async ({ page, 
   await expect(plan.getByText("src/cart.py", { exact: true })).toBeVisible();
   await expect(plan.getByRole("heading", { name: "Unrecognized validation IDs" })).toBeVisible();
   await expect(plan.getByText(PLAN.content.blocking_questions[0], { exact: true })).toBeVisible();
+  await expect(plan.getByRole("button", { name: "Approve plan revision 1" })).toBeDisabled();
   await expect(plan.getByText("Extract the cart calculation", { exact: true })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const runCalls = authProxy.calls.filter((call) => call.url.startsWith("/api/v1/runs"));
@@ -118,11 +119,27 @@ test("opens a saved run, finds its draft, and saves a revision", async ({ page, 
   await expect(draft).toHaveValue(edited);
   await saveButton.click();
   await expect(plan.getByText("Round half to even.", { exact: true })).toBeVisible();
-  await expect(plan.getByText("c".repeat(64), { exact: true })).toBeVisible();
+  await expect(plan.getByText(REVISED_ARTIFACT.sha256, { exact: true })).toBeVisible();
   await expect(plan.getByRole("heading", { name: "Unrecognized validation IDs" })).toHaveCount(0);
   const save = authProxy.calls.findLast((call) => call.method === "POST" && call.url === PLAN_PATH)!;
   expect(save.headers.cookie).toBe("refactra_session=fixture-session");
   expect(JSON.parse(save.body!)).toEqual({ expected_revision: 1, proposal });
+
+  const approve = plan.getByRole("button", { name: "Approve plan revision 2" });
+  await expect(approve).toBeEnabled();
+  await plan.getByText("Revise plan draft").click();
+  const savedDraft = await draft.inputValue();
+  await draft.fill(`${savedDraft}\n`);
+  await expect(approve).toBeDisabled();
+  await draft.fill(savedDraft);
+  await approve.click();
+  await expect(plan.getByRole("status")).toHaveText("Approval recorded for revision 2.");
+  await expect(plan.getByText("Revise plan draft")).toHaveCount(0);
+  const approval = authProxy.calls.findLast((call) => call.method === "POST" && call.url === PLAN_APPROVAL_PATH)!;
+  expect(approval.headers.cookie).toBe("refactra_session=fixture-session");
+  expect(JSON.parse(approval.body!)).toEqual({
+    plan_id: REVISED_ARTIFACT.id, revision: 2, sha256: REVISED_ARTIFACT.sha256,
+  });
 
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(plan).toHaveCount(0);
