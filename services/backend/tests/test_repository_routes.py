@@ -11,8 +11,12 @@ from refactra.api import create_app
 from refactra.auth_sessions import GitHubIdentity, issue_session, revoke_session
 from refactra.config import Settings
 from refactra.github_app import GitHubAppClient, InstallationToken
-from refactra.models import Run, RunAnalysisContext, RunCommand
+from refactra.models import Run, RunAnalysisContext, RunCommand, RunEvent
+from refactra.openai_analysis import OpenAIAnalysisProvider
+from refactra.repository_analysis_worker import WORKFLOW, process_repository_analysis
+from refactra.worker import claim_command
 
+from .test_openai_analysis import response as model_response
 from .test_repository_snapshot import zip_bytes
 
 ARCHIVE = zip_bytes(
@@ -232,3 +236,96 @@ def test_denied_submission_does_not_pin_or_queue(browser, session_factory, probl
         assert calls == []
     with session_factory() as session:
         assert session.scalar(select(Run)) is None
+
+
+def test_run_status_returns_the_saved_worker_result(browser, session_factory):
+    client, _, _, _ = browser
+    accepted = submit(client)
+    receipt = accepted.json()
+    url = accepted.headers["Location"]
+    assert url == f"/api/v1/runs/{receipt['run_id']}"
+    queued = client.get(url).json()
+    assert {field: queued[field] for field in receipt} == receipt
+    assert queued["status"] == "CREATED"
+    assert queued["analysis_text"] is queued["stop_reason"] is None
+
+    def model(request):
+        if request.url.path.endswith("/input_tokens"):
+            return httpx.Response(
+                200, json={"object": "response.input_tokens", "input_tokens": 100}
+            )
+        analyzing = client.get(url).json()
+        assert analyzing["status"] == "ANALYZING" and analyzing["analysis_text"] is None
+        return httpx.Response(200, json=model_response())
+
+    provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(model))
+    command = claim_command(session_factory, "fixture-worker", workflow=WORKFLOW)
+    assert process_repository_analysis(session_factory, command, "fixture-worker", provider)
+    result = client.get(url)
+    assert result.status_code == 200
+    assert result.headers["cache-control"] == "no-store"
+    body = result.json()
+    assert body["status"] == "NEEDS_HUMAN_REVIEW"
+    assert body["analysis_text"] == "src/cart.py:1 needs review" and body["stop_reason"] is None
+    assert set(body) == set(receipt) | {"analysis_text", "status", "stop_reason", "updated_at"}
+
+
+@pytest.mark.parametrize(
+    "problem,expected",
+    [
+        ("anonymous", 401),
+        ("other_user", 404),
+        ("uninvited", 404),
+        ("installation_changed", 404),
+        ("non_writer", 404),
+        ("upstream_failure", 502),
+    ],
+)
+def test_run_status_rechecks_access(browser, session_factory, monkeypatch, problem, expected):
+    client, calls, switches, _ = browser
+    url = submit(client).headers["Location"]
+    calls.clear()
+    if problem == "anonymous":
+        client.cookies.clear()
+    elif problem == "other_user":
+        monkeypatch.setenv("REFACTRA_ALLOWED_GITHUB_USER_IDS", "12345,56789")
+        with session_factory.begin() as session:
+            token = issue_session(session, GitHubIdentity(56789, "other-user"))
+        client.cookies.set("__Host-refactra_session", token, domain="refactra.example", path="/")
+    elif problem == "uninvited":
+        monkeypatch.setenv("REFACTRA_ALLOWED_GITHUB_USER_IDS", "56789")
+    elif problem == "installation_changed":
+        monkeypatch.setenv("REFACTRA_GITHUB_INSTALLATION_ID", "8")
+    else:
+        switches[problem] = True
+    result = client.get(url)
+    assert result.status_code == expected
+    assert result.headers["cache-control"] == "no-store"
+    assert set(result.json()) == {"error"}
+    assert "sensitive upstream body" not in result.text
+    assert bool(calls) == (problem in {"non_writer", "upstream_failure"})
+
+
+@pytest.mark.parametrize(
+    "stored_code,public_code",
+    [("analysis_outcome_unknown", "analysis_outcome_unknown"), ("secret-code", "analysis_failed")],
+)
+def test_failed_run_returns_only_safe_failure_reason(
+    browser, session_factory, stored_code, public_code
+):
+    client, _, _, _ = browser
+    accepted = submit(client)
+    run_id = UUID(accepted.json()["run_id"])
+    with session_factory.begin() as session:
+        session.get(Run, run_id).status = "FAILED"
+        session.add(
+            RunEvent(
+                run_id=run_id,
+                event_type="RUN_STOPPED",
+                payload={"code": stored_code, "message": "secret upstream message"},
+            )
+        )
+    result = client.get(accepted.headers["Location"])
+    assert result.status_code == 200 and "secret" not in result.text
+    assert result.json()["analysis_text"] is None
+    assert result.json()["stop_reason"]["code"] == public_code

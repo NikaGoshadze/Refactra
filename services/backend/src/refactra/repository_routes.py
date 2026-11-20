@@ -1,4 +1,4 @@
-"""Protected repository metadata and read-only run submission."""
+"""Protected repository metadata, analysis submission, and results."""
 
 import os
 from pathlib import Path
@@ -9,20 +9,48 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from refactra.analysis_context import prepare_analysis_context, save_analysis_context
+from refactra.auth_sessions import resolve_session
 from refactra.github_app import GitHubAppClient, GitHubAppError
 from refactra.github_auth import GitHubOAuthConfig
 from refactra.github_repository_access import require_github_write_access
-from refactra.models import Run, RunAnalysisContext
+from refactra.models import Run, RunAnalysisContext, RunAnalysisResult, RunEvent
 from refactra.repository_access import RepositoryAccessPolicy
 from refactra.repository_analysis_worker import WORKFLOW, enqueue_repository_analysis
 from refactra.repository_revision import resolve_revision
 from refactra.repository_runs import create_repository_run
 from refactra.repository_snapshot import fetch_source_snapshot
-from refactra.schemas import RepositoryRunCreate, RepositoryRunReceipt
+from refactra.schemas import (
+    RepositoryRunCreate,
+    RepositoryRunRead,
+    RepositoryRunReceipt,
+    StopReason,
+)
 from refactra.session_routes import is_trusted_mutation
+
+ANALYSIS_FAILURE_MESSAGES = {
+    "analysis_budget_exceeded": "The run reached an analysis budget limit.",
+    "analysis_input_invalid": "The saved input could not be analyzed.",
+    "analysis_outcome_unknown": "The model request outcome could not be confirmed.",
+    "analysis_provider_failed": "The model did not return a complete analysis.",
+    "analysis_result_missing": "The model request was recorded, but the analysis was not saved.",
+}
+
+
+def _analysis_stop_reason(session, run_id: UUID) -> StopReason:
+    payload = session.scalar(
+        select(RunEvent.payload)
+        .where(RunEvent.run_id == run_id, RunEvent.event_type == "RUN_STOPPED")
+        .order_by(RunEvent.id.desc())
+        .limit(1)
+    )
+    code = payload.get("code") if isinstance(payload, dict) else None
+    if isinstance(code, str) and code in ANALYSIS_FAILURE_MESSAGES:
+        return StopReason(code=code, message=ANALYSIS_FAILURE_MESSAGES[code])
+    return StopReason(code="analysis_failed", message="Analysis could not be completed.")
 
 
 class RepositoryRead(BaseModel):
@@ -41,7 +69,7 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
             status_code=status, content={"error": detail}, headers={"Cache-Control": "no-store"}
         )
 
-    def authorize(request, repository_id):
+    def authorize(request, repository_id, *, expected_installation=None):
         try:
             policy = RepositoryAccessPolicy.from_env()
             with session_factory() as session:
@@ -52,6 +80,8 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
             client_id = os.environ["REFACTRA_GITHUB_CLIENT_ID"].strip()
             if installation_id <= 0 or not client_id:
                 raise ValueError("Invalid App configuration")
+            if expected_installation is not None and installation_id != expected_installation:
+                raise HTTPException(403, "Repository installation changed.")
             app = GitHubAppClient(
                 client_id,
                 Path(os.environ["REFACTRA_GITHUB_PRIVATE_KEY_PATH"]).read_bytes(),
@@ -169,6 +199,7 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                     save_analysis_context(session, context)
                 enqueue_repository_analysis(session, run_id)
             response.headers["Cache-Control"] = "no-store"
+            response.headers["Location"] = f"/api/v1/runs/{run_id}"
             return RepositoryRunReceipt(
                 run_id=run_id,
                 repository_id=run.github_repository_id,
@@ -192,6 +223,65 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                 {
                     "code": "analysis_context_invalid",
                     "message": "Could not prepare analysis input.",
+                },
+            )
+
+    @router.get("/runs/{run_id}", response_model=RepositoryRunRead)
+    def read_analysis(run_id: UUID, request: Request, response: Response):
+        def not_found():
+            return error(404, {"code": "not_found", "message": "Repository run not found."})
+
+        try:
+            with session_factory() as session:
+                identity = resolve_session(session, request.cookies.get(oauth.session_cookie_name))
+                if identity is None:
+                    return error(
+                        401,
+                        {"code": "authentication_required", "message": "Sign in to access runs."},
+                    )
+                binding = session.execute(
+                    select(Run.github_repository_id, Run.github_installation_id).where(
+                        Run.id == run_id,
+                        Run.requested_by == identity.user_id,
+                        Run.workflow_version == WORKFLOW,
+                    )
+                ).one_or_none()
+            if binding is None:
+                return not_found()
+            repository_id, installation_id = binding
+            authorize(request, repository_id, expected_installation=installation_id)
+
+            with session_factory() as session:
+                run = session.get(Run, run_id)
+                if run is None:
+                    return not_found()
+                result = (
+                    session.get(RunAnalysisResult, run_id)
+                    if run.status == "NEEDS_HUMAN_REVIEW"
+                    else None
+                )
+                response.headers["Cache-Control"] = "no-store"
+                return RepositoryRunRead(
+                    run_id=run.id,
+                    repository_id=run.github_repository_id,
+                    base_branch=run.base_branch,
+                    base_sha=run.base_sha,
+                    created_at=run.created_at,
+                    updated_at=run.updated_at,
+                    status=run.status,
+                    analysis_text=result.analysis_text if result is not None else None,
+                    stop_reason=(
+                        _analysis_stop_reason(session, run_id) if run.status == "FAILED" else None
+                    ),
+                )
+        except HTTPException as exc:
+            return not_found() if exc.status_code == 403 else error(exc.status_code, exc.detail)
+        except GitHubAppError:
+            return error(
+                502,
+                {
+                    "code": "github_unavailable",
+                    "message": "Repository access could not be verified.",
                 },
             )
 
