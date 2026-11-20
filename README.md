@@ -9,12 +9,14 @@ Current stage: Phase 1 — Architecture & Foundation. A local mock skeleton conn
 Install Docker Desktop with Linux containers (WSL2 on Windows), then run from the repository root:
 
 ```powershell
-docker compose up --build -d
+.\scripts\start-local.ps1
 ```
 
 Open [the local workspace](http://localhost:3000). The [API docs](http://localhost:8000/docs) and [readiness endpoint](http://localhost:8000/health/ready) are available separately.
 
 Compose waits for PostgreSQL, applies Alembic migrations, then starts the API and worker. Default development credentials and ports are in [.env.example](.env.example); copying it to `.env` is optional for Compose. These credentials and this unauthenticated mock stack are for local development only. Published ports bind to loopback; do not expose this build as the public demo.
+
+Run the same script after changing code or switching branches. It builds the web image, replaces the web container, and checks that the running image matches the build and can reach the API. A Docker Desktop restart reuses the existing container. A build on its own updates the image. Both steps are needed to serve changed web code. [Docker Compose startup](https://docs.docker.com/reference/cli/docker/compose/up/), [Docker Compose restart](https://docs.docker.com/reference/cli/docker/compose/restart/)
 
 ```powershell
 docker compose ps
@@ -64,7 +66,7 @@ Retain the generated `REFACTRA_OAUTH_STATE_SECRET`. The Client ID differs from t
 Start or recreate the stack after editing `.env`:
 
 ```powershell
-docker compose up --build -d
+.\scripts\start-local.ps1
 ```
 
 Use **http://localhost:3000** consistently. Opening `127.0.0.1` instead changes the browser origin and cookie host. If you change the web port, update both the local callback setting and the GitHub App callback to match. HTTPS callbacks automatically use Secure cookies; HTTP is supported only for loopback development.
@@ -131,12 +133,12 @@ Complete GitHub App sign-in and repository installation/key setup above. In igno
 Opt in explicitly from the repository root:
 
 ```powershell
-docker compose -f compose.yaml -f compose.repository-api.yaml up --build -d --wait api
+.\scripts\start-local.ps1 -RepositoryApi
 ```
 
-This adds the repository settings and a read-only PEM mount to the API only, while preserving its database and OAuth settings. Missing required environment values stop Compose configuration; a missing key stops container creation without creating a replacement directory. Other services receive no new settings or key mounts. Use both `-f` files on later `up` commands to keep protected repository access enabled. The base `docker compose up` command still needs no PEM and recreates the API without this opt-in configuration. Compose merges the override with the base file; see [Docker's merge rules](https://docs.docker.com/compose/how-tos/multiple-compose-files/merge/).
+This applies the protected repository override to the API and refreshes the web container. The override adds repository settings and a read-only PEM mount to the API while preserving its database and OAuth settings. Missing required environment values stop Compose configuration, and a missing PEM stops the API from starting. Keep using `-RepositoryApi` for protected access on later starts. Compose merges the override with the base file. [Docker's merge rules](https://docs.docker.com/compose/how-tos/multiple-compose-files/merge/)
 
-Sign in at `http://localhost:3000`, then use the Repository connection panel, or open `http://localhost:3000/api/v1/repositories/1001132861` in that same browser for AI-Hub through the web proxy. The direct API remains at `http://localhost:8000/api/v1/repositories/1001132861`. Use `localhost` consistently so the browser sends the local session cookie. A successful request returns only repository metadata with `access: "read-only"`; an anonymous request returns 401, and a disallowed user/repository returns 403. No tokens or PEM contents appear in the response. Use the configured web/API ports if they differ from 3000/8000, and rebuild the web service to apply UI/proxy changes.
+Sign in at `http://localhost:3000`, then use the Repository connection panel, or open `http://localhost:3000/api/v1/repositories/1001132861` in that same browser for AI-Hub through the web proxy. The direct API remains at `http://localhost:8000/api/v1/repositories/1001132861`. Use `localhost` consistently so the browser sends the local session cookie. A successful request returns only repository metadata with `access: "read-only"`; an anonymous request returns 401, and a disallowed user/repository returns 403. No tokens or PEM contents appear in the response. Use the configured web/API ports if they differ from 3000/8000.
 
 To remove the API key mount and repository settings again:
 
