@@ -10,6 +10,7 @@ import httpx
 from refactra.analysis_context import load_analysis_context
 from refactra.analysis_request import (
     DEFAULT_REQUEST_OUTPUT,
+    INSTRUCTIONS,
     MAX_REQUEST_OUTPUT,
     AnalysisModelInput,
     BudgetUsage,
@@ -17,6 +18,7 @@ from refactra.analysis_request import (
     prepare_analysis_request,
 )
 from refactra.model_reservations import reserve_analysis_request, settle_model_usage
+from refactra.planning_request import PLAN_INSTRUCTIONS, load_planning_context
 
 # Standard, uncached USD rates verified against OpenAI documentation on 2026-11-19.
 PRICING = ModelPricing("gpt-5.4-mini-2026-03-17", 400_000, Decimal("0.75"), Decimal("4.50"))
@@ -165,6 +167,7 @@ def execute_read_only_analysis(
     ledger_limit_usd=None,
     max_output_tokens: int = DEFAULT_REQUEST_OUTPUT,
     check_admission=None,
+    planning: bool = False,
 ):
     """Trusted caller must authorize repository access before invoking this helper.
 
@@ -174,7 +177,11 @@ def execute_read_only_analysis(
     owns result persistence.
     """
     with session_factory() as session:
-        context = load_analysis_context(session, run_id)
+        context = (
+            load_planning_context(session, run_id)
+            if planning
+            else load_analysis_context(session, run_id)
+        )
     if context is None:
         raise ValueError("A saved analysis context is required.")
     request = prepare_analysis_request(
@@ -184,6 +191,7 @@ def execute_read_only_analysis(
         monthly_committed_usd=Decimal("0"),
         count_input_tokens=provider.count_input_tokens,
         max_output_tokens=max_output_tokens,
+        instructions=PLAN_INSTRUCTIONS if planning else INSTRUCTIONS,
     )
     # Durable admission recalculates real balances; preflight snapshots are not authority.
     with session_factory.begin() as session:

@@ -246,7 +246,9 @@ After verifying repository access, use **Repository analysis** to choose the bas
 
 ## Refactoring plan checkpoint
 
-Migration `0008_run_plans` adds plan revisions and is required for API readiness. After a run has saved analysis, an internal caller can pass a structured proposal to `save_refactoring_plan`. The server binds it to that run and commit. PostgreSQL stores the exact JSON bytes, bounded to 64 KiB, and checks their SHA-256 hash. An identical retry returns the current revision. A changed proposal appends a revision only when the caller's expected revision still matches. A saved proposal is untrusted input for future human review. Plan generation and approval are separate steps.
+Migration `0008_run_plans` adds plan revisions and is required for API readiness. After a run has saved analysis, an internal caller can pass a structured proposal to `save_refactoring_plan`. The server binds it to that run and commit. PostgreSQL stores the exact JSON bytes, bounded to 64 KiB, and checks their SHA-256 hash. An identical retry returns the current revision. A changed proposal appends a revision only when the caller's expected revision still matches. A saved proposal is untrusted input for future human review.
+
+To generate the first plan as a local operator, run `uv run python -m refactra.repository_plan_worker <run-id>` from `services/backend` after migrating. Set the database URL, OpenAI key, and the protected repository configuration in the process environment, including the PEM path. The command rechecks the submitting user's current GitHub write access, uses the saved analysis and pinned source, and returns plan metadata. Generation uses the existing run budget and one stable model receipt. A malformed response leaves the receipt and does not save a plan. Rerunning returns the saved plan or stops if an attempt was already recorded. Analysis submission does not automatically start planning.
 
 ## Read-only OpenAI analysis adapter
 
