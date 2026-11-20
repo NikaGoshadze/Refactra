@@ -230,13 +230,15 @@ Migration `0005_model_usage` adds nullable pricing and usage fields and an all-o
 
 After authorizing model use for the repository, an internal caller can queue a prepared run with `enqueue_repository_analysis(session, run_id)`. The worker uses its saved, pinned context and GPT-5.4 mini with the default 3,000-token output allowance. Set `REFACTRA_OPENAI_API_KEY` in the worker environment and start `uv run python -m refactra.worker --repository-analysis` after applying migrations. Choose either mock or repository analysis mode for the single worker slot.
 
-Migration `0007_analysis_results` adds `run_analysis_results` and is required for API readiness. The worker saves the result as untrusted text and transitions the run to `NEEDS_HUMAN_REVIEW` in the same transaction. Budget receipts are committed before generation. If a restarted worker finds a receipt without a saved result, it records an unknown outcome or missing result and stops that run. Result access is currently internal.
+Migration `0007_analysis_results` adds `run_analysis_results` and is required for API readiness. The worker saves the result as untrusted text and transitions the run to `NEEDS_HUMAN_REVIEW` in the same transaction. Budget receipts are committed before generation. If a restarted worker finds a receipt without a saved result, it records an unknown outcome or missing result and stops that run.
 
 ## Protected analysis submission
 
 Set `REFACTRA_ENABLE_REPOSITORY_ANALYSIS=true` for the configured repository API to enable `POST /api/v1/runs`. Submit JSON with `repository_id`, a literal `base_branch`, and `task_text`. Send the session cookie, the configured app `Origin`, `X-Refactra-CSRF: 1`, and a UUID `Idempotency-Key`. The API requires an invited user with current GitHub write access and reads source using the App's scoped read token.
 
-A `202` receipt contains the run ID, repository ID, branch, pinned SHA, and creation timestamp. A retry using the same account, key and input keeps the same commit, even after a failed source download or a branch update. Use a new key to submit different input. The worker can claim the command once the bounded context and command commit together. The web proxy and run-result endpoint will be wired separately.
+A `202` receipt contains the run ID, repository ID, branch, pinned SHA, and creation timestamp. Its `Location` header points to the run status. A retry using the same account, key and input keeps the same commit, even after a failed source download or a branch update. Use a new key to submit different input. The worker can claim the command once the bounded context and command commit together.
+
+`GET /api/v1/runs/{run_id}` returns the pinned revision and run status. It includes `analysis_text` once the saved result is ready for human review, or a sanitized `stop_reason` if analysis failed. Treat the result as untrusted model text. Each read requires ownership, an active session, and current repository access under the configured installation. Existing runs remain readable when new submissions are disabled.
 
 ## Read-only OpenAI analysis adapter
 
