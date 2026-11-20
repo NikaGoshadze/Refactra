@@ -230,7 +230,7 @@ Migration `0005_model_usage` adds nullable pricing and usage fields and an all-o
 
 After authorizing model use for the repository, an internal caller can queue a prepared run with `enqueue_repository_analysis(session, run_id)`. The worker uses its saved, pinned context and GPT-5.4 mini with the default 3,000-token output allowance. Set `REFACTRA_OPENAI_API_KEY` in the worker environment and start `uv run python -m refactra.worker --repository-analysis` after applying migrations. Choose either mock or repository analysis mode for the single worker slot.
 
-Migration `0007_analysis_results` adds `run_analysis_results` and is required for API readiness. The worker saves the result as untrusted text and transitions the run to `NEEDS_HUMAN_REVIEW` in the same transaction. Budget receipts are committed before generation. If a restarted worker finds a receipt without a saved result, it records an unknown outcome or missing result and stops that run.
+Migration `0007_analysis_results` adds `run_analysis_results`. The worker saves the result as untrusted text and transitions the run to `NEEDS_HUMAN_REVIEW` in the same transaction. Budget receipts are committed before generation. If a restarted worker finds a receipt without a saved result, it records an unknown outcome or missing result and stops that run.
 
 ## Protected analysis submission
 
@@ -243,6 +243,10 @@ A `202` receipt contains the run ID, repository ID, branch, pinned SHA, and crea
 Both routes are available through the same-origin Next.js proxy. It forwards only Refactra session cookies, preserves the original submission origin and CSRF and idempotency headers, and keeps responses uncached. The proxy allows up to 90 seconds to prepare a submission and 60 seconds to check a run.
 
 After verifying repository access, use **Repository analysis** to choose the base branch and enter a task. The panel shows the pinned commit and polls until the worker saves the analysis or records a failure. A submission retry with the same input reuses its key while the panel is open. The panel clears on sign-out and tracks the current run in memory.
+
+## Refactoring plan checkpoint
+
+Migration `0008_run_plans` adds plan revisions and is required for API readiness. After a run has saved analysis, an internal caller can pass a structured proposal to `save_refactoring_plan`. The server binds it to that run and commit. PostgreSQL stores the exact JSON bytes, bounded to 64 KiB, and checks their SHA-256 hash. An identical retry returns the current revision. A changed proposal appends a revision only when the caller's expected revision still matches. A saved proposal is untrusted input for future human review. Plan generation and approval are separate steps.
 
 ## Read-only OpenAI analysis adapter
 
