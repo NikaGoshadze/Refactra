@@ -13,8 +13,12 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   const relative = path.join("/");
   const isAuth = AUTH_READ_ROUTES.has(relative) || relative === "auth/logout";
   const isRepository = /^repositories\/[1-9][0-9]*$/.test(relative);
-  const readAllowed = isRepository || AUTH_READ_ROUTES.has(relative) || relative === "capabilities" || /^mock\/runs\/[0-9a-f-]{36}(\/events)?$/i.test(relative);
-  const writeAllowed = relative === "mock/runs" || relative === "auth/logout";
+  const isAnalysisSubmit = relative === "runs";
+  const isAnalysisRead = /^runs\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(relative);
+  const sessionOnly = isRepository || isAnalysisSubmit || isAnalysisRead;
+  const readAllowed = isRepository || isAnalysisRead || AUTH_READ_ROUTES.has(relative)
+    || relative === "capabilities" || /^mock\/runs\/[0-9a-f-]{36}(\/events)?$/i.test(relative);
+  const writeAllowed = isAnalysisSubmit || relative === "mock/runs" || relative === "auth/logout";
   if (!(request.method === "GET" ? readAllowed : request.method === "POST" && writeAllowed)) {
     return NextResponse.json({ error: { code: "unavailable_route", message: "This route is not available in the foundation build." } }, { status: 404, headers: { "Cache-Control": "no-store" } });
   }
@@ -22,25 +26,27 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     const headers = new Headers({ "Content-Type": "application/json" });
     const key = request.headers.get("Idempotency-Key");
     if (key) headers.set("Idempotency-Key", key);
-    if (isAuth || isRepository) {
-      const allowedCookies = isRepository ? SESSION_COOKIES : AUTH_COOKIES;
+    if (isAuth || sessionOnly) {
+      const allowedCookies = isAuth ? AUTH_COOKIES : SESSION_COOKIES;
       const cookies = (request.headers.get("cookie") ?? "").split(";").map((item) => item.trim())
         .filter((item) => allowedCookies.has(item.slice(0, item.indexOf("=")))).join("; ");
       if (cookies) headers.set("Cookie", cookies);
     }
-    if (isAuth) {
+    if (isAuth || isAnalysisSubmit) {
       // Preserve browser-supplied values; inventing a trusted Origin would bypass CSRF checks.
       for (const name of ["Origin", "X-Refactra-CSRF"]) {
         const value = request.headers.get(name);
         if (value !== null) headers.set(name, value);
       }
     }
+    // Submission also resolves the branch and downloads the source before returning a receipt.
+    const timeoutMs = isAnalysisSubmit ? 90000 : sessionOnly ? 60000
+      : relative === "auth/github/callback" ? 25000 : 5000;
     const upstream = await fetch(`${process.env.REFACTRA_API_URL ?? "http://127.0.0.1:8000"}/api/v1/${relative}${request.nextUrl.search}`, {
       method: request.method, headers,
       body: request.method === "POST" ? await request.text() : undefined,
       cache: "no-store", redirect: "manual",
-      // Repository reads can make five sequential GitHub calls, each with a 10-second timeout.
-      signal: AbortSignal.timeout(isRepository ? 60000 : relative === "auth/github/callback" ? 25000 : 5000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     const responseHeaders = new Headers({ "Cache-Control": "no-store" });
     for (const name of ["Content-Type", "Location"]) {
