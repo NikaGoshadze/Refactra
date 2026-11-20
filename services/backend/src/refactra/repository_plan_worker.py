@@ -21,7 +21,13 @@ from refactra.openai_analysis import (
     OpenAIAnalysisProvider,
     execute_read_only_analysis,
 )
-from refactra.refactoring_plan import PlanProposal, load_refactoring_plan, save_refactoring_plan
+from refactra.refactoring_plan import (
+    PlanContent,
+    PlanProposal,
+    evaluate_plan_readiness,
+    load_refactoring_plan,
+    save_refactoring_plan,
+)
 from refactra.repository_access import RepositoryAccessPolicy
 from refactra.repository_analysis_worker import WORKFLOW
 
@@ -93,8 +99,16 @@ def main() -> None:
     try:
         provider = OpenAIAnalysisProvider(os.environ["REFACTRA_OPENAI_API_KEY"])
         plan = generate_initial_plan(sessions(engine), args.run_id, provider)
+        readiness = evaluate_plan_readiness(PlanContent.model_validate_json(plan.document))
         print(
-            json.dumps({"plan_id": str(plan.id), "revision": plan.revision, "sha256": plan.sha256})
+            json.dumps(
+                {
+                    "plan_id": str(plan.id),
+                    "revision": plan.revision,
+                    "sha256": plan.sha256,
+                    "readiness": readiness.model_dump(),
+                }
+            )
         )
     except PlanGenerationError as error:
         raise SystemExit(str(error)) from None

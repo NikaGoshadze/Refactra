@@ -285,7 +285,9 @@ def test_read_saved_plan_revisions(browser, session_factory, proposal):
 
     analyze_fixture_run(session_factory)
     proposal["blocking_questions"] = ["Should empty carts still return zero?"]
-    revised = dict(proposal, summary="Extract the cart calculation and document rounding.")
+    check = proposal["validation_checks"][0]
+    proposal["validation_checks"] = [dict(check, check_id="VC1")]
+    revised = dict(proposal, blocking_questions=[], validation_checks=[check])
     with session_factory.begin() as session:
         first = save_refactoring_plan(session, run_id, proposal, expected_revision=0)
         second = save_refactoring_plan(session, run_id, revised, expected_revision=1)
@@ -309,6 +311,11 @@ def test_read_saved_plan_revisions(browser, session_factory, proposal):
             "schema_version": "1",
             "run_id": str(run_id),
             "repository": {"repository_id": 42, "base_branch": "feature/cart", "base_sha": PIN},
+        }
+        assert payload["readiness"] == {
+            "blocking_question_count": 1 if plan.revision == 1 else 0,
+            "unsupported_check_ids": ["VC1"] if plan.revision == 1 else [],
+            "has_required_supported_check": plan.revision == 2,
         }
     assert client.get(f"{url}?revision=3").status_code == 404
     assert client.get(f"{url}?revision=0").status_code == 422

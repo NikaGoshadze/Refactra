@@ -19,7 +19,12 @@ from refactra.github_app import GitHubAppClient, GitHubAppError
 from refactra.github_auth import GitHubOAuthConfig
 from refactra.github_repository_access import require_github_write_access
 from refactra.models import Run, RunAnalysisContext, RunAnalysisResult, RunEvent
-from refactra.refactoring_plan import PlanProposal, load_refactoring_plan
+from refactra.refactoring_plan import (
+    PlanContent,
+    PlanReadiness,
+    evaluate_plan_readiness,
+    load_refactoring_plan,
+)
 from refactra.repository_access import RepositoryAccessPolicy
 from refactra.repository_analysis_worker import WORKFLOW, enqueue_repository_analysis
 from refactra.repository_revision import resolve_revision
@@ -63,18 +68,6 @@ class RepositoryRead(BaseModel):
     access: Literal["read-only"] = "read-only"
 
 
-class PlanRepository(BaseModel):
-    repository_id: int
-    base_branch: str
-    base_sha: str
-
-
-class PlanContent(PlanProposal):
-    schema_version: Literal["1"]
-    run_id: UUID
-    repository: PlanRepository
-
-
 class PlanArtifact(BaseModel):
     id: UUID
     run_id: UUID
@@ -88,6 +81,7 @@ class PlanArtifact(BaseModel):
 class RepositoryPlanRead(BaseModel):
     artifact: PlanArtifact
     content: PlanContent
+    readiness: PlanReadiness
 
 
 def create_repository_router(session_factory, *, enable_analysis=False) -> APIRouter:
@@ -350,7 +344,9 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                 500, {"code": "plan_unavailable", "message": "Saved plan could not be read."}
             )
         response.headers["Cache-Control"] = "no-store"
-        return RepositoryPlanRead(artifact=artifact, content=content)
+        return RepositoryPlanRead(
+            artifact=artifact, content=content, readiness=evaluate_plan_readiness(content)
+        )
 
     if enable_analysis:
         router.add_api_route(

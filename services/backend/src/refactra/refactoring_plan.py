@@ -15,12 +15,13 @@ from pydantic import (
     model_validator,
 )
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, undefer
 
 from refactra.analysis_context import load_analysis_context
 from refactra.models import Run, RunAnalysisResult, RunEvent, RunPlan
 
 MAX_PLAN_BYTES = 64 * 1024
+SUPPORTED_PLAN_CHECK_IDS = ("python.pytest",)
 PlanText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
 Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")]
 
@@ -83,10 +84,46 @@ class PlanProposal(_PlanModel):
         return self
 
 
+class PlanRepository(BaseModel):
+    repository_id: int
+    base_branch: str
+    base_sha: str
+
+
+class PlanContent(PlanProposal):
+    schema_version: Literal["1"]
+    run_id: UUID
+    repository: PlanRepository
+
+
+class PlanReadiness(BaseModel):
+    blocking_question_count: int
+    unsupported_check_ids: list[str]
+    has_required_supported_check: bool
+
+
+def evaluate_plan_readiness(proposal: PlanProposal) -> PlanReadiness:
+    """Check proposal metadata against the initial Python validation catalog."""
+    return PlanReadiness(
+        blocking_question_count=len(proposal.blocking_questions),
+        unsupported_check_ids=sorted(
+            {
+                check.check_id
+                for check in proposal.validation_checks
+                if check.check_id not in SUPPORTED_PLAN_CHECK_IDS
+            }
+        ),
+        has_required_supported_check=any(
+            check.required and check.check_id in SUPPORTED_PLAN_CHECK_IDS
+            for check in proposal.validation_checks
+        ),
+    )
+
+
 def load_refactoring_plan(
     session: Session, run_id: UUID, *, revision: int | None = None
 ) -> RunPlan | None:
-    query = select(RunPlan).where(RunPlan.run_id == run_id)
+    query = select(RunPlan).options(undefer(RunPlan.document)).where(RunPlan.run_id == run_id)
     if revision is not None:
         query = query.where(RunPlan.revision == revision)
     return session.scalar(query.order_by(RunPlan.revision.desc()).limit(1))
