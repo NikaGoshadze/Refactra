@@ -23,7 +23,7 @@ from refactra.repository_revision import resolve_revision
 PUBLICATION_BRANCH_PUSHED = "PUBLICATION_BRANCH_PUSHED"
 
 
-def _approved_target(session, run_id: UUID):
+def load_approved_target(session, run_id: UUID):
     run = session.get(Run, run_id)
     approval = load_publication_approval(session, run_id)
     if (
@@ -65,7 +65,7 @@ def _approved_target(session, run_id: UUID):
 
 def push_approved_branch(session_factory, run_id: UUID, artifact: Path) -> dict:
     with session_factory() as session:
-        run, target_sha, commit, head = _approved_target(session, run_id)
+        run, target_sha, commit, head = load_approved_target(session, run_id)
     app, reader = authorize_run_repository(run)
     source = (artifact / "repository.git").resolve(strict=True)
     with TemporaryDirectory(prefix="refactra-push-") as directory:

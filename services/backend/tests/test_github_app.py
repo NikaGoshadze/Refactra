@@ -36,11 +36,16 @@ def token_response():
 
 
 @pytest.mark.parametrize(
-    ("method", "contents"), [("mint_read_token", "read"), ("mint_push_token", "write")]
+    ("method", "scope"),
+    [
+        ("mint_read_token", {"contents": "read"}),
+        ("mint_push_token", {"contents": "write"}),
+        ("mint_pull_request_token", {"pull_requests": "write"}),
+    ],
 )
-def test_signed_request_is_downscoped_and_secrets_are_hidden(private_key, method, contents):
+def test_signed_request_is_downscoped_and_secrets_are_hidden(private_key, method, scope):
     payload = token_response()
-    payload["permissions"]["contents"] = contents
+    payload["permissions"] = {**scope, "metadata": "read"}
     before = int(time())
 
     def handler(request):
@@ -56,7 +61,7 @@ def test_signed_request_is_downscoped_and_secrets_are_hidden(private_key, method
         assert before + 540 <= claims["exp"] <= int(time()) + 540
         assert json.loads(request.content) == {
             "repository_ids": [42],
-            "permissions": {"contents": contents, "metadata": "read"},
+            "permissions": {**scope, "metadata": "read"},
         }
         return httpx.Response(201, json=payload)
 

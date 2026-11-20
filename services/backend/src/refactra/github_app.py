@@ -33,14 +33,20 @@ class GitHubAppClient:
 
     def mint_read_token(self, installation_id: int, repository_id: int) -> InstallationToken:
         """Request contents/metadata read access for exactly one authorized repository."""
-        return self._mint_token(installation_id, repository_id, contents="read")
+        return self._mint_token(installation_id, repository_id, {"contents": "read"})
 
     def mint_push_token(self, installation_id: int, repository_id: int) -> InstallationToken:
         """Request contents write access for one approved repository."""
-        return self._mint_token(installation_id, repository_id, contents="write")
+        return self._mint_token(installation_id, repository_id, {"contents": "write"})
+
+    def mint_pull_request_token(
+        self, installation_id: int, repository_id: int
+    ) -> InstallationToken:
+        """Request pull request write access for one approved repository."""
+        return self._mint_token(installation_id, repository_id, {"pull_requests": "write"})
 
     def _mint_token(
-        self, installation_id: int, repository_id: int, *, contents: str
+        self, installation_id: int, repository_id: int, permissions: dict[str, str]
     ) -> InstallationToken:
         if any(type(value) is not int or value <= 0 for value in (installation_id, repository_id)):
             raise ValueError("Positive installation and repository IDs are required.")
@@ -56,7 +62,7 @@ class GitHubAppClient:
                 signing_key,
                 algorithm="RS256",
             )
-            permissions = {"contents": contents, "metadata": "read"}
+            permissions = {**permissions, "metadata": "read"}
             with httpx.Client(
                 timeout=10.0, follow_redirects=False, trust_env=False, transport=self.transport
             ) as client:
