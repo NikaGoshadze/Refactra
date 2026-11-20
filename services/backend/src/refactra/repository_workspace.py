@@ -6,6 +6,7 @@ import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from tempfile import TemporaryDirectory
 from uuid import UUID
@@ -14,6 +15,11 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
+from refactra.candidate_patch import (
+    CandidatePatchError,
+    apply_candidate_patch,
+    read_candidate_patch,
+)
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.github_app import GitHubAppError
@@ -149,9 +155,13 @@ def prepare_approved_workspace(session_factory, run_id: UUID) -> Iterator[Approv
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_id", type=UUID)
+    parser.add_argument(
+        "--candidate", type=Path, help="Apply a structured patch and report its diff."
+    )
     args = parser.parse_args()
     engine = make_engine(Settings.from_env().database_url)
     try:
+        candidate = read_candidate_patch(args.candidate) if args.candidate is not None else None
         with prepare_approved_workspace(sessions(engine), args.run_id) as workspace:
             report = {
                 "run_id": str(args.run_id),
@@ -163,8 +173,11 @@ def main() -> None:
                     {"path": change.path, "action": change.action} for change in workspace.changes
                 ],
             }
+            if candidate is not None:
+                diff = apply_candidate_patch(workspace, candidate)
+                report.update(diff=diff.decode("utf-8"), diff_sha256=sha256(diff).hexdigest())
         print(json.dumps(report))
-    except WorkspacePreparationError as error:
+    except (WorkspacePreparationError, CandidatePatchError) as error:
         raise SystemExit(str(error)) from None
     except (GitHubAppError, HTTPException, KeyError, OSError, SQLAlchemyError, ValueError):
         raise SystemExit(
