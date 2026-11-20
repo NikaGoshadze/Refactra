@@ -17,6 +17,24 @@ from refactra.openai_analysis import (
 from .test_model_reservations import prepare
 
 
+def test_expanded_output_is_reserved_and_sent(session_factory):
+    run_id, attempt = prepare(session_factory).run_id, uuid4()
+
+    def handle(request):
+        if request.url.path.endswith("/input_tokens"):
+            return httpx.Response(
+                200, json={"object": "response.input_tokens", "input_tokens": 100}
+            )
+        with session_factory() as session:
+            row = session.get(ModelReservation, attempt)
+            assert row.output_tokens == json.loads(request.content)["max_output_tokens"] == 6000
+            assert row.maximum_cost_usd == Decimal("0.027075")
+        return httpx.Response(200, json=response())
+
+    provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(handle))
+    execute_read_only_analysis(session_factory, run_id, attempt, provider, max_output_tokens=6000)
+
+
 def response():
     return {
         "object": "response",

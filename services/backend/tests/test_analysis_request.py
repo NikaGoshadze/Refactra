@@ -81,7 +81,7 @@ def test_full_input_reaches_the_counter_and_reservation_uses_exact_decimal_math(
     "overrides,code",
     [
         ({"tokens": 12001}, "request_input_tokens"),
-        ({"output": 3001}, "request_output_tokens"),
+        ({"output": 6001}, "request_output_tokens"),
         ({"usage": BudgetUsage(attempts=8)}, "run_attempts"),
         ({"usage": BudgetUsage(input_tokens=39500)}, "run_input_tokens"),
         ({"usage": BudgetUsage(output_tokens=11950)}, "run_output_tokens"),
@@ -100,10 +100,10 @@ def test_exact_limits_are_inclusive(context):
     request = prepare(
         context,
         tokens=12000,
-        output=3000,
+        output=6000,
         monthly=Decimal("11.25"),
-        pricing=ModelPricing("fixture-model", 15000, Decimal("50"), Decimal("50")),
-        usage=BudgetUsage(7, 28000, 9000),
+        pricing=ModelPricing("fixture-model", 18000, Decimal("50"), Decimal("25")),
+        usage=BudgetUsage(7, 28000, 6000),
     )
     assert request.reserved_usage == BudgetUsage(8, 40000, 12000, Decimal("0.75"))
     assert request.monthly_committed_usd == Decimal("12")
