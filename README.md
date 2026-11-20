@@ -276,7 +276,15 @@ Add `--validate` with `--candidate` to run the approved pytest files and report 
 
 Add `--save-result` to the same command to store a successful candidate, its diff, and its validation evidence in PostgreSQL. This requires migration `0011_candidate_results`. The command returns a result ID, revision, and checksum. Saving the same candidate and diff again returns the original result. A different passing candidate gets a new revision.
 
-Open the saved run and load its approved plan, then select **Load saved result** to review the latest candidate diff and validation output. The protected `GET /api/v1/runs/{run_id}/result` endpoint also accepts `?revision=1` to retrieve a specific saved result. Publication requires a separate approval.
+Open the saved run and load its approved plan, then select **Load saved result** to review the latest candidate diff and validation output. The protected `GET /api/v1/runs/{run_id}/result` endpoint also accepts `?revision=1` to retrieve a specific saved result.
+
+To prepare the reviewed revision for publication, run this from `services/backend` with `REFACTRA_DATABASE_URL` set and Git installed.
+
+```powershell
+uv run python -m refactra.candidate_commit <run-id> <result-revision> --source <local-clone> --output <new-artifact-directory>
+```
+
+Use a trusted local clone that contains the pinned commit and a new output directory under an ignored location such as `.runtime`. Refactra reads the pinned Git objects, reproduces the saved diff byte for byte, then creates a commit in `repository.git` alongside `receipt.json`. The receipt binds the commit to the result checksum, approved plan, and proposed PR base and head. Publication requires a separate approval.
 
 ## Read-only OpenAI analysis adapter
 
