@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 
 const AUTH_READ_ROUTES = new Set(["auth/github/login", "auth/github/callback", "auth/session"]);
+const RUN_ID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const SESSION_COOKIES = new Set(["refactra_session", "__Host-refactra_session"]);
 const AUTH_COOKIES = new Set([
   "refactra_oauth", "__Host-refactra_oauth", ...SESSION_COOKIES,
@@ -14,12 +15,16 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   const isAuth = AUTH_READ_ROUTES.has(relative) || relative === "auth/logout";
   const isRepository = /^repositories\/[1-9][0-9]*$/.test(relative);
   const isAnalysisSubmit = relative === "runs";
-  const isRunRead = /^runs\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?:\/plan)?$/i.test(relative);
-  const isPlanRevision = isRunRead && relative.endsWith("/plan") && request.method === "POST";
-  const sessionOnly = isRepository || isAnalysisSubmit || isRunRead;
+  const [resource, id, section, action] = path;
+  const isRun = resource === "runs" && RUN_ID_PATTERN.test(id ?? "");
+  const isPlan = isRun && section === "plan";
+  const isRunRead = isRun && (path.length === 2 || (isPlan && path.length === 3));
+  const isPlanWrite = isPlan && request.method === "POST"
+    && (path.length === 3 || (path.length === 4 && action === "approve"));
+  const sessionOnly = isRepository || isAnalysisSubmit || isRunRead || isPlanWrite;
   const readAllowed = isRepository || isRunRead || AUTH_READ_ROUTES.has(relative)
     || relative === "capabilities" || /^mock\/runs\/[0-9a-f-]{36}(\/events)?$/i.test(relative);
-  const writeAllowed = isAnalysisSubmit || isPlanRevision || relative === "mock/runs" || relative === "auth/logout";
+  const writeAllowed = isAnalysisSubmit || isPlanWrite || relative === "mock/runs" || relative === "auth/logout";
   if (!(request.method === "GET" ? readAllowed : request.method === "POST" && writeAllowed)) {
     return NextResponse.json({ error: { code: "unavailable_route", message: "This route is not available in the foundation build." } }, { status: 404, headers: { "Cache-Control": "no-store" } });
   }
@@ -33,7 +38,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
         .filter((item) => allowedCookies.has(item.slice(0, item.indexOf("=")))).join("; ");
       if (cookies) headers.set("Cookie", cookies);
     }
-    if (isAuth || isAnalysisSubmit || isPlanRevision) {
+    if (isAuth || isAnalysisSubmit || isPlanWrite) {
       // Preserve browser-supplied values; inventing a trusted Origin would bypass CSRF checks.
       for (const name of ["Origin", "X-Refactra-CSRF"]) {
         const value = request.headers.get(name);
