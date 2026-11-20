@@ -274,6 +274,8 @@ Add `--candidate <patch.json>` to apply a local candidate inside the fresh works
 
 Add `--validate` with `--candidate` to run the approved pytest files and report exit codes, bounded output, durations, and the runner image ID alongside the diff. Run this command on the Docker host with the locally built `refactra-backend:local` image. The runner uses a fixed pytest command with repository configuration and plugin autoload disabled. It inspects the container's offline, non-root, read-only setup and resource limits before starting. A required check that fails or exceeds a limit produces a nonzero command exit. This first runner covers the candidate tests for the curated Python fixture.
 
+Add `--save-result` to the same command to store a successful candidate, its diff, and its validation evidence in PostgreSQL. This requires migration `0011_candidate_results`. The command returns a result ID, revision, and checksum. Saving the same candidate and diff again returns the original result. A different passing candidate gets a new revision. Browser review and publication approval follow separately.
+
 ## Read-only OpenAI analysis adapter
 
 `execute_read_only_analysis(session_factory, run_id, attempt_id, provider)` reloads the saved context, counts the complete input through OpenAI's `/v1/responses/input_tokens` endpoint, commits durable admission, and then makes one Responses API call outside database transactions. A trusted operator must authorize repository access first. Construct `OpenAIAnalysisProvider` with the server-only `REFACTRA_OPENAI_API_KEY` from your environment; host Python commands do not load `.env` automatically. No new dependency is required.

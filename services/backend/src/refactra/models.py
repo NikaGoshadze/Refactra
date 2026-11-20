@@ -168,6 +168,29 @@ class RunPlanApproval(Base):
     )
 
 
+class RunCandidateResult(Base):
+    __tablename__ = "run_candidate_results"
+    __table_args__ = (
+        UniqueConstraint("run_id", "revision", name="uq_candidate_results_revision"),
+        UniqueConstraint("run_id", "candidate_sha256", name="uq_candidate_results_digest"),
+        CheckConstraint("revision > 0", name="ck_candidate_results_revision"),
+        CheckConstraint(
+            "octet_length(document) BETWEEN 1 AND 2097152", name="ck_candidate_results_size"
+        ),
+        CheckConstraint(
+            "sha256 = encode(sha256(document), 'hex')", name="ck_candidate_results_hash"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("run_plan_approvals.run_id"))
+    revision: Mapped[int] = mapped_column(Integer)
+    candidate_sha256: Mapped[str] = mapped_column(String(64))
+    sha256: Mapped[str] = mapped_column(String(64))
+    document: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class RunCommand(Base):
     __tablename__ = "run_commands"
     __table_args__ = (
