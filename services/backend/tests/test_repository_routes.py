@@ -13,10 +13,13 @@ from refactra.config import Settings
 from refactra.github_app import GitHubAppClient, InstallationToken
 from refactra.models import Run, RunAnalysisContext, RunCommand, RunEvent
 from refactra.openai_analysis import OpenAIAnalysisProvider
+from refactra.refactoring_plan import save_refactoring_plan
 from refactra.repository_analysis_worker import WORKFLOW, process_repository_analysis
 from refactra.worker import claim_command
 
 from .test_openai_analysis import response as model_response
+from .test_refactoring_plan import analyze_fixture_run
+from .test_refactoring_plan import proposal as proposal
 from .test_repository_snapshot import zip_bytes
 
 ARCHIVE = zip_bytes(
@@ -270,6 +273,48 @@ def test_run_status_returns_the_saved_worker_result(browser, session_factory):
     assert set(body) == set(receipt) | {"analysis_text", "status", "stop_reason", "updated_at"}
 
 
+def test_read_saved_plan_revisions(browser, session_factory, proposal):
+    client, _, _, _ = browser
+    receipt = submit(client)
+    url = f"{receipt.headers['Location']}/plan"
+    run_id = UUID(receipt.json()["run_id"])
+    missing = client.get(url)
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "plan_not_found"
+    assert missing.headers["cache-control"] == "no-store"
+
+    analyze_fixture_run(session_factory)
+    proposal["blocking_questions"] = ["Should empty carts still return zero?"]
+    revised = dict(proposal, summary="Extract the cart calculation and document rounding.")
+    with session_factory.begin() as session:
+        first = save_refactoring_plan(session, run_id, proposal, expected_revision=0)
+        second = save_refactoring_plan(session, run_id, revised, expected_revision=1)
+
+    for path, plan, expected in [(url, second, revised), (f"{url}?revision=1", first, proposal)]:
+        result = client.get(path)
+        assert result.status_code == 200
+        assert result.headers["cache-control"] == "no-store"
+        payload = result.json()
+        assert payload["artifact"] == {
+            "id": str(plan.id),
+            "run_id": str(run_id),
+            "kind": "PLAN",
+            "revision": plan.revision,
+            "sha256": plan.sha256,
+            "size": len(plan.document),
+            "created_at": plan.created_at.isoformat().replace("+00:00", "Z"),
+        }
+        assert payload["content"] == {
+            **expected,
+            "schema_version": "1",
+            "run_id": str(run_id),
+            "repository": {"repository_id": 42, "base_branch": "feature/cart", "base_sha": PIN},
+        }
+    assert client.get(f"{url}?revision=3").status_code == 404
+    assert client.get(f"{url}?revision=0").status_code == 422
+
+
+@pytest.mark.parametrize("suffix", ["", "/plan"])
 @pytest.mark.parametrize(
     "problem,expected",
     [
@@ -281,7 +326,7 @@ def test_run_status_returns_the_saved_worker_result(browser, session_factory):
         ("upstream_failure", 502),
     ],
 )
-def test_run_status_rechecks_access(browser, session_factory, monkeypatch, problem, expected):
+def test_run_reads_recheck_access(browser, session_factory, monkeypatch, suffix, problem, expected):
     client, calls, switches, _ = browser
     url = submit(client).headers["Location"]
     calls.clear()
@@ -298,10 +343,12 @@ def test_run_status_rechecks_access(browser, session_factory, monkeypatch, probl
         monkeypatch.setenv("REFACTRA_GITHUB_INSTALLATION_ID", "8")
     else:
         switches[problem] = True
-    result = client.get(url)
+    result = client.get(url + suffix)
     assert result.status_code == expected
     assert result.headers["cache-control"] == "no-store"
     assert set(result.json()) == {"error"}
+    if expected == 404:
+        assert result.json()["error"]["code"] == "not_found"
     assert "sensitive upstream body" not in result.text
     assert bool(calls) == (problem in {"non_writer", "upstream_failure"})
 

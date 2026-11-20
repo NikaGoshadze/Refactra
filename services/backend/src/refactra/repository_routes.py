@@ -1,14 +1,15 @@
-"""Protected repository metadata, analysis submission, and results."""
+"""Protected repository metadata, analysis results, and plan revisions."""
 
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 import httpx
-from fastapi import APIRouter, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -18,6 +19,7 @@ from refactra.github_app import GitHubAppClient, GitHubAppError
 from refactra.github_auth import GitHubOAuthConfig
 from refactra.github_repository_access import require_github_write_access
 from refactra.models import Run, RunAnalysisContext, RunAnalysisResult, RunEvent
+from refactra.refactoring_plan import PlanProposal, load_refactoring_plan
 from refactra.repository_access import RepositoryAccessPolicy
 from refactra.repository_analysis_worker import WORKFLOW, enqueue_repository_analysis
 from refactra.repository_revision import resolve_revision
@@ -38,6 +40,7 @@ ANALYSIS_FAILURE_MESSAGES = {
     "analysis_provider_failed": "The model did not return a complete analysis.",
     "analysis_result_missing": "The model request was recorded, but the analysis was not saved.",
 }
+RUN_NOT_FOUND = {"code": "not_found", "message": "Repository run not found."}
 
 
 def _analysis_stop_reason(session, run_id: UUID) -> StopReason:
@@ -58,6 +61,33 @@ class RepositoryRead(BaseModel):
     full_name: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
     default_branch: str = Field(min_length=1)
     access: Literal["read-only"] = "read-only"
+
+
+class PlanRepository(BaseModel):
+    repository_id: int
+    base_branch: str
+    base_sha: str
+
+
+class PlanContent(PlanProposal):
+    schema_version: Literal["1"]
+    run_id: UUID
+    repository: PlanRepository
+
+
+class PlanArtifact(BaseModel):
+    id: UUID
+    run_id: UUID
+    kind: Literal["PLAN"] = "PLAN"
+    revision: int
+    sha256: str
+    size: int
+    created_at: datetime
+
+
+class RepositoryPlanRead(BaseModel):
+    artifact: PlanArtifact
+    content: PlanContent
 
 
 def create_repository_router(session_factory, *, enable_analysis=False) -> APIRouter:
@@ -226,35 +256,46 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                 },
             )
 
+    def require_run_access(request: Request, run_id: UUID) -> None:
+        with session_factory() as session:
+            identity = resolve_session(session, request.cookies.get(oauth.session_cookie_name))
+            if identity is None:
+                raise HTTPException(
+                    401, {"code": "authentication_required", "message": "Sign in to access runs."}
+                )
+            binding = session.execute(
+                select(Run.github_repository_id, Run.github_installation_id).where(
+                    Run.id == run_id,
+                    Run.requested_by == identity.user_id,
+                    Run.workflow_version == WORKFLOW,
+                )
+            ).one_or_none()
+        if binding is None:
+            raise HTTPException(404, RUN_NOT_FOUND)
+        repository_id, installation_id = binding
+        try:
+            authorize(request, repository_id, expected_installation=installation_id)
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                raise HTTPException(404, RUN_NOT_FOUND) from None
+            raise
+        except GitHubAppError:
+            raise HTTPException(
+                502,
+                {
+                    "code": "github_unavailable",
+                    "message": "Repository access could not be verified.",
+                },
+            ) from None
+
     @router.get("/runs/{run_id}", response_model=RepositoryRunRead)
     def read_analysis(run_id: UUID, request: Request, response: Response):
-        def not_found():
-            return error(404, {"code": "not_found", "message": "Repository run not found."})
-
         try:
-            with session_factory() as session:
-                identity = resolve_session(session, request.cookies.get(oauth.session_cookie_name))
-                if identity is None:
-                    return error(
-                        401,
-                        {"code": "authentication_required", "message": "Sign in to access runs."},
-                    )
-                binding = session.execute(
-                    select(Run.github_repository_id, Run.github_installation_id).where(
-                        Run.id == run_id,
-                        Run.requested_by == identity.user_id,
-                        Run.workflow_version == WORKFLOW,
-                    )
-                ).one_or_none()
-            if binding is None:
-                return not_found()
-            repository_id, installation_id = binding
-            authorize(request, repository_id, expected_installation=installation_id)
-
+            require_run_access(request, run_id)
             with session_factory() as session:
                 run = session.get(Run, run_id)
                 if run is None:
-                    return not_found()
+                    return error(404, RUN_NOT_FOUND)
                 result = (
                     session.get(RunAnalysisResult, run_id)
                     if run.status == "NEEDS_HUMAN_REVIEW"
@@ -275,15 +316,41 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                     ),
                 )
         except HTTPException as exc:
-            return not_found() if exc.status_code == 403 else error(exc.status_code, exc.detail)
-        except GitHubAppError:
-            return error(
-                502,
-                {
-                    "code": "github_unavailable",
-                    "message": "Repository access could not be verified.",
-                },
+            return error(exc.status_code, exc.detail)
+
+    @router.get("/runs/{run_id}/plan", response_model=RepositoryPlanRead)
+    def read_plan(
+        run_id: UUID,
+        request: Request,
+        response: Response,
+        revision: Annotated[int | None, Query(ge=1, le=2_147_483_647)] = None,
+    ):
+        try:
+            require_run_access(request, run_id)
+        except HTTPException as exc:
+            return error(exc.status_code, exc.detail)
+
+        with session_factory() as session:
+            plan = load_refactoring_plan(session, run_id, revision=revision)
+            if plan is None:
+                return error(404, {"code": "plan_not_found", "message": "Plan revision not found."})
+            document = plan.document
+            artifact = PlanArtifact(
+                id=plan.id,
+                run_id=plan.run_id,
+                revision=plan.revision,
+                sha256=plan.sha256,
+                size=len(document),
+                created_at=plan.created_at,
             )
+        try:
+            content = PlanContent.model_validate_json(document)
+        except ValidationError:
+            return error(
+                500, {"code": "plan_unavailable", "message": "Saved plan could not be read."}
+            )
+        response.headers["Cache-Control"] = "no-store"
+        return RepositoryPlanRead(artifact=artifact, content=content)
 
     if enable_analysis:
         router.add_api_route(
