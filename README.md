@@ -268,6 +268,8 @@ In the browser, review the saved draft and click **Approve plan revision N**. Th
 
 Migration `0010_plan_approval_queue` is required for API readiness. Approval and its queue command commit together. The migration also queues previously approved plans. From `services/backend`, run `uv run python -m refactra.worker --repository-approval --once` with `REFACTRA_DATABASE_URL` set. The worker rechecks the saved revision, checksum, owner, and readiness, then records `PLAN_APPROVAL_VERIFIED`. A claim can be recovered after its lease expires. This checkpoint makes no model calls. Repository editing is a later step.
 
+After worker verification, run `uv run python -m refactra.repository_workspace <run-id>` with the same database and protected GitHub settings as the planner. It rechecks GitHub access, fetches the exact approved commit, and checks that the plan's Python file actions match the source. Protected paths and conflicting filesystem names are excluded or rejected before staging. The command removes the temporary directory and reports the pinned commit, plan revision, and allowed changes. This prepares source for a later isolated editing and validation step.
+
 ## Read-only OpenAI analysis adapter
 
 `execute_read_only_analysis(session_factory, run_id, attempt_id, provider)` reloads the saved context, counts the complete input through OpenAI's `/v1/responses/input_tokens` endpoint, commits durable admission, and then makes one Responses API call outside database transactions. A trusted operator must authorize repository access first. Construct `OpenAIAnalysisProvider` with the server-only `REFACTRA_OPENAI_API_KEY` from your environment; host Python commands do not load `.env` automatically. No new dependency is required.
