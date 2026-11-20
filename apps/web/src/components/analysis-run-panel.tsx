@@ -1,11 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { SavedPlanPanel } from "@/components/saved-plan-panel";
 import { request } from "@/lib/api";
 
 type Receipt = { run_id: string; base_branch: string; base_sha: string };
+const RUN_ID_PATTERN = "[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}";
 type RunStatus = "CREATED" | "ANALYZING" | "NEEDS_HUMAN_REVIEW" | "FAILED";
 type AnalysisRun = Receipt & {
+  repository_id: number;
   status: RunStatus;
   analysis_text: string | null;
   stop_reason: { message: string } | null;
@@ -33,14 +36,15 @@ export function AnalysisRunPanel({ repositoryId, defaultBranch }: {
   const [task, setTask] = useState("");
   const [busy, setBusy] = useState(false);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
-  const [receipt, setReceipt] = useState<Receipt | null>(null);
+  const [target, setTarget] = useState<(Pick<Receipt, "run_id"> & Partial<Receipt>) | null>(null);
   const [run, setRun] = useState<AnalysisRun | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const pending = useRef<AbortController | null>(null);
   const submission = useRef<{ body: string; key: string } | null>(null);
-  const runId = receipt?.run_id;
-  const tracking = Boolean(receipt && (!run || isActive(run.status)));
+  const runId = target?.run_id;
+  const revision = run ?? target;
+  const tracking = Boolean(runId && !statusError && (!run || isActive(run.status)));
 
   useEffect(() => {
     const controller = new AbortController();
@@ -67,6 +71,10 @@ export function AnalysisRunPanel({ repositoryId, defaultBranch }: {
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(65000)]),
         });
         if (controller.signal.aborted) return;
+        if (current.repository_id !== repositoryId) {
+          setStatusError("This run belongs to a different repository.");
+          return;
+        }
         setRun(current);
         if (isActive(current.status)) timer = setTimeout(poll, 5000);
       } catch (error) {
@@ -77,7 +85,23 @@ export function AnalysisRunPanel({ repositoryId, defaultBranch }: {
     }
     void poll();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [runId, retry]);
+  }, [repositoryId, runId, retry]);
+
+  function track(next: Pick<Receipt, "run_id"> & Partial<Receipt>) {
+    setRun(null);
+    setStatusError(null);
+    setTarget(next);
+    setRetry((value) => value + 1);
+  }
+
+  function openSavedRun(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy) return;
+    const id = new FormData(event.currentTarget).get("run-id");
+    if (typeof id === "string" && new RegExp(`^${RUN_ID_PATTERN}$`).test(id)) {
+      track({ run_id: id.toLowerCase() });
+    }
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -97,9 +121,7 @@ export function AnalysisRunPanel({ repositoryId, defaultBranch }: {
       });
       if (controller.signal.aborted) return;
       submission.current = null;
-      setRun(null);
-      setStatusError(null);
-      setReceipt(accepted);
+      track(accepted);
     } catch (error) {
       if (!controller.signal.aborted) setSubmissionError(
         errorMessage(error, "Submission timed out. Retry the same task to check whether it was accepted.", "Could not start analysis."),
@@ -128,12 +150,22 @@ export function AnalysisRunPanel({ repositoryId, defaultBranch }: {
           </button>
         </form>}
       {submissionError && <p className="error-box" role="alert">{submissionError}</p>}
-      {receipt && <>
+      <details className="saved-run">
+        <summary>Open a saved run</summary>
+        <form onSubmit={openSavedRun}>
+          <label htmlFor="saved-run-id">Run ID</label>
+          <input id="saved-run-id" name="run-id" pattern={RUN_ID_PATTERN} required disabled={busy}
+            title="Enter the run UUID" />
+          <button className="repository-check" type="submit" disabled={busy}>Open run</button>
+        </form>
+      </details>
+      {runId && <>
         <dl className="repository-details">
-          <div><dt>Branch</dt><dd>{receipt.base_branch}</dd></div>
-          <div><dt>Pinned commit</dt><dd><code>{receipt.base_sha}</code></dd></div>
+          <div><dt>Run ID</dt><dd><code>{runId}</code></dd></div>
+          {revision?.base_branch && <div><dt>Branch</dt><dd>{revision.base_branch}</dd></div>}
+          {revision?.base_sha && <div><dt>Pinned commit</dt><dd><code>{revision.base_sha}</code></dd></div>}
         </dl>
-        <p role="status">{statusLabel[run?.status ?? "CREATED"]}</p>
+        {!statusError && <p role="status">{run ? statusLabel[run.status] : "Checking run status…"}</p>}
         {statusError && <div className="error-box">
           <p role="alert">{statusError}</p>
           <button type="button" onClick={() => { setStatusError(null); setRetry((value) => value + 1); }}>
@@ -142,6 +174,7 @@ export function AnalysisRunPanel({ repositoryId, defaultBranch }: {
         </div>}
         {run?.stop_reason && <p className="error-box" role="alert">{run.stop_reason.message}</p>}
         {run?.analysis_text && <pre className="analysis-result">{run.analysis_text}</pre>}
+        {run?.status === "NEEDS_HUMAN_REVIEW" && <SavedPlanPanel key={runId} runId={runId} />}
       </>}
     </section>
   );

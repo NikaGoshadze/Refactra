@@ -14,9 +14,9 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   const isAuth = AUTH_READ_ROUTES.has(relative) || relative === "auth/logout";
   const isRepository = /^repositories\/[1-9][0-9]*$/.test(relative);
   const isAnalysisSubmit = relative === "runs";
-  const isAnalysisRead = /^runs\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(relative);
-  const sessionOnly = isRepository || isAnalysisSubmit || isAnalysisRead;
-  const readAllowed = isRepository || isAnalysisRead || AUTH_READ_ROUTES.has(relative)
+  const isRunRead = /^runs\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?:\/plan)?$/i.test(relative);
+  const sessionOnly = isRepository || isAnalysisSubmit || isRunRead;
+  const readAllowed = isRepository || isRunRead || AUTH_READ_ROUTES.has(relative)
     || relative === "capabilities" || /^mock\/runs\/[0-9a-f-]{36}(\/events)?$/i.test(relative);
   const writeAllowed = isAnalysisSubmit || relative === "mock/runs" || relative === "auth/logout";
   if (!(request.method === "GET" ? readAllowed : request.method === "POST" && writeAllowed)) {

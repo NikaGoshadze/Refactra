@@ -40,6 +40,13 @@ a { color: inherit; text-decoration: none; }
 .analysis-card label { display: block; margin-top: 14px; margin-bottom: 8px; }
 .analysis-card input { width: 100%; padding: 10px 14px; font: inherit; border: 1px solid var(--border); border-radius: 7px; }
 .analysis-result { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; padding: 14px; background: #fbfcfe; border: 1px solid var(--border); border-radius: 7px; }
+.saved-run, .saved-plan { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.saved-run summary { cursor: pointer; font-size: 14px; font-weight: 600; }
+.saved-run button { margin-top: 10px; }
+.saved-plan { overflow-wrap: anywhere; }
+.saved-plan p, .saved-plan h4 { margin-top: 12px; }
+.saved-plan h4 { font-size: 14px; font-weight: 600; }
+.saved-plan ul { list-style: disc; padding-left: 22px; }
 @media (max-width: 760px) { .repository-card { padding: 22px; } .repository-heading { flex-direction: column; align-items: flex-start; } }
 .eyebrow { font-size: 10px; letter-spacing: 1.7px; font-weight: 700; color: var(--blue); margin: 0 0 20px; }
 h1 { font-size: clamp(38px, 4.2vw, 54px); line-height: 1.09; letter-spacing: -2.3px; font-weight: 600; margin: 0 0 22px; }

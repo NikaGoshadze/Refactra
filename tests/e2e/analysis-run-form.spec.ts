@@ -1,4 +1,4 @@
-import { RUN_ID, RUN_PATH, expect, test } from "../fixtures/auth-proxy";
+import { PLAN, PLAN_PATH, RUN_ID, RUN_PATH, expect, test } from "../fixtures/auth-proxy";
 
 const REPOSITORY_ID = 1001132861;
 const receipt = { run_id: RUN_ID, base_branch: "feature/cart", base_sha: "a".repeat(40) };
@@ -32,7 +32,7 @@ test("verified repository submits a selected branch and shows the saved read-onl
   });
   let reads = 0;
   await page.route(`**${RUN_PATH}`, (route) => route.fulfill({
-    json: { ...receipt, stop_reason: null, ...(++reads === 1
+    json: { ...receipt, repository_id: REPOSITORY_ID, stop_reason: null, ...(++reads === 1
       ? { status: "ANALYZING", analysis_text: null }
       : { status: "NEEDS_HUMAN_REVIEW", analysis_text: analysis }) },
   }));
@@ -61,7 +61,7 @@ test("submission retry reuses its key and a failed run shows the backend reason"
   let reads = 0;
   await page.route(`**${RUN_PATH}`, (route) => ++reads === 1
     ? route.fulfill({ status: 502, json: { error: { message: "Could not verify repository access." } } })
-    : route.fulfill({ json: { ...receipt, status: "FAILED", analysis_text: null,
+    : route.fulfill({ json: { ...receipt, repository_id: REPOSITORY_ID, status: "FAILED", analysis_text: null,
       stop_reason: { message: "The run reached an analysis budget limit." } } }));
   await start.click();
   await expect(panel.getByRole("alert")).toHaveText("Source download failed.");
@@ -72,4 +72,34 @@ test("submission retry reuses its key and a failed run shows the backend reason"
   await panel.getByRole("button", { name: "Retry status" }).click();
   await expect(panel.getByRole("status")).toHaveText("Analysis failed");
   await expect(panel.getByRole("alert")).toHaveText("The run reached an analysis budget limit.");
+});
+
+test("opens a saved run and shows its plan after a missing-plan response", async ({ page, authProxy }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByText("Open a saved run", { exact: true }).click();
+  await page.getByLabel("Run ID", { exact: true }).fill(RUN_ID);
+  await page.getByRole("button", { name: "Open run", exact: true }).click();
+  await expect(page.getByText("Fixture analysis")).toBeVisible();
+
+  const plan = page.getByRole("region", { name: "Refactoring plan" });
+  await page.route(`**${PLAN_PATH}`, (route) => route.fulfill({
+    status: 404, json: { error: { code: "plan_not_found" } },
+  }), { times: 1 });
+  await plan.getByRole("button", { name: "Load saved plan" }).click();
+  await expect(plan.getByRole("status")).toHaveText("No plan has been saved for this run yet.");
+  await plan.getByRole("button", { name: "Refresh saved plan" }).click();
+  await expect(plan.getByText(PLAN.content.summary, { exact: true })).toBeVisible();
+  await expect(plan.getByText(PLAN.artifact.sha256, { exact: true })).toBeVisible();
+  await expect(plan.getByText("src/cart.py", { exact: true })).toBeVisible();
+  await expect(plan.getByText("VC1", { exact: true })).toBeVisible();
+  await expect(plan.getByText(PLAN.content.blocking_questions[0])).toBeVisible();
+  await expect(plan.getByText("Extract the cart calculation", { exact: true })).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const runCalls = authProxy.calls.filter((call) => call.url.startsWith("/api/v1/runs"));
+  expect(runCalls.slice(-2).map(({ method, url }) => [method, url])).toEqual([
+    ["GET", RUN_PATH], ["GET", PLAN_PATH],
+  ]);
+
+  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await expect(plan).toHaveCount(0);
 });
