@@ -15,10 +15,18 @@ PLAN_INSTRUCTIONS = (
     "Describe concrete file changes, preserved behavior, and criteria with proposed checks. "
     "List unresolved evidence as blocking questions and do not assume installed dependencies. "
     "Use check identifiers, not shell commands or executable arguments. Do not edit files, "
-    "execute tooling, publish changes, or claim validation ran. Return only one JSON object "
-    "matching this schema without Markdown or server-owned run metadata: "
-    + json.dumps(PlanProposal.model_json_schema(), sort_keys=True, separators=(",", ":"))
+    "execute tooling, publish changes, or claim validation ran. Keep the proposal concise. "
+    "Use consistent acceptance criterion IDs and include at least one required validation check."
 )
+
+PLAN_TEXT_CONFIG = {
+    "format": {
+        "type": "json_schema",
+        "name": "refactoring_plan",
+        "strict": True,
+        "schema": PlanProposal.model_json_schema(),
+    }
+}
 
 
 def load_planning_context(session: Session, run_id: UUID) -> PreparedAnalysisContext | None:
