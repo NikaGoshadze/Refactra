@@ -20,6 +20,7 @@ from refactra.candidate_patch import (
     apply_candidate_patch,
     read_candidate_patch,
 )
+from refactra.candidate_results import CandidateResultError, save_validated_candidate
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.github_app import GitHubAppError
@@ -172,13 +173,19 @@ def main() -> None:
     parser.add_argument(
         "--validate", action="store_true", help="Run the candidate's approved pytest checks."
     )
+    parser.add_argument(
+        "--save-result", action="store_true", help="Save a passing candidate result."
+    )
     args = parser.parse_args()
     if args.validate and args.candidate is None:
         parser.error("--validate requires --candidate")
+    if args.save_result and not args.validate:
+        parser.error("--save-result requires --validate")
     engine = make_engine(Settings.from_env().database_url)
+    session_factory = sessions(engine)
     try:
         candidate = read_candidate_patch(args.candidate) if args.candidate is not None else None
-        with prepare_approved_workspace(sessions(engine), args.run_id) as workspace:
+        with prepare_approved_workspace(session_factory, args.run_id) as workspace:
             report = {
                 "run_id": str(args.run_id),
                 "base_sha": workspace.base_sha,
@@ -200,10 +207,24 @@ def main() -> None:
                             check.status == "PASSED" for check in checks if check.required
                         ),
                     )
+        if args.save_result and report["validation_passed"]:
+            with session_factory.begin() as session:
+                result = save_validated_candidate(session, args.run_id, candidate, diff, checks)
+                report["validation"] = json.loads(result.document)["validation"]
+                report["result"] = {
+                    "id": str(result.id),
+                    "revision": result.revision,
+                    "sha256": result.sha256,
+                }
         print(json.dumps(report))
         if report.get("validation_passed") is False:
             raise SystemExit(1)
-    except (WorkspacePreparationError, CandidatePatchError, RepositoryValidationError) as error:
+    except (
+        WorkspacePreparationError,
+        CandidatePatchError,
+        CandidateResultError,
+        RepositoryValidationError,
+    ) as error:
         raise SystemExit(str(error)) from None
     except (GitHubAppError, HTTPException, KeyError, OSError, SQLAlchemyError, ValueError):
         raise SystemExit(
