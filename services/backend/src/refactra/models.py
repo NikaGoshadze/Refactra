@@ -11,9 +11,11 @@ from sqlalchemy import (
     Identity,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -126,6 +128,23 @@ class RunAnalysisResult(Base):
     reservation_id: Mapped[UUID] = mapped_column(ForeignKey("model_reservations.id"), unique=True)
     response_id: Mapped[str] = mapped_column(Text)
     analysis_text: Mapped[str] = mapped_column(Text, deferred=True)
+
+
+class RunPlan(Base):
+    __tablename__ = "run_plans"
+    __table_args__ = (
+        UniqueConstraint("run_id", "revision", name="uq_run_plans_revision"),
+        CheckConstraint("revision > 0", name="ck_run_plans_revision"),
+        CheckConstraint("octet_length(document) BETWEEN 1 AND 65536", name="ck_run_plans_size"),
+        CheckConstraint("sha256 = encode(sha256(document), 'hex')", name="ck_run_plans_hash"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("run_analysis_results.run_id"))
+    revision: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    document: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class RunCommand(Base):
