@@ -191,6 +191,25 @@ class RunCandidateResult(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class RunPublicationTarget(Base):
+    __tablename__ = "run_publication_targets"
+    __table_args__ = (
+        CheckConstraint(
+            "octet_length(document) BETWEEN 1 AND 8192", name="ck_publication_targets_size"
+        ),
+        CheckConstraint(
+            "sha256 = encode(sha256(document), 'hex')", name="ck_publication_targets_hash"
+        ),
+    )
+
+    result_id: Mapped[UUID] = mapped_column(
+        ForeignKey("run_candidate_results.id"), primary_key=True
+    )
+    sha256: Mapped[str] = mapped_column(String(64))
+    document: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class RunCommand(Base):
     __tablename__ = "run_commands"
     __table_args__ = (
