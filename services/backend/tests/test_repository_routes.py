@@ -321,7 +321,43 @@ def test_read_saved_plan_revisions(browser, session_factory, proposal):
     assert client.get(f"{url}?revision=0").status_code == 422
 
 
-@pytest.mark.parametrize("suffix", ["", "/plan"])
+def test_revising_a_plan_appends_once_and_preserves_previous_revision(
+    browser, session_factory, proposal
+):
+    client, calls, _, _ = browser
+    receipt = submit(client)
+    url = f"{receipt.headers['Location']}/plan"
+    run_id = UUID(receipt.json()["run_id"])
+    analyze_fixture_run(session_factory)
+    headers = {"Origin": "https://refactra.example", "X-Refactra-CSRF": "1"}
+    body = {"expected_revision": 1, "proposal": proposal}
+
+    calls.clear()
+    rejected = client.post(url, json=body, headers=headers | {"Origin": "https://other.example"})
+    assert rejected.status_code == 403 and calls == []
+    assert client.post(url, json=body, headers=headers).status_code == 409
+
+    previous = dict(proposal, blocking_questions=["How should empty carts behave?"])
+    with session_factory.begin() as session:
+        initial = save_refactoring_plan(session, run_id, previous, expected_revision=0)
+    saved = client.post(url, json=body, headers=headers)
+    assert saved.status_code == 200 and saved.headers["cache-control"] == "no-store"
+    assert saved.json()["artifact"]["revision"] == 2
+    assert saved.json()["readiness"]["blocking_question_count"] == 0
+    assert client.post(url, json=body, headers=headers).json() == saved.json()
+
+    stale = dict(body, proposal=dict(proposal, summary="A competing plan draft"))
+    conflict = client.post(url, json=stale, headers=headers)
+    assert (
+        conflict.status_code == 409 and conflict.json()["error"]["code"] == "plan_revision_conflict"
+    )
+    assert client.get(url).json() == saved.json()
+    historical = client.get(f"{url}?revision=1").json()
+    assert historical["artifact"]["sha256"] == initial.sha256
+    assert historical["content"]["blocking_questions"] == previous["blocking_questions"]
+
+
+@pytest.mark.parametrize(("method", "suffix"), [("GET", ""), ("GET", "/plan"), ("POST", "/plan")])
 @pytest.mark.parametrize(
     "problem,expected",
     [
@@ -333,7 +369,9 @@ def test_read_saved_plan_revisions(browser, session_factory, proposal):
         ("upstream_failure", 502),
     ],
 )
-def test_run_reads_recheck_access(browser, session_factory, monkeypatch, suffix, problem, expected):
+def test_run_routes_recheck_access(
+    browser, session_factory, monkeypatch, method, suffix, problem, expected, proposal
+):
     client, calls, switches, _ = browser
     url = submit(client).headers["Location"]
     calls.clear()
@@ -350,7 +388,12 @@ def test_run_reads_recheck_access(browser, session_factory, monkeypatch, suffix,
         monkeypatch.setenv("REFACTRA_GITHUB_INSTALLATION_ID", "8")
     else:
         switches[problem] = True
-    result = client.get(url + suffix)
+    result = client.request(
+        method,
+        url + suffix,
+        json={"expected_revision": 1, "proposal": proposal} if method == "POST" else None,
+        headers={"Origin": "https://refactra.example", "X-Refactra-CSRF": "1"},
+    )
     assert result.status_code == expected
     assert result.headers["cache-control"] == "no-store"
     assert set(result.json()) == {"error"}

@@ -260,6 +260,8 @@ The planner and plan read API also report the number of blocking questions, unre
 
 In the browser, click **Load saved plan** when an analysis is ready for review. To return to an earlier run, verify repository access, choose **Open a saved run**, and enter its run ID. The plan view shows the latest saved revision. Loading it uses the saved analysis and plan without making a model request.
 
+Use **Revise plan draft** to edit the proposal JSON. Record answers in the relevant fields, remove resolved questions, and update any unrecognized validation IDs. The protected `POST /api/v1/runs/{run_id}/plan` takes `{expected_revision, proposal}` and returns the saved draft with updated readiness. A changed draft appends an immutable revision. A stale edit returns 409, and retrying the same saved content returns its existing revision.
+
 ## Read-only OpenAI analysis adapter
 
 `execute_read_only_analysis(session_factory, run_id, attempt_id, provider)` reloads the saved context, counts the complete input through OpenAI's `/v1/responses/input_tokens` endpoint, commits durable admission, and then makes one Responses API call outside database transactions. A trusted operator must authorize repository access first. Construct `OpenAIAnalysisProvider` with the server-only `REFACTRA_OPENAI_API_KEY` from your environment; host Python commands do not load `.env` automatically. No new dependency is required.

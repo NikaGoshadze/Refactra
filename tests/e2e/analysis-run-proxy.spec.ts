@@ -79,7 +79,7 @@ for (const path of [RUN_PATH, PLAN_PATH]) {
 }
 
 for (const [method, route, status] of [
-  ["GET", SUBMIT, 404], ["POST", RUN_PATH, 404], ["POST", PLAN_PATH, 404], ["DELETE", RUN_PATH, 405],
+  ["GET", SUBMIT, 404], ["POST", RUN_PATH, 404], ["DELETE", PLAN_PATH, 405], ["DELETE", RUN_PATH, 405],
   ["GET", `${RUN_PATH}/events`, 404], ["GET", `${SUBMIT}/${RUN_ID.replaceAll("-", "")}`, 404],
 ] as const) {
   test(`blocks ${method} ${route}`, async ({ authProxy, request }) => {

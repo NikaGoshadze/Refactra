@@ -9,7 +9,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -18,12 +18,15 @@ from refactra.auth_sessions import resolve_session
 from refactra.github_app import GitHubAppClient, GitHubAppError
 from refactra.github_auth import GitHubOAuthConfig
 from refactra.github_repository_access import require_github_write_access
-from refactra.models import Run, RunAnalysisContext, RunAnalysisResult, RunEvent
+from refactra.models import Run, RunAnalysisContext, RunAnalysisResult, RunEvent, RunPlan
 from refactra.refactoring_plan import (
     PlanContent,
+    PlanProposal,
     PlanReadiness,
+    PlanRevisionConflict,
     evaluate_plan_readiness,
     load_refactoring_plan,
+    save_refactoring_plan,
 )
 from refactra.repository_access import RepositoryAccessPolicy
 from refactra.repository_analysis_worker import WORKFLOW, enqueue_repository_analysis
@@ -82,6 +85,35 @@ class RepositoryPlanRead(BaseModel):
     artifact: PlanArtifact
     content: PlanContent
     readiness: PlanReadiness
+
+
+class PlanRevisionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expected_revision: int = Field(ge=1, le=2_147_483_647)
+    proposal: PlanProposal
+
+
+def _plan_response(plan: RunPlan, response: Response) -> RepositoryPlanRead:
+    try:
+        content = PlanContent.model_validate_json(plan.document)
+    except ValidationError:
+        raise HTTPException(
+            500, {"code": "plan_unavailable", "message": "Saved plan could not be read."}
+        ) from None
+    response.headers["Cache-Control"] = "no-store"
+    return RepositoryPlanRead(
+        artifact=PlanArtifact(
+            id=plan.id,
+            run_id=plan.run_id,
+            revision=plan.revision,
+            sha256=plan.sha256,
+            size=len(plan.document),
+            created_at=plan.created_at,
+        ),
+        content=content,
+        readiness=evaluate_plan_readiness(content),
+    )
 
 
 def create_repository_router(session_factory, *, enable_analysis=False) -> APIRouter:
@@ -250,7 +282,7 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                 },
             )
 
-    def require_run_access(request: Request, run_id: UUID) -> None:
+    def require_run_access(request: Request, run_id: UUID) -> int:
         with session_factory() as session:
             identity = resolve_session(session, request.cookies.get(oauth.session_cookie_name))
             if identity is None:
@@ -281,6 +313,7 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                     "message": "Repository access could not be verified.",
                 },
             ) from None
+        return repository_id
 
     @router.get("/runs/{run_id}", response_model=RepositoryRunRead)
     def read_analysis(run_id: UUID, request: Request, response: Response):
@@ -321,32 +354,48 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
     ):
         try:
             require_run_access(request, run_id)
+            with session_factory() as session:
+                plan = load_refactoring_plan(session, run_id, revision=revision)
+                if plan is None:
+                    return error(
+                        404, {"code": "plan_not_found", "message": "Plan revision not found."}
+                    )
+                return _plan_response(plan, response)
         except HTTPException as exc:
             return error(exc.status_code, exc.detail)
 
-        with session_factory() as session:
-            plan = load_refactoring_plan(session, run_id, revision=revision)
-            if plan is None:
-                return error(404, {"code": "plan_not_found", "message": "Plan revision not found."})
-            document = plan.document
-            artifact = PlanArtifact(
-                id=plan.id,
-                run_id=plan.run_id,
-                revision=plan.revision,
-                sha256=plan.sha256,
-                size=len(document),
-                created_at=plan.created_at,
+    @router.post("/runs/{run_id}/plan", response_model=RepositoryPlanRead)
+    def revise_plan(run_id: UUID, body: PlanRevisionCreate, request: Request, response: Response):
+        if not is_trusted_mutation(request, oauth):
+            return error(
+                403,
+                {"code": "csrf_rejected", "message": "Plan revision requires a trusted origin."},
             )
         try:
-            content = PlanContent.model_validate_json(document)
-        except ValidationError:
-            return error(
-                500, {"code": "plan_unavailable", "message": "Saved plan could not be read."}
+            repository_id = require_run_access(request, run_id)
+            with session_factory.begin() as session:
+                RepositoryAccessPolicy.from_env().require_eligible_session(
+                    session, request.cookies.get(oauth.session_cookie_name), repository_id
+                )
+                plan = save_refactoring_plan(
+                    session,
+                    run_id,
+                    body.proposal.model_dump(),
+                    expected_revision=body.expected_revision,
+                )
+                return _plan_response(plan, response)
+        except HTTPException as exc:
+            return (
+                error(404, RUN_NOT_FOUND)
+                if exc.status_code == 403
+                else error(exc.status_code, exc.detail)
             )
-        response.headers["Cache-Control"] = "no-store"
-        return RepositoryPlanRead(
-            artifact=artifact, content=content, readiness=evaluate_plan_readiness(content)
-        )
+        except PlanRevisionConflict as exc:
+            return error(409, {"code": "plan_revision_conflict", "message": str(exc)})
+        except ValueError:
+            return error(
+                422, {"code": "plan_unavailable", "message": "The draft could not be saved."}
+            )
 
     if enable_analysis:
         router.add_api_route(

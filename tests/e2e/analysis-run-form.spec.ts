@@ -1,4 +1,4 @@
-import { PLAN, PLAN_PATH, RUN_ID, RUN_PATH, expect, test } from "../fixtures/auth-proxy";
+import { PLAN, PLAN_PATH, PLAN_PROPOSAL, RUN_ID, RUN_PATH, expect, test } from "../fixtures/auth-proxy";
 
 const REPOSITORY_ID = 1001132861;
 const receipt = { run_id: RUN_ID, base_branch: "feature/cart", base_sha: "a".repeat(40) };
@@ -74,7 +74,7 @@ test("submission retry reuses its key and a failed run shows the backend reason"
   await expect(panel.getByRole("alert")).toHaveText("The run reached an analysis budget limit.");
 });
 
-test("opens a saved run and shows its plan after a missing-plan response", async ({ page, authProxy }) => {
+test("opens a saved run, finds its draft, and saves a revision", async ({ page, authProxy }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByText("Open a saved run", { exact: true }).click();
   await page.getByLabel("Run ID", { exact: true }).fill(RUN_ID);
@@ -91,14 +91,38 @@ test("opens a saved run and shows its plan after a missing-plan response", async
   await expect(plan.getByText(PLAN.content.summary, { exact: true })).toBeVisible();
   await expect(plan.getByText(PLAN.artifact.sha256, { exact: true })).toBeVisible();
   await expect(plan.getByText("src/cart.py", { exact: true })).toBeVisible();
-  await expect(plan.getByText("VC1", { exact: true })).toBeVisible();
-  await expect(plan.getByText(PLAN.content.blocking_questions[0])).toBeVisible();
+  await expect(plan.getByRole("heading", { name: "Unrecognized validation IDs" })).toBeVisible();
+  await expect(plan.getByText(PLAN.content.blocking_questions[0], { exact: true })).toBeVisible();
   await expect(plan.getByText("Extract the cart calculation", { exact: true })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const runCalls = authProxy.calls.filter((call) => call.url.startsWith("/api/v1/runs"));
   expect(runCalls.slice(-2).map(({ method, url }) => [method, url])).toEqual([
     ["GET", RUN_PATH], ["GET", PLAN_PATH],
   ]);
+
+  await plan.getByText("Revise plan draft").click();
+  const draft = plan.getByLabel("Plan draft JSON");
+  const proposal = JSON.parse(await draft.inputValue());
+  expect(proposal).toEqual(PLAN_PROPOSAL);
+  proposal.blocking_questions = [];
+  proposal.preserve_behavior.push("Round half to even.");
+  proposal.validation_checks[0].check_id = "python.pytest";
+  const edited = JSON.stringify(proposal);
+  await draft.fill(edited);
+  const saveButton = plan.getByRole("button", { name: "Save plan revision" });
+  await page.route(`**${PLAN_PATH}`, (route) => route.fulfill({ status: 502,
+    json: { error: { code: "github_unavailable", message: "Repository access could not be verified." } },
+  }), { times: 1 });
+  await saveButton.click();
+  await expect(plan.getByRole("alert")).toContainText("Repository access could not be verified.");
+  await expect(draft).toHaveValue(edited);
+  await saveButton.click();
+  await expect(plan.getByText("Round half to even.", { exact: true })).toBeVisible();
+  await expect(plan.getByText("c".repeat(64), { exact: true })).toBeVisible();
+  await expect(plan.getByRole("heading", { name: "Unrecognized validation IDs" })).toHaveCount(0);
+  const save = authProxy.calls.findLast((call) => call.method === "POST" && call.url === PLAN_PATH)!;
+  expect(save.headers.cookie).toBe("refactra_session=fixture-session");
+  expect(JSON.parse(save.body!)).toEqual({ expected_revision: 1, proposal });
 
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(plan).toHaveCount(0);
