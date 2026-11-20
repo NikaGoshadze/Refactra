@@ -12,18 +12,27 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from refactra.analysis_context import prepare_analysis_context, save_analysis_context
 from refactra.auth_sessions import resolve_session
 from refactra.github_app import GitHubAppClient, GitHubAppError
 from refactra.github_auth import GitHubOAuthConfig
 from refactra.github_repository_access import require_github_write_access
-from refactra.models import Run, RunAnalysisContext, RunAnalysisResult, RunEvent, RunPlan
+from refactra.models import (
+    Run,
+    RunAnalysisContext,
+    RunAnalysisResult,
+    RunEvent,
+    RunPlan,
+    RunPlanApproval,
+)
 from refactra.refactoring_plan import (
     PlanContent,
     PlanProposal,
     PlanReadiness,
     PlanRevisionConflict,
+    approve_refactoring_plan,
     evaluate_plan_readiness,
     load_refactoring_plan,
     save_refactoring_plan,
@@ -81,10 +90,21 @@ class PlanArtifact(BaseModel):
     created_at: datetime
 
 
+class PlanApprovalRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    run_id: UUID
+    revision: int
+    sha256: str
+    approved_by: int
+    approved_at: datetime
+
+
 class RepositoryPlanRead(BaseModel):
     artifact: PlanArtifact
     content: PlanContent
     readiness: PlanReadiness
+    approval: PlanApprovalRead | None
 
 
 class PlanRevisionCreate(BaseModel):
@@ -94,13 +114,22 @@ class PlanRevisionCreate(BaseModel):
     proposal: PlanProposal
 
 
-def _plan_response(plan: RunPlan, response: Response) -> RepositoryPlanRead:
+class PlanApprovalCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    plan_id: UUID
+    revision: int = Field(strict=True, ge=1, le=2_147_483_647)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+def _plan_response(session: Session, plan: RunPlan, response: Response) -> RepositoryPlanRead:
     try:
         content = PlanContent.model_validate_json(plan.document)
     except ValidationError:
         raise HTTPException(
             500, {"code": "plan_unavailable", "message": "Saved plan could not be read."}
         ) from None
+    approval = session.get(RunPlanApproval, plan.run_id)
     response.headers["Cache-Control"] = "no-store"
     return RepositoryPlanRead(
         artifact=PlanArtifact(
@@ -113,6 +142,12 @@ def _plan_response(plan: RunPlan, response: Response) -> RepositoryPlanRead:
         ),
         content=content,
         readiness=evaluate_plan_readiness(content),
+        approval=(
+            PlanApprovalRead.model_validate(approval)
+            if approval is not None
+            and (approval.revision, approval.sha256) == (plan.revision, plan.sha256)
+            else None
+        ),
     )
 
 
@@ -360,7 +395,7 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                     return error(
                         404, {"code": "plan_not_found", "message": "Plan revision not found."}
                     )
-                return _plan_response(plan, response)
+                return _plan_response(session, plan, response)
         except HTTPException as exc:
             return error(exc.status_code, exc.detail)
 
@@ -383,7 +418,7 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                     body.proposal.model_dump(),
                     expected_revision=body.expected_revision,
                 )
-                return _plan_response(plan, response)
+                return _plan_response(session, plan, response)
         except HTTPException as exc:
             return (
                 error(404, RUN_NOT_FOUND)
@@ -396,6 +431,33 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
             return error(
                 422, {"code": "plan_unavailable", "message": "The draft could not be saved."}
             )
+
+    @router.post("/runs/{run_id}/plan/approve", response_model=PlanApprovalRead)
+    def approve_plan(run_id: UUID, body: PlanApprovalCreate, request: Request, response: Response):
+        if not is_trusted_mutation(request, oauth):
+            return error(
+                403,
+                {"code": "csrf_rejected", "message": "Plan approval requires a trusted origin."},
+            )
+        try:
+            repository_id = require_run_access(request, run_id)
+            with session_factory.begin() as session:
+                actor = RepositoryAccessPolicy.from_env().require_eligible_session(
+                    session, request.cookies.get(oauth.session_cookie_name), repository_id
+                )
+                approval = approve_refactoring_plan(
+                    session, run_id, **body.model_dump(), actor_id=actor.user_id
+                )
+                response.headers["Cache-Control"] = "no-store"
+                return PlanApprovalRead.model_validate(approval)
+        except HTTPException as exc:
+            return (
+                error(404, RUN_NOT_FOUND)
+                if exc.status_code == 403
+                else error(exc.status_code, exc.detail)
+            )
+        except PlanRevisionConflict as exc:
+            return error(409, {"code": "plan_approval_conflict", "message": str(exc)})
 
     if enable_analysis:
         router.add_api_route(

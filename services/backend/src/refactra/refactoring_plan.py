@@ -12,13 +12,14 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    ValidationError,
     model_validator,
 )
 from sqlalchemy import select
 from sqlalchemy.orm import Session, undefer
 
 from refactra.analysis_context import load_analysis_context
-from refactra.models import Run, RunAnalysisResult, RunEvent, RunPlan
+from refactra.models import Run, RunAnalysisResult, RunEvent, RunPlan, RunPlanApproval
 
 MAX_PLAN_BYTES = 64 * 1024
 SUPPORTED_PLAN_CHECK_IDS = ("python.pytest",)
@@ -167,6 +168,8 @@ def save_refactoring_plan(
     latest = load_refactoring_plan(session, run_id)
     if latest is not None and latest.sha256 == digest:
         return latest
+    if session.get(RunPlanApproval, run_id) is not None:
+        raise PlanRevisionConflict("This run already has an approved plan.")
     revision = latest.revision if latest is not None else 0
     if expected_revision != revision:
         raise PlanRevisionConflict("Plan revision changed. Reload it before saving a revision.")
@@ -181,3 +184,70 @@ def save_refactoring_plan(
         )
     )
     return plan
+
+
+def approve_refactoring_plan(
+    session: Session, run_id: UUID, *, plan_id: UUID, revision: int, sha256: str, actor_id: int
+) -> RunPlanApproval:
+    """Record an owner's decision while serializing against draft revisions on the same run."""
+    run = session.get(Run, run_id, with_for_update=True, populate_existing=True)
+    if (
+        run is None
+        or run.workflow_version != "repository-v0.1"
+        or run.status != "NEEDS_HUMAN_REVIEW"
+        or run.requested_by != actor_id
+    ):
+        raise PlanRevisionConflict("This run cannot accept a plan approval.")
+    plan = load_refactoring_plan(session, run_id)
+    if plan is None or (plan.id, plan.revision, plan.sha256) != (plan_id, revision, sha256):
+        raise PlanRevisionConflict("Plan revision changed. Reload it before approving.")
+
+    existing = session.get(RunPlanApproval, run_id)
+    if existing is not None:
+        if (existing.revision, existing.sha256, existing.approved_by) == (
+            revision,
+            sha256,
+            actor_id,
+        ):
+            return existing
+        raise PlanRevisionConflict("This run already has an approved plan.")
+
+    try:
+        content = PlanContent.model_validate_json(plan.document)
+    except ValidationError:
+        raise PlanRevisionConflict("Saved plan could not be verified.") from None
+    if (
+        content.run_id != run.id
+        or content.repository.repository_id != run.github_repository_id
+        or content.repository.base_branch != run.base_branch
+        or content.repository.base_sha != run.base_sha
+    ):
+        raise PlanRevisionConflict("Saved plan does not match the pinned repository revision.")
+    readiness = evaluate_plan_readiness(content)
+    if (
+        readiness.blocking_question_count
+        or readiness.unsupported_check_ids
+        or not readiness.has_required_supported_check
+    ):
+        raise PlanRevisionConflict(
+            "Resolve blocking questions and validation checks before approving."
+        )
+
+    approval = RunPlanApproval(
+        run_id=run_id, revision=revision, sha256=sha256, approved_by=actor_id
+    )
+    session.add(approval)
+    session.add(
+        RunEvent(
+            run_id=run_id,
+            event_type="PLAN_APPROVED",
+            payload={
+                "plan_id": str(plan_id),
+                "revision": revision,
+                "sha256": sha256,
+                "approved_by": actor_id,
+            },
+        )
+    )
+    session.flush()
+    return approval
