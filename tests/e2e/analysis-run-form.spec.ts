@@ -165,6 +165,20 @@ test("opens, revises, and approves a saved plan", async ({ page, authProxy }) =>
   await result.getByRole("button", { name: "Refresh saved result" }).click();
   await expect(result.getByRole("status")).toHaveText("Publication approved for result revision 1.");
 
+  const link = "https://github.com/fixture/example/pull/7";
+  for (const [progress, status] of [
+    [{ status: "branch_pushed" }, "Branch pushed. Waiting for the draft PR."],
+    [{ status: "draft_opened", number: 7, url: link }, "Draft PR opened."],
+  ] as const) {
+    await page.route(`**${RESULT_PATH}`, async (route) => {
+      const response = await route.fetch();
+      await route.fulfill({ response, json: { ...await response.json(), publication: progress } });
+    }, { times: 1 });
+    await result.getByRole("button", { name: "Refresh saved result" }).click();
+    await expect(result.getByRole("status")).toContainText(status);
+  }
+  await expect(result.getByRole("link", { name: "View draft PR #7 on GitHub" })).toHaveAttribute("href", link);
+
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(plan).toHaveCount(0);
 });

@@ -51,6 +51,7 @@ export const RESULT = {
   publication_target: { sha256: "f".repeat(64), commit_sha: "e".repeat(40),
     destination: { ...PLAN.content.repository, head_branch: `refactra/${RUN_ID}/r1` } },
   publication_approval: null,
+  publication: null,
 };
 const PUBLICATION_APPROVAL = {
   result_id: RESULT.id, result_revision: RESULT.revision,

@@ -18,6 +18,7 @@ type CandidateResult = {
   diff: string;
   publication_target: PublicationTarget | null;
   publication_approval: PublicationApproval | null;
+  publication: { status: "branch_pushed" } | { status: "draft_opened"; number: number; url: string } | null;
   validation: {
     check_id: string;
     paths: string[];
@@ -94,6 +95,7 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
 
   const result = state.status === "loaded" ? state.result : null;
   const target = result?.publication_target;
+  const publication = result?.publication;
   return (
     <section className="saved-run" aria-labelledby="candidate-result-title">
       <h4 id="candidate-result-title">Candidate result</h4>
@@ -132,13 +134,18 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
             <div><dt>Head branch</dt><dd><code>{target.destination.head_branch}</code></dd></div>
           </dl>
         </>}
-        {result.publication_approval ? (
+        {publication?.status === "branch_pushed" && <p role="status">Branch pushed. Waiting for the draft PR.</p>}
+        {publication?.status === "draft_opened" && <p role="status">
+          Draft PR opened.{" "}
+          <a className="publication-link" href={publication.url}>View draft PR #{publication.number} on GitHub</a>
+        </p>}
+        {!publication && (result.publication_approval ? (
           <p role="status">Publication approved for result revision {result.publication_approval.result_revision}.</p>
         ) : target ? (
           <button className="repository-check" type="button" onClick={() => approvePublication(result)} disabled={approving}>
             {approving ? "Recording approval…" : "Approve publication"}
           </button>
-        ) : <p>Waiting for a prepared publication target.</p>}
+        ) : <p>Waiting for a prepared publication target.</p>)}
         {approvalError && <p className="error-box" role="alert">{approvalError}</p>}
       </div>}
     </section>

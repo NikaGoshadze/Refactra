@@ -294,6 +294,8 @@ After approval, an operator can run `uv run python -m refactra.publication_branc
 
 Run `uv run python -m refactra.publication_pr <run-id>` after the branch push. The App also needs Pull requests read and write access on the selected repository. Refactra checks the remote base and head, opens or recovers the matching draft PR, and records its URL in PostgreSQL.
 
+Select **Refresh saved result** in the browser to see whether the branch was pushed and open the draft PR once its link is recorded.
+
 ## Read-only OpenAI analysis adapter
 
 `execute_read_only_analysis(session_factory, run_id, attempt_id, provider)` reloads the saved context, counts the complete input through OpenAI's `/v1/responses/input_tokens` endpoint, commits durable admission, and then makes one Responses API call outside database transactions. A trusted operator must authorize repository access first. Construct `OpenAIAnalysisProvider` with the server-only `REFACTRA_OPENAI_API_KEY` from your environment; host Python commands do not load `.env` automatically. No new dependency is required.

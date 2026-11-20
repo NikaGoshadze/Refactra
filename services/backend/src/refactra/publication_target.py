@@ -1,7 +1,9 @@
 """Persist the verified Git commit and PR destination for human review."""
 
 import json
+import re
 from hashlib import sha256
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -11,6 +13,8 @@ from sqlalchemy.orm import Session
 from refactra.models import Run, RunCandidateResult, RunEvent, RunPublicationTarget
 
 PUBLICATION_APPROVED = "PUBLICATION_APPROVED"
+PUBLICATION_BRANCH_PUSHED = "PUBLICATION_BRANCH_PUSHED"
+PUBLICATION_PR_OPENED = "PUBLICATION_PR_OPENED"
 
 
 class PublicationTargetError(ValueError):
@@ -22,6 +26,50 @@ class PublicationApproval(BaseModel):
     result_revision: int
     target_sha256: str
     approved_by: int
+
+
+class PublicationBranchRead(BaseModel):
+    status: Literal["branch_pushed"] = "branch_pushed"
+
+
+class PublicationDraftRead(BaseModel):
+    status: Literal["draft_opened"] = "draft_opened"
+    number: int
+    url: str
+
+
+def load_publication_progress(
+    session: Session, run_id: UUID, *, target_sha256: str, commit_sha: str, head_branch: str
+) -> PublicationBranchRead | PublicationDraftRead | None:
+    event = session.execute(
+        select(RunEvent.event_type, RunEvent.payload)
+        .where(
+            RunEvent.run_id == run_id,
+            RunEvent.event_type.in_([PUBLICATION_BRANCH_PUSHED, PUBLICATION_PR_OPENED]),
+            RunEvent.payload["target_sha256"].astext == target_sha256,
+            RunEvent.payload["commit_sha"].astext == commit_sha,
+            RunEvent.payload["head_branch"].astext == head_branch,
+        )
+        .order_by(RunEvent.id.desc())
+        .limit(1)
+    ).one_or_none()
+    if event is None:
+        return None
+    kind, receipt = event
+    if kind == PUBLICATION_BRANCH_PUSHED:
+        return PublicationBranchRead()
+    number, repository = receipt.get("pull_request_number"), receipt.get("repository")
+    if (
+        type(number) is int
+        and number > 0
+        and isinstance(repository, str)
+        and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+        and not any(part in {".", ".."} for part in repository.split("/"))
+    ):
+        url = f"https://github.com/{repository}/pull/{number}"
+        if receipt.get("pull_request_url") == url:
+            return PublicationDraftRead(number=number, url=url)
+    return None
 
 
 def load_publication_approval(session: Session, run_id: UUID) -> PublicationApproval | None:

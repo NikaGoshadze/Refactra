@@ -14,12 +14,14 @@ from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.github_app import GitHubAppError
 from refactra.models import Run, RunEvent
-from refactra.publication_branch import PUBLICATION_BRANCH_PUSHED, load_approved_target
-from refactra.publication_target import PublicationTargetError
+from refactra.publication_branch import load_approved_target
+from refactra.publication_target import (
+    PUBLICATION_BRANCH_PUSHED,
+    PUBLICATION_PR_OPENED,
+    PublicationTargetError,
+)
 from refactra.repository_plan_worker import authorize_run_repository
 from refactra.repository_revision import resolve_revision
-
-PUBLICATION_PR_OPENED = "PUBLICATION_PR_OPENED"
 
 
 def _publication_event(session: Session, run_id: UUID, kind: str) -> dict | None:
