@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError, request } from "@/lib/api";
+import { CandidateResultPanel } from "./candidate-result-panel";
 
 type ApprovalReceipt = { revision: number };
 type PlanWrite = "revision" | "approval";
@@ -161,6 +162,7 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
             {writing === "approval" ? "Recording approval…" : `Approve plan revision ${plan.artifact.revision}`}
           </button>
         </div>}
+        {plan.approval && <CandidateResultPanel runId={runId} />}
       </>}
     </section>
   );
