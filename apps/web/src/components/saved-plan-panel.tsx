@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError, request } from "@/lib/api";
 
 type SavedPlan = {
   artifact: { revision: number; sha256: string };
+  readiness: { unsupported_check_ids: string[]; has_required_supported_check: boolean };
   content: {
     summary: string;
     changes: { path: string; action: string; intent: string }[];
@@ -33,6 +34,8 @@ function PlanNotes({ title, entries, empty }: { title: string; entries: string[]
 
 export function SavedPlanPanel({ runId }: { runId: string }) {
   const [state, setState] = useState<PlanState>({ status: "idle" });
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const pending = useRef<AbortController | null>(null);
   useEffect(() => () => pending.current?.abort(), []);
 
@@ -41,6 +44,7 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
     const controller = new AbortController();
     pending.current = controller;
     setState({ status: "loading" });
+    setSaveError(null);
     try {
       const plan = await request<SavedPlan>(`runs/${runId}/plan`, {
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(65000)]),
@@ -61,28 +65,83 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
     }
   }
 
+  async function saveRevision(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (pending.current || state.status !== "loaded") return;
+    let proposal: unknown;
+    try {
+      proposal = JSON.parse(String(new FormData(event.currentTarget).get("proposal")));
+    } catch {
+      setSaveError("Enter valid JSON for the plan draft.");
+      return;
+    }
+    const controller = new AbortController();
+    pending.current = controller;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const plan = await request<SavedPlan>(`runs/${runId}/plan`, {
+        method: "POST",
+        headers: { "X-Refactra-CSRF": "1" },
+        body: JSON.stringify({ expected_revision: state.plan.artifact.revision, proposal }),
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(65000)]),
+      });
+      if (!controller.signal.aborted) setState({ status: "loaded", plan });
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setSaveError(error instanceof ApiError && error.code === "invalid_request"
+        ? "Check the draft fields and keep the structure of the original plan."
+        : error instanceof Error ? error.message : "Could not save the plan revision.");
+    } finally {
+      pending.current = null;
+      if (!controller.signal.aborted) setSaving(false);
+    }
+  }
+
   return (
     <section className="saved-plan" aria-labelledby="saved-plan-title">
       <h3 id="saved-plan-title">Refactoring plan</h3>
-      <button className="repository-check" type="button" onClick={loadPlan} disabled={state.status === "loading"}>
+      <button className="repository-check" type="button" onClick={loadPlan} disabled={state.status === "loading" || saving}>
         {state.status === "idle" ? "Load saved plan" : "Refresh saved plan"}
       </button>
       {state.status === "loading" && <p role="status">Loading saved plan…</p>}
       {state.status === "missing" && <p role="status">No plan has been saved for this run yet.</p>}
       {state.status === "error" && <p className="error-box" role="alert">{state.message}</p>}
-      {state.status === "loaded" && <PlanReview plan={state.plan} />}
+      {state.status === "loaded" && <>
+        <PlanReview plan={state.plan} />
+        <details className="saved-run" key={state.plan.artifact.sha256}>
+          <summary>Revise plan draft</summary>
+          <form onSubmit={saveRevision}>
+            <p id="plan-draft-hint">Record answers in the relevant plan fields, then remove the resolved questions.</p>
+            <label htmlFor="plan-draft">Plan draft JSON</label>
+            <textarea id="plan-draft" name="proposal" defaultValue={draftJson(state.plan.content)}
+              aria-describedby="plan-draft-hint" rows={12} required disabled={saving} />
+            {saveError && <p className="error-box" role="alert">{saveError}</p>}
+            <button className="repository-check" type="submit" disabled={saving}>
+              {saving ? "Saving revision…" : "Save plan revision"}
+            </button>
+          </form>
+        </details>
+      </>}
     </section>
   );
 }
 
-function PlanReview({ plan: { artifact, content } }: { plan: SavedPlan }) {
+function draftJson(content: SavedPlan["content"]) {
+  const { summary, changes, acceptance_criteria, validation_checks, preserve_behavior, assumptions, blocking_questions } = content;
+  return JSON.stringify({ summary, changes, acceptance_criteria, validation_checks, preserve_behavior, assumptions, blocking_questions }, null, 2);
+}
+
+function PlanReview({ plan: { artifact, content, readiness } }: { plan: SavedPlan }) {
   return (
     <>
       <dl className="repository-details">
-        <div><dt>Plan revision</dt><dd>{artifact.revision}</dd></div>
+        <div><dt>Plan revision</dt><dd aria-live="polite">{artifact.revision}</dd></div>
         <div><dt>SHA-256</dt><dd><code>{artifact.sha256}</code></dd></div>
       </dl>
       <p>{content.summary}</p>
+      <PlanNotes title="Unrecognized validation IDs" entries={readiness.unsupported_check_ids} />
+      {!readiness.has_required_supported_check && <p>A registered required validation check is missing.</p>}
       <PlanNotes title="Blocking questions" entries={content.blocking_questions} empty="None recorded." />
       <div>
         <h4>Proposed changes</h4>

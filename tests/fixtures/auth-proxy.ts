@@ -13,16 +13,21 @@ export const CLEAR_SESSION = "refactra_session=; Path=/; Max-Age=0; HttpOnly; Sa
 export const RUN_ID = "367dfc44-100b-4af2-9ed7-ddf97ae24d52";
 export const RUN_PATH = `/api/v1/runs/${RUN_ID}`;
 export const PLAN_PATH = `${RUN_PATH}/plan`;
+export const PLAN_PROPOSAL = {
+  summary: "<strong>Extract the cart calculation</strong>",
+  changes: [{ path: "src/cart.py", action: "MODIFY", intent: "Extract calculation" }],
+  acceptance_criteria: [{ id: "AC-1", description: "Preserve totals" }],
+  validation_checks: [{ check_id: "VC1", required: true, paths: ["tests/test_cart.py"], criteria_ids: ["AC-1"] }],
+  preserve_behavior: ["Return the same total for empty carts."],
+  assumptions: ["Keep the public function signature."],
+  blocking_questions: ["Which rounding rule should be preserved?"],
+};
 export const PLAN = {
   artifact: { revision: 1, sha256: "b".repeat(64) },
+  readiness: { blocking_question_count: 1, unsupported_check_ids: ["VC1"], has_required_supported_check: false },
   content: {
-    summary: "<strong>Extract the cart calculation</strong>",
-    changes: [{ path: "src/cart.py", action: "MODIFY", intent: "Extract calculation" }],
-    acceptance_criteria: [{ id: "AC-1", description: "Preserve totals" }],
-    validation_checks: [{ check_id: "VC1", required: true, paths: ["tests/test_cart.py"], criteria_ids: ["AC-1"] }],
-    preserve_behavior: ["Return the same total for empty carts."],
-    assumptions: ["Keep the public function signature."],
-    blocking_questions: ["Which rounding rule should be preserved?"],
+    ...PLAN_PROPOSAL, schema_version: "1", run_id: RUN_ID,
+    repository: { repository_id: 1001132861, base_branch: "main", base_sha: "a".repeat(40) },
   },
 };
 export const SAVED_RUN = {
@@ -91,6 +96,24 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
           }
           response.writeHead(202, { Location: RUN_PATH, "Cache-Control": "public, max-age=3600" });
           setTimeout(() => response.end(JSON.stringify({ run_id: RUN_ID })), 5500);
+        });
+        return;
+      } else if (route === PLAN_PATH && request.method === "POST") {
+        request.setEncoding("utf8");
+        call.body = "";
+        request.on("data", (chunk) => { call.body += chunk; });
+        request.on("end", () => {
+          if (request.headers.origin !== origin || request.headers["x-refactra-csrf"] !== "1") {
+            response.writeHead(403).end(JSON.stringify({ error: { code: "csrf_rejected" } }));
+            return;
+          }
+          const { expected_revision, proposal } = JSON.parse(call.body!);
+          if (expected_revision !== 1) {
+            response.writeHead(409).end(JSON.stringify({ error: { code: "plan_revision_conflict" } }));
+            return;
+          }
+          response.end(JSON.stringify({ content: { ...PLAN.content, ...proposal }, artifact: { revision: 2, sha256: "c".repeat(64) },
+            readiness: { blocking_question_count: 0, unsupported_check_ids: [], has_required_supported_check: true } }));
         });
         return;
       } else if (route.startsWith("/api/v1/runs/")) {

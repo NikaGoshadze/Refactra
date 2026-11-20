@@ -26,6 +26,10 @@ PlanText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
 Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")]
 
 
+class PlanRevisionConflict(ValueError):
+    """The run or its current revision no longer permits this save."""
+
+
 def _relative_path(path: str) -> str:
     if re.search(r"[\x00-\x1f\x7f\\:]", path) or any(
         part in {"", ".", ".."} for part in path.split("/")
@@ -144,7 +148,7 @@ def save_refactoring_plan(
         or session.get(RunAnalysisResult, run_id) is None
         or load_analysis_context(session, run_id) is None
     ):
-        raise ValueError("A repository run with completed analysis is required.")
+        raise PlanRevisionConflict("A repository run with completed analysis is required.")
     payload.update(
         schema_version="1",
         run_id=str(run_id),
@@ -165,7 +169,7 @@ def save_refactoring_plan(
         return latest
     revision = latest.revision if latest is not None else 0
     if expected_revision != revision:
-        raise ValueError("Plan revision changed. Reload it before saving a revision.")
+        raise PlanRevisionConflict("Plan revision changed. Reload it before saving a revision.")
     plan = RunPlan(run_id=run_id, revision=revision + 1, sha256=digest, document=document)
     session.add(plan)
     session.flush()
