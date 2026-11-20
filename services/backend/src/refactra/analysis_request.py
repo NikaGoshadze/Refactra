@@ -9,7 +9,8 @@ from uuid import UUID
 from refactra.analysis_context import FORMAT, MAX_CONTEXT_BYTES, PreparedAnalysisContext
 
 MAX_REQUEST_INPUT = 12_000
-MAX_REQUEST_OUTPUT = 3_000
+DEFAULT_REQUEST_OUTPUT = 3_000
+MAX_REQUEST_OUTPUT = 6_000
 MAX_RUN_INPUT = 40_000
 MAX_RUN_OUTPUT = 12_000
 MAX_RUN_ATTEMPTS = 8
@@ -97,7 +98,7 @@ def prepare_analysis_request(
     *,
     monthly_committed_usd: Decimal,
     count_input_tokens: Callable[[AnalysisModelInput], int],
-    max_output_tokens: int = MAX_REQUEST_OUTPUT,
+    max_output_tokens: int = DEFAULT_REQUEST_OUTPUT,
 ) -> PreparedAnalysisRequest:
     """Counter must cover the final provider envelope, instructions and context.
 

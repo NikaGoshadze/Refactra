@@ -9,6 +9,7 @@ import httpx
 
 from refactra.analysis_context import load_analysis_context
 from refactra.analysis_request import (
+    DEFAULT_REQUEST_OUTPUT,
     MAX_REQUEST_OUTPUT,
     AnalysisModelInput,
     BudgetUsage,
@@ -156,7 +157,13 @@ class OpenAIAnalysisProvider:
 
 
 def execute_read_only_analysis(
-    session_factory, run_id: UUID, attempt_id: UUID, provider, *, ledger_limit_usd=None
+    session_factory,
+    run_id: UUID,
+    attempt_id: UUID,
+    provider,
+    *,
+    ledger_limit_usd=None,
+    max_output_tokens: int = DEFAULT_REQUEST_OUTPUT,
 ):
     """Trusted caller must authorize repository access before invoking this helper.
 
@@ -174,6 +181,7 @@ def execute_read_only_analysis(
         BudgetUsage(),
         monthly_committed_usd=Decimal("0"),
         count_input_tokens=provider.count_input_tokens,
+        max_output_tokens=max_output_tokens,
     )
     # Durable admission recalculates real balances; preflight snapshots are not authority.
     with session_factory.begin() as session:

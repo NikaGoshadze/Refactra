@@ -88,7 +88,7 @@ class ModelReservation(Base):
     __tablename__ = "model_reservations"
     __table_args__ = (
         CheckConstraint(
-            "input_tokens BETWEEN 1 AND 12000 AND output_tokens BETWEEN 1 AND 3000 "
+            "input_tokens BETWEEN 1 AND 12000 AND output_tokens BETWEEN 1 AND 6000 "
             "AND maximum_cost_usd BETWEEN 0 AND 0.75",
             name="ck_model_reservation_bounds",
         ),
