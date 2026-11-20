@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import subprocess
+from base64 import b64encode
 from functools import partial
 from hashlib import sha256
 from pathlib import Path
@@ -31,7 +32,13 @@ class CandidateCommitError(ValueError):
     """An operator-safe reason the local commit could not be prepared."""
 
 
-def _git(repository: Path, *args: str, data: bytes | None = None, date: str = "") -> bytes:
+def _git(
+    repository: Path,
+    *args: str,
+    data: bytes | None = None,
+    date: str = "",
+    https_auth: tuple[str, str] | None = None,
+) -> bytes:
     env = {
         key: value for key, value in os.environ.items() if not key.startswith(("GIT_", "REFACTRA_"))
     }
@@ -51,6 +58,17 @@ def _git(repository: Path, *args: str, data: bytes | None = None, date: str = ""
             GIT_COMMITTER_EMAIL="refactra@localhost",
             GIT_AUTHOR_DATE=date,
             GIT_COMMITTER_DATE=date,
+        )
+    if https_auth:
+        remote, token = https_auth
+        credential = b64encode(f"x-access-token:{token}".encode()).decode()
+        env.update(
+            GIT_ALLOW_PROTOCOL="https",
+            GIT_CONFIG_COUNT="2",
+            GIT_CONFIG_KEY_0=f"http.{remote}.extraHeader",
+            GIT_CONFIG_VALUE_0=f"Authorization: Basic {credential}",
+            GIT_CONFIG_KEY_1="http.followRedirects",
+            GIT_CONFIG_VALUE_1="false",
         )
     try:
         return subprocess.run(
