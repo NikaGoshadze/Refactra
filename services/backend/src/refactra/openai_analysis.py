@@ -164,12 +164,14 @@ def execute_read_only_analysis(
     *,
     ledger_limit_usd=None,
     max_output_tokens: int = DEFAULT_REQUEST_OUTPUT,
+    check_admission=None,
 ):
     """Trusted caller must authorize repository access before invoking this helper.
 
     Reload saved input, count it, commit admission, then make one physical call outside
     database transactions. Unknown outcomes keep the hold; existing receipts never resend.
-    Results are returned to the caller, not yet persisted as workflow checkpoints.
+    The optional admission check runs in the reservation transaction. The caller
+    owns result persistence.
     """
     with session_factory() as session:
         context = load_analysis_context(session, run_id)
@@ -185,6 +187,8 @@ def execute_read_only_analysis(
     )
     # Durable admission recalculates real balances; preflight snapshots are not authority.
     with session_factory.begin() as session:
+        if check_admission is not None:
+            check_admission(session)
         receipt = reserve_analysis_request(
             session, attempt_id, request, ledger_limit_usd=ledger_limit_usd
         )

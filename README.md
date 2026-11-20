@@ -224,7 +224,13 @@ Preflight requests carry their verified pricing configuration. New reservations 
 
 Settlement uses the same transaction lock as admission and commits its usage record/event in the caller's transaction. Identical repeated reports add no event; conflicting reports cannot overwrite confirmed usage. Later admission sums confirmed usage where available and otherwise retains the full hold. Unused token/cost allowances are released, but the attempt count never decreases. Missing/unknown usage is not zero usage. Overruns are recorded without clamping, flagged in the event and included in future budget checks.
 
-Migration `0005_model_usage` adds nullable pricing/usage fields and an all-or-none settlement constraint; migration `0006_analysis_output` raises the per-call reservation ceiling to 6,000 output tokens and is the required readiness head. Existing holds receive no guessed pricing and remain held; they cannot be settled without their original rate snapshot. Apply migrations before using the updated backend. Verified provider selection/tokenization, transport and actual response handling remain later work; no paid calls or new execution endpoints are added here.
+Migration `0005_model_usage` adds nullable pricing and usage fields and an all-or-none settlement constraint. Migration `0006_analysis_output` raises the per-call reservation ceiling to 6,000 output tokens. Existing holds remain held and require their original rate snapshot for settlement.
+
+## Read-only repository worker
+
+After authorizing model use for the repository, an internal caller can queue a prepared run with `enqueue_repository_analysis(session, run_id)`. The worker uses its saved, pinned context and GPT-5.4 mini with the default 3,000-token output allowance. Set `REFACTRA_OPENAI_API_KEY` in the worker environment and start `uv run python -m refactra.worker --repository-analysis` after applying migrations. Choose either mock or repository analysis mode for the single worker slot.
+
+Migration `0007_analysis_results` adds `run_analysis_results` and is required for API readiness. The worker saves the result as untrusted text and transitions the run to `NEEDS_HUMAN_REVIEW` in the same transaction. Budget receipts are committed before generation. If a restarted worker finds a receipt without a saved result, it records an unknown outcome or missing result and stops that run. Queue submission and result access are currently internal.
 
 ## Read-only OpenAI analysis adapter
 
@@ -234,7 +240,7 @@ The initial fixed profile is `gpt-5.4-mini-2026-03-17`, with reasoning disabled,
 
 Calls use the default service tier, `store=false`, no tools and no automatic retries or redirects. Confirmed usage settles the original reservation even for incomplete/refused responses; missing/invalid usage, unexpected model/tier, transport errors and timeouts retain the full hold. Existing receipts never authorize resending. Errors and object representations omit credentials, source and response text. Estimates do not reproduce the provider invoice, and `store=false` is not a zero-retention guarantee.
 
-This is an operator-invoked integration, not an enabled API/worker workflow. Results are returned as untrusted text and are not yet saved as analysis checkpoints; structured results, recovery and orchestration are separate work. Automated tests use mocked HTTP and isolated PostgreSQL schemas, never paid calls. Local operator checks retain their context/usage ledger in a separate `refactra_operator` schema; its spend is separate from the application's ledger.
+The adapter returns untrusted text. The worker saves it for review when invoked through the repository queue. Automated tests use mocked HTTP and isolated PostgreSQL schemas. Local operator checks retain their context and usage ledger in a separate `refactra_operator` schema.
 
 ## DeepSeek analysis option
 

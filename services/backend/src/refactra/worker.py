@@ -1,8 +1,9 @@
-"""Single mock worker. No model, shell, repository or GitHub operations are available."""
+"""Process mock commands or opt in to read-only repository analysis."""
 
 import argparse
 import json
 import logging
+import os
 import signal
 import threading
 from datetime import timedelta
@@ -14,18 +15,21 @@ from sqlalchemy.exc import SQLAlchemyError
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.models import Run, RunCommand, RunEvent
+from refactra.openai_analysis import OpenAIAnalysisProvider
+from refactra.repository_analysis_worker import WORKFLOW, process_repository_analysis
 
 logger = logging.getLogger("refactra.worker")
 WORKER_LOCK = 72341001
 
 
-def claim_command(session_factory, worker_id: str) -> UUID | None:
+def claim_command(session_factory, worker_id: str, *, workflow="mock-v0.1") -> UUID | None:
     # Commit this short claim before executing work; never hold a queue row lock while idle.
     with session_factory.begin() as session:
         now = session.scalar(select(func.now()))
         command = session.scalar(
             select(RunCommand)
             .where(
+                RunCommand.run_id.in_(select(Run.id).where(Run.workflow_version == workflow)),
                 RunCommand.available_at <= now,
                 or_(
                     RunCommand.status == "PENDING",
@@ -111,11 +115,22 @@ def process_command(session_factory, command_id: UUID, worker_id: str) -> bool:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true", help="Process at most one command and exit.")
+    parser.add_argument(
+        "--repository-analysis", action="store_true", help="Process prepared repository runs."
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     settings = Settings.from_env()
-    if not settings.enable_mock:
-        raise SystemExit("Mock mode is disabled. No live worker is implemented.")
+    provider = None
+    if args.repository_analysis:
+        key = os.getenv("REFACTRA_OPENAI_API_KEY", "").strip()
+        if not key:
+            raise SystemExit("Repository analysis requires REFACTRA_OPENAI_API_KEY.")
+        provider = OpenAIAnalysisProvider(key)
+    elif not settings.enable_mock:
+        raise SystemExit("Mock mode is disabled.")
+    workflow = WORKFLOW if provider is not None else "mock-v0.1"
+    mode = "repository_analysis" if provider is not None else "mock"
     engine = make_engine(settings.database_url)
     session_factory = sessions(engine)
     worker_id = str(uuid4())
@@ -124,22 +139,26 @@ def main():
         signal.signal(signum, lambda *_: stopped.set())
     try:
         # A session-scoped advisory lock enforces the current one-worker topology.
-        # Reclaiming expired work is only safe here because the mock has no external effects.
         with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as guard:
             if not guard.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": WORKER_LOCK}):
                 raise SystemExit("Another Refactra worker holds the local execution slot.")
-            logger.info(json.dumps({"event": "worker_started", "mode": "mock"}))
+            logger.info(json.dumps({"event": "worker_started", "mode": mode}))
             while not stopped.is_set():
                 guard.execute(text("SELECT 1"))  # Loss of the lock connection stops this worker.
-                command_id = claim_command(session_factory, worker_id)
+                command_id = claim_command(session_factory, worker_id, workflow=workflow)
                 if command_id:
-                    process_command(session_factory, command_id, worker_id)
+                    if provider is None:
+                        processed = process_command(session_factory, command_id, worker_id)
+                    else:
+                        processed = process_repository_analysis(
+                            session_factory, command_id, worker_id, provider
+                        )
                     logger.info(
                         json.dumps(
                             {
-                                "event": "command_processed",
+                                "event": "command_processed" if processed else "command_claim_lost",
                                 "command_id": str(command_id),
-                                "mode": "mock",
+                                "mode": mode,
                             }
                         )
                     )
@@ -154,7 +173,7 @@ def main():
                 {
                     "event": "worker_stopped",
                     "reason": "database_or_state_error",
-                    "message": "Inspect the database and restart the mock worker.",
+                    "message": "Inspect the database and restart the worker.",
                 }
             )
         )
