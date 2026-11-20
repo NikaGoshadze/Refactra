@@ -262,9 +262,11 @@ In the browser, click **Load saved plan** when an analysis is ready for review. 
 
 Use **Revise plan draft** to edit the proposal JSON. Record answers in the relevant fields, remove resolved questions, and update any unrecognized validation IDs. The protected `POST /api/v1/runs/{run_id}/plan` takes `{expected_revision, proposal}` and returns the saved draft with updated readiness. A changed draft appends an immutable revision. A stale edit returns 409, and retrying the same saved content returns its existing revision.
 
-Migration `0009_plan_approvals` is required for API readiness. The protected `POST /api/v1/runs/{run_id}/plan/approve` accepts `{plan_id, revision, sha256}` with the active owner's session, trusted Origin, and `X-Refactra-CSRF: 1`. The latest revision must match all three fields, have zero blocking questions, and use registered validation IDs with a required check. PostgreSQL records one decision and event per run. Plan reads include the receipt for that revision, and new draft edits are locked once approved.
+The protected `POST /api/v1/runs/{run_id}/plan/approve` accepts `{plan_id, revision, sha256}` with the active owner's session, trusted Origin, and `X-Refactra-CSRF: 1`. The latest revision must match all three fields, have zero blocking questions, and use registered validation IDs with a required check. PostgreSQL records one decision and event per run. Plan reads include the receipt for that revision, and new draft edits are locked once approved.
 
-In the browser, review the saved draft and click **Approve plan revision N**. The plan shows the recorded decision, including when reopened. This step records approval. Worker resume is a later step.
+In the browser, review the saved draft and click **Approve plan revision N**. The plan shows the recorded decision, including when reopened.
+
+Migration `0010_plan_approval_queue` is required for API readiness. Approval and its queue command commit together. The migration also queues previously approved plans. From `services/backend`, run `uv run python -m refactra.worker --repository-approval --once` with `REFACTRA_DATABASE_URL` set. The worker rechecks the saved revision, checksum, owner, and readiness, then records `PLAN_APPROVAL_VERIFIED`. A claim can be recovered after its lease expires. This checkpoint makes no model calls. Repository editing is a later step.
 
 ## Read-only OpenAI analysis adapter
 

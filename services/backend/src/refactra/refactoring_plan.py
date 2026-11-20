@@ -19,10 +19,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, undefer
 
 from refactra.analysis_context import load_analysis_context
-from refactra.models import Run, RunAnalysisResult, RunEvent, RunPlan, RunPlanApproval
+from refactra.models import Run, RunAnalysisResult, RunCommand, RunEvent, RunPlan, RunPlanApproval
 
 MAX_PLAN_BYTES = 64 * 1024
 SUPPORTED_PLAN_CHECK_IDS = ("python.pytest",)
+APPLY_PLAN_APPROVAL = "APPLY_PLAN_APPROVAL"
 PlanText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
 Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")]
 
@@ -186,10 +187,54 @@ def save_refactoring_plan(
     return plan
 
 
+def _require_reviewable_plan(run: Run, plan: RunPlan) -> None:
+    try:
+        content = PlanContent.model_validate_json(plan.document)
+    except ValidationError:
+        raise PlanRevisionConflict("Saved plan could not be verified.") from None
+    if (
+        content.run_id != run.id
+        or content.repository.repository_id != run.github_repository_id
+        or content.repository.base_branch != run.base_branch
+        or content.repository.base_sha != run.base_sha
+    ):
+        raise PlanRevisionConflict("Saved plan does not match the pinned repository revision.")
+    readiness = evaluate_plan_readiness(content)
+    if (
+        readiness.blocking_question_count
+        or readiness.unsupported_check_ids
+        or not readiness.has_required_supported_check
+    ):
+        raise PlanRevisionConflict(
+            "Resolve blocking questions and validation checks before approving."
+        )
+
+
+def approval_command_key(run_id: UUID, revision: int) -> str:
+    return f"repository:plan-approval:{run_id}:{revision}"
+
+
+def load_approved_plan(session: Session, run: Run) -> RunPlan:
+    """Recheck the persisted decision for a run locked by the caller."""
+    approval = session.get(RunPlanApproval, run.id)
+    plan = load_refactoring_plan(session, run.id)
+    if (
+        run.workflow_version != "repository-v0.1"
+        or run.status != "NEEDS_HUMAN_REVIEW"
+        or approval is None
+        or plan is None
+        or (approval.revision, approval.sha256, approval.approved_by)
+        != (plan.revision, plan.sha256, run.requested_by)
+    ):
+        raise PlanRevisionConflict("This run does not have a matching plan approval.")
+    _require_reviewable_plan(run, plan)
+    return plan
+
+
 def approve_refactoring_plan(
     session: Session, run_id: UUID, *, plan_id: UUID, revision: int, sha256: str, actor_id: int
 ) -> RunPlanApproval:
-    """Record an owner's decision while serializing against draft revisions on the same run."""
+    """Record the owner's decision and enqueue its handoff in the same transaction."""
     run = session.get(Run, run_id, with_for_update=True, populate_existing=True)
     if (
         run is None
@@ -212,31 +257,18 @@ def approve_refactoring_plan(
             return existing
         raise PlanRevisionConflict("This run already has an approved plan.")
 
-    try:
-        content = PlanContent.model_validate_json(plan.document)
-    except ValidationError:
-        raise PlanRevisionConflict("Saved plan could not be verified.") from None
-    if (
-        content.run_id != run.id
-        or content.repository.repository_id != run.github_repository_id
-        or content.repository.base_branch != run.base_branch
-        or content.repository.base_sha != run.base_sha
-    ):
-        raise PlanRevisionConflict("Saved plan does not match the pinned repository revision.")
-    readiness = evaluate_plan_readiness(content)
-    if (
-        readiness.blocking_question_count
-        or readiness.unsupported_check_ids
-        or not readiness.has_required_supported_check
-    ):
-        raise PlanRevisionConflict(
-            "Resolve blocking questions and validation checks before approving."
-        )
-
+    _require_reviewable_plan(run, plan)
     approval = RunPlanApproval(
         run_id=run_id, revision=revision, sha256=sha256, approved_by=actor_id
     )
     session.add(approval)
+    session.add(
+        RunCommand(
+            run_id=run_id,
+            kind=APPLY_PLAN_APPROVAL,
+            dedupe_key=approval_command_key(run_id, revision),
+        )
+    )
     session.add(
         RunEvent(
             run_id=run_id,

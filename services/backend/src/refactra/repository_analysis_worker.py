@@ -1,4 +1,4 @@
-"""Run the analysis step for an internally authorized, prepared repository run."""
+"""Process read-only repository workflow commands."""
 
 from uuid import UUID
 
@@ -12,6 +12,12 @@ from refactra.openai_analysis import (
     AnalysisProviderError,
     AnalysisResult,
     execute_read_only_analysis,
+)
+from refactra.refactoring_plan import (
+    APPLY_PLAN_APPROVAL,
+    PlanRevisionConflict,
+    approval_command_key,
+    load_approved_plan,
 )
 
 WORKFLOW = "repository-v0.1"
@@ -127,4 +133,36 @@ def process_repository_analysis(
                 code = "analysis_outcome_unknown"
         run = session.get(Run, run_id, with_for_update=True)
         _finish(session, command, run, session.scalar(select(func.now())), code=code, result=result)
+        return True
+
+
+def process_repository_plan_approval(session_factory, command_id: UUID, worker_id: str) -> bool:
+    """Verify the durable handoff without executing repository changes."""
+    with session_factory.begin() as session:
+        command = _claimed_command(session, command_id, worker_id)
+        now = session.scalar(select(func.now()))
+        if command is None or command.kind != APPLY_PLAN_APPROVAL or command.lease_until <= now:
+            return False
+        run = session.get(Run, command.run_id, with_for_update=True)
+        try:
+            plan = load_approved_plan(session, run)
+            if command.dedupe_key != approval_command_key(run.id, plan.revision):
+                raise PlanRevisionConflict("Approval command targets a different revision.")
+        except PlanRevisionConflict:
+            command.status = "FAILED"
+            event_type = "PLAN_APPROVAL_REJECTED"
+            payload = {"code": "approval_mismatch"}
+        else:
+            command.status = "DONE"
+            event_type = "PLAN_APPROVAL_VERIFIED"
+            payload = {"plan_id": str(plan.id), "revision": plan.revision, "sha256": plan.sha256}
+        command.completed_at = now
+        command.lease_until = None
+        session.add(
+            RunEvent(
+                run_id=run.id,
+                event_type=event_type,
+                payload={**payload, "command_id": str(command.id)},
+            )
+        )
         return True
