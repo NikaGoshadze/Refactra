@@ -256,6 +256,8 @@ Rerunning the command returns a saved plan or stops if a structured attempt was 
 
 `GET /api/v1/runs/{run_id}/plan` on the backend returns the latest saved plan. Add `?revision=1` to read a specific revision. The API verifies run ownership and current GitHub access before returning the plan or a `plan_not_found` error. The response includes the proposal and artifact metadata. The SHA-256 identifies the exact saved document bytes.
 
+The planner and plan read API also report the number of blocking questions, unregistered validation IDs, and whether a registered check is required. The initial Python profile recognizes `python.pytest` during plan review. Earlier drafts with IDs like `VC1` stay reviewable and need revision. These checks inspect plan metadata only. Running tests and approving a plan are later steps.
+
 In the browser, click **Load saved plan** when an analysis is ready for review. To return to an earlier run, verify repository access, choose **Open a saved run**, and enter its run ID. The plan view shows the latest saved revision. Loading it uses the saved analysis and plan without making a model request.
 
 ## Read-only OpenAI analysis adapter

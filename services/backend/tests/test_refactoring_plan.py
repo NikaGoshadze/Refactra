@@ -13,7 +13,12 @@ from refactra.model_reservations import settle_model_usage
 from refactra.models import ModelReservation, RunEvent
 from refactra.openai_analysis import OpenAIAnalysisProvider
 from refactra.planning_request import PLAN_INSTRUCTIONS
-from refactra.refactoring_plan import PlanProposal, load_refactoring_plan, save_refactoring_plan
+from refactra.refactoring_plan import (
+    PlanProposal,
+    evaluate_plan_readiness,
+    load_refactoring_plan,
+    save_refactoring_plan,
+)
 from refactra.repository_analysis_worker import (
     WORKFLOW,
     enqueue_repository_analysis,
@@ -111,6 +116,20 @@ def test_untrusted_plan_validation_rejects_invalid_paths_and_references(proposal
         PlanProposal.model_validate(proposal)
 
 
+def test_plan_readiness_requires_a_registered_required_check(proposal):
+    check = proposal["validation_checks"][0]
+    proposal["validation_checks"] = [
+        dict(check, check_id="VC2"),
+        dict(check, required=False),
+        dict(check, check_id="VC1", required=False),
+        dict(check, check_id="VC2", required=False),
+    ]
+    readiness = evaluate_plan_readiness(PlanProposal.model_validate(proposal))
+    assert readiness.unsupported_check_ids == ["VC1", "VC2"]
+    assert readiness.has_required_supported_check is False
+    assert readiness.blocking_question_count == 0
+
+
 @pytest.mark.parametrize(
     ("valid", "legacy_state"),
     [(True, None), (False, None), (True, "settled"), (True, "held")],
@@ -146,6 +165,7 @@ def test_operator_plan_uses_saved_inputs_and_one_paid_receipt(
         body = json.loads(request.content)
         requests.append(body)
         assert body["instructions"] == PLAN_INSTRUCTIONS
+        assert "python.pytest" in body["instructions"]
         assert body["text"]["format"] == {
             "type": "json_schema",
             "name": "refactoring_plan",
@@ -203,7 +223,8 @@ def test_operator_plan_uses_saved_inputs_and_one_paid_receipt(
     if valid:
         plan = planner.generate_initial_plan(session_factory, run.id, provider)
         assert plan.revision == 1
-        assert planner.generate_initial_plan(session_factory, run.id, provider).id == plan.id
+        replay = planner.generate_initial_plan(session_factory, run.id, provider)
+        assert replay.id == plan.id and replay.document == plan.document
     else:
         with pytest.raises(planner.PlanGenerationError, match=r"proposal schema \(value_error\)"):
             planner.generate_initial_plan(session_factory, run.id, provider)
