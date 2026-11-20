@@ -28,6 +28,13 @@ from refactra.models import (
     RunEvent,
     RunPlan,
     RunPlanApproval,
+    RunPublicationTarget,
+)
+from refactra.publication_target import (
+    PublicationApproval,
+    PublicationTargetError,
+    approve_publication_target,
+    load_publication_approval,
 )
 from refactra.refactoring_plan import (
     PlanContent,
@@ -97,6 +104,22 @@ class PlanArtifact(ArtifactReference):
     created_at: datetime
 
 
+class PublicationDestination(PlanRepository):
+    head_branch: str
+
+
+class PublicationTargetRead(BaseModel):
+    sha256: str
+    commit_sha: str
+    destination: PublicationDestination
+
+
+class PublicationApprovalCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    result_id: UUID
+    target_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CandidateResultRead(ArtifactReference):
     run_id: UUID
     created_at: datetime
@@ -105,6 +128,8 @@ class CandidateResultRead(ArtifactReference):
     diff: str
     diff_sha256: str
     validation: list[ValidationResult]
+    publication_target: PublicationTargetRead | None
+    publication_approval: PublicationApproval | None
 
 
 class PlanApprovalRead(BaseModel):
@@ -444,6 +469,7 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
 
             try:
                 saved = json.loads(result.document)
+                target = session.get(RunPublicationTarget, result.id)
                 payload = CandidateResultRead(
                     id=result.id,
                     run_id=run_id,
@@ -455,6 +481,12 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                     diff=saved["diff"],
                     diff_sha256=saved["diff_sha256"],
                     validation=saved["validation"],
+                    publication_target=(
+                        PublicationTargetRead(sha256=target.sha256, **json.loads(target.document))
+                        if target is not None
+                        else None
+                    ),
+                    publication_approval=load_publication_approval(session, run_id),
                 )
             except (ValueError, KeyError, TypeError):
                 return error(
@@ -466,6 +498,38 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                 )
             response.headers["Cache-Control"] = "no-store"
             return payload
+
+    @router.post("/runs/{run_id}/result/approve", response_model=PublicationApproval)
+    def approve_result(
+        run_id: UUID, body: PublicationApprovalCreate, request: Request, response: Response
+    ):
+        if not is_trusted_mutation(request, oauth):
+            return error(
+                403,
+                {
+                    "code": "csrf_rejected",
+                    "message": "Publication approval requires a trusted origin.",
+                },
+            )
+        try:
+            repository_id = require_run_access(request, run_id)
+            with session_factory.begin() as session:
+                actor = RepositoryAccessPolicy.from_env().require_eligible_session(
+                    session, request.cookies.get(oauth.session_cookie_name), repository_id
+                )
+                approval = approve_publication_target(
+                    session, run_id, **body.model_dump(), actor_id=actor.user_id
+                )
+            response.headers["Cache-Control"] = "no-store"
+            return approval
+        except HTTPException as exc:
+            return (
+                error(404, RUN_NOT_FOUND)
+                if exc.status_code == 403
+                else error(exc.status_code, exc.detail)
+            )
+        except PublicationTargetError as exc:
+            return error(409, {"code": "publication_approval_conflict", "message": str(exc)})
 
     @router.post("/runs/{run_id}/plan", response_model=RepositoryPlanRead)
     def revise_plan(run_id: UUID, body: PlanRevisionCreate, request: Request, response: Response):

@@ -15,6 +15,7 @@ from refactra.config import Settings
 from refactra.github_app import GitHubAppClient, InstallationToken
 from refactra.models import Run, RunAnalysisContext, RunCommand, RunEvent
 from refactra.openai_analysis import OpenAIAnalysisProvider
+from refactra.publication_target import PUBLICATION_APPROVED, save_publication_target
 from refactra.refactoring_plan import approve_refactoring_plan, save_refactoring_plan
 from refactra.repository_analysis_worker import WORKFLOW, process_repository_analysis
 from refactra.repository_validation import ValidationResult
@@ -471,8 +472,46 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
         assert data["repository"]["base_sha"] == PIN
         assert data["validation"][0]["output"] == "1 passed"
         assert data["validation"][0]["exit_code"] == 0
+        assert data["publication_target"] is None and data["publication_approval"] is None
         assert "candidate" not in data
     assert client.get(f"{url}?revision=3").status_code == 404
+
+    latest, _ = fixtures[1]
+    with session_factory.begin() as session:
+        target_sha = save_publication_target(
+            session,
+            {
+                "run_id": str(run_id),
+                "result_id": str(latest.id),
+                "result_revision": 2,
+                "result_sha256": latest.sha256,
+                "commit_sha": "c" * 40,
+                "destination": {
+                    "repository_id": 42,
+                    "base_branch": "feature/cart",
+                    "base_sha": PIN,
+                    "head_branch": f"refactra/{run_id}/r2",
+                },
+            },
+        )
+    target = client.get(url).json()["publication_target"]
+    assert target["sha256"] == target_sha and target["commit_sha"] == "c" * 40
+    assert target["destination"]["base_branch"] == "feature/cart"
+    body = {"result_id": str(latest.id), "target_sha256": target_sha}
+    headers = {"Origin": "https://refactra.example", "X-Refactra-CSRF": "1"}
+    assert client.post(f"{url}/approve", json=body).status_code == 403
+    for stale in (dict(body, result_id=str(fixtures[0][0].id)), dict(body, target_sha256="b" * 64)):
+        assert client.post(f"{url}/approve", json=stale, headers=headers).status_code == 409
+    for _ in range(2):
+        approved = client.post(f"{url}/approve", json=body, headers=headers)
+        assert approved.status_code == 200 and approved.headers["cache-control"] == "no-store"
+        assert approved.json() == {**body, "result_revision": 2, "approved_by": 12345}
+    assert client.get(url).json()["publication_approval"] == approved.json()
+    with session_factory() as session:
+        events = session.scalars(
+            select(RunEvent).where(RunEvent.event_type == PUBLICATION_APPROVED)
+        ).all()
+        assert [event.payload for event in events] == [approved.json()]
 
 
 @pytest.mark.parametrize(
@@ -483,6 +522,7 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
         ("GET", "/result"),
         ("POST", "/plan"),
         ("POST", "/plan/approve"),
+        ("POST", "/result/approve"),
     ],
 )
 @pytest.mark.parametrize(
@@ -516,7 +556,9 @@ def test_run_routes_recheck_access(
     else:
         switches[problem] = True
     payload = None
-    if method == "POST":
+    if suffix == "/result/approve":
+        payload = {"result_id": str(uuid4()), "target_sha256": "a" * 64}
+    elif method == "POST":
         payload = (
             {"plan_id": str(uuid4()), "revision": 1, "sha256": "a" * 64}
             if suffix.endswith("/approve")

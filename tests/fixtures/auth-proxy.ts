@@ -15,6 +15,7 @@ export const RUN_PATH = `/api/v1/runs/${RUN_ID}`;
 export const PLAN_PATH = `${RUN_PATH}/plan`;
 export const PLAN_APPROVAL_PATH = `${PLAN_PATH}/approve`;
 export const RESULT_PATH = `${RUN_PATH}/result`;
+export const PUBLICATION_APPROVAL_PATH = `${RESULT_PATH}/approve`;
 export const REVISED_ARTIFACT = {
   id: "98c1fd19-7102-4250-a458-b9aa083db613", revision: 2, sha256: "c".repeat(64),
 };
@@ -47,6 +48,13 @@ export const RESULT = {
   diff: "--- a/src/cart.py\n+++ b/src/cart.py\n@@ -1 +1 @@\n-return 1\n+return \"<strong>cart</strong>\"\n",
   validation: [{ check_id: "python.pytest", paths: ["tests/test_cart.py"], required: true,
     status: "PASSED", exit_code: 0, output: "3 passed", duration_ms: 50, reason: null, image_id: "fixture" }],
+  publication_target: { sha256: "f".repeat(64), commit_sha: "e".repeat(40),
+    destination: { ...PLAN.content.repository, head_branch: `refactra/${RUN_ID}/r1` } },
+  publication_approval: null,
+};
+const PUBLICATION_APPROVAL = {
+  result_id: RESULT.id, result_revision: RESULT.revision,
+  target_sha256: RESULT.publication_target.sha256, approved_by: 12345,
 };
 
 async function listen(server: Server) {
@@ -64,6 +72,7 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
   authProxy: [async ({}, use) => {
     const calls: Call[] = [];
     let origin = "";
+    let publicationApproved = false;
     const api = createServer((request, response) => {
       const call: Call = { url: request.url!, method: request.method!, headers: request.headers };
       calls.push(call);
@@ -112,7 +121,7 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
           setTimeout(() => response.end(JSON.stringify({ run_id: RUN_ID })), 5500);
         });
         return;
-      } else if ([PLAN_PATH, PLAN_APPROVAL_PATH].includes(route) && request.method === "POST") {
+      } else if ([PLAN_PATH, PLAN_APPROVAL_PATH, PUBLICATION_APPROVAL_PATH].includes(route) && request.method === "POST") {
         request.setEncoding("utf8");
         call.body = "";
         request.on("data", (chunk) => { call.body += chunk; });
@@ -123,6 +132,16 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
           }
           if (!request.headers.cookie?.includes("refactra_session=fixture-session")) {
             response.writeHead(401).end(JSON.stringify({ error: { code: "authentication_required" } }));
+            return;
+          }
+          if (route === PUBLICATION_APPROVAL_PATH) {
+            const { result_id, target_sha256 } = JSON.parse(call.body!);
+            if (result_id !== PUBLICATION_APPROVAL.result_id || target_sha256 !== PUBLICATION_APPROVAL.target_sha256) {
+              response.writeHead(409).end(JSON.stringify({ error: { code: "publication_approval_conflict" } }));
+              return;
+            }
+            publicationApproved = true;
+            response.end(JSON.stringify(PUBLICATION_APPROVAL));
             return;
           }
           if (route === PLAN_APPROVAL_PATH) {
@@ -148,7 +167,8 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
         const authenticated = request.headers.cookie?.includes("refactra_session=fixture-session");
         const status = !authenticated ? 401 : [RUN_PATH, PLAN_PATH, RESULT_PATH].includes(route) ? 200 : 404;
         const body = status === 200
-          ? route === RESULT_PATH ? RESULT : route === PLAN_PATH ? PLAN : SAVED_RUN
+          ? route === RESULT_PATH ? { ...RESULT, publication_approval: publicationApproved ? PUBLICATION_APPROVAL : null }
+            : route === PLAN_PATH ? PLAN : SAVED_RUN
           : { error: { code: status === 401 ? "authentication_required" : "not_found" } };
         response.writeHead(status, {
           "Cache-Control": "public, max-age=3600", "Set-Cookie": "unrelated=must-not-pass; Path=/",

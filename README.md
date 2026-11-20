@@ -288,6 +288,8 @@ Use a trusted local clone that contains the pinned commit and a new output direc
 
 Add `--save-target` to save the verified commit and PR destination in PostgreSQL for publication review. This option requires migration `0012_publication_targets` and accepts an existing output directory when its receipt and Git ref match the recomputed commit. Repeating the command returns the same `publication_target_sha256`.
 
+Refresh the saved result in the browser to review the commit and branches. **Approve publication** records the run owner's decision for that exact target. A later publication step uses that decision to open the draft PR.
+
 ## Read-only OpenAI analysis adapter
 
 `execute_read_only_analysis(session_factory, run_id, attempt_id, provider)` reloads the saved context, counts the complete input through OpenAI's `/v1/responses/input_tokens` endpoint, commits durable admission, and then makes one Responses API call outside database transactions. A trusted operator must authorize repository access first. Construct `OpenAIAnalysisProvider` with the server-only `REFACTRA_OPENAI_API_KEY` from your environment; host Python commands do not load `.env` automatically. No new dependency is required.

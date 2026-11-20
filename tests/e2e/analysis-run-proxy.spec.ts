@@ -1,4 +1,4 @@
-import { PLAN, PLAN_APPROVAL_PATH, PLAN_PATH, RESULT, RESULT_PATH, RUN_ID, RUN_PATH, SAVED_RUN, expect, test } from "../fixtures/auth-proxy";
+import { PLAN, PLAN_APPROVAL_PATH, PLAN_PATH, PUBLICATION_APPROVAL_PATH, RESULT, RESULT_PATH, RUN_ID, RUN_PATH, SAVED_RUN, expect, test } from "../fixtures/auth-proxy";
 
 const SUBMIT = "/api/v1/runs";
 const IDENTITY = "fd55f548-7593-46cc-ae08-9c651d1a2c3a";
@@ -84,6 +84,7 @@ for (const [method, route, status] of [
   ["GET", SUBMIT, 404], ["POST", RUN_PATH, 404], ["DELETE", PLAN_PATH, 405], ["DELETE", RUN_PATH, 405],
   ["GET", PLAN_APPROVAL_PATH, 404], ["POST", `${PLAN_APPROVAL_PATH}/extra`, 404],
   ["POST", RESULT_PATH, 404], ["GET", `${RESULT_PATH}/extra`, 404],
+  ["GET", PUBLICATION_APPROVAL_PATH, 404], ["POST", `${PUBLICATION_APPROVAL_PATH}/extra`, 404],
   ["GET", `${RUN_PATH}/events`, 404], ["GET", `${SUBMIT}/${RUN_ID.replaceAll("-", "")}`, 404],
 ] as const) {
   test(`blocks ${method} ${route}`, async ({ authProxy, request }) => {
