@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from uuid import UUID, uuid5
 
+import httpx
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
@@ -13,7 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from refactra.auth_sessions import GitHubIdentity
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
-from refactra.github_app import GitHubAppClient, GitHubAppError
+from refactra.github_app import GitHubAppClient, GitHubAppError, InstallationToken
 from refactra.github_repository_access import require_github_write_access
 from refactra.models import ModelReservation, Run
 from refactra.openai_analysis import (
@@ -36,7 +37,8 @@ class PlanGenerationError(ValueError):
     """Source-free stop reason suitable for operator output."""
 
 
-def authorize_plan(run: Run) -> None:
+def authorize_plan(run: Run) -> tuple[InstallationToken, httpx.BaseTransport | None]:
+    """Recheck the pinned run owner's permission and return a scoped read token and transport."""
     policy = RepositoryAccessPolicy.from_env()
     installation_id = int(os.environ["REFACTRA_GITHUB_INSTALLATION_ID"])
     if (
@@ -50,9 +52,10 @@ def authorize_plan(run: Run) -> None:
         os.environ["REFACTRA_GITHUB_CLIENT_ID"],
         Path(os.environ["REFACTRA_GITHUB_PRIVATE_KEY_PATH"]).read_bytes(),
     )
-    require_github_write_access(
+    token = require_github_write_access(
         app, installation_id, run.github_repository_id, GitHubIdentity(run.requested_by, "operator")
     )
+    return token, app.transport
 
 
 def generate_initial_plan(session_factory, run_id: UUID, provider):

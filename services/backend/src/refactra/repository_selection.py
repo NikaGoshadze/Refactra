@@ -49,7 +49,7 @@ def _words(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9]{3,}", text.casefold())) - STOP_WORDS
 
 
-def _blocked(path: PurePosixPath) -> bool:
+def is_excluded_source_path(path: PurePosixPath) -> bool:
     parts = tuple(part.casefold() for part in path.parts)
     name = parts[-1]
     return bool(
@@ -65,7 +65,7 @@ def eligible_file_role(path: str, inventory: RepositoryInventory) -> str | None:
     """Shared path/type policy only; callers must separately validate content and budgets."""
     if (
         path not in inventory.file_paths
-        or _blocked(PurePosixPath(path))
+        or is_excluded_source_path(PurePosixPath(path))
         or path in inventory.lockfile_paths
     ):
         return None
