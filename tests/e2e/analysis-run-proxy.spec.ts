@@ -1,4 +1,4 @@
-import { RUN_ID, RUN_PATH, expect, test } from "../fixtures/auth-proxy";
+import { PLAN, PLAN_PATH, RUN_ID, RUN_PATH, SAVED_RUN, expect, test } from "../fixtures/auth-proxy";
 
 const SUBMIT = "/api/v1/runs";
 const IDENTITY = "fd55f548-7593-46cc-ae08-9c651d1a2c3a";
@@ -51,23 +51,35 @@ test("status forwards the HTTPS session and returns uncached analysis", async ({
     headers: { Cookie: `__Host-refactra_session=fixture-session; ${OTHER_COOKIES}` },
   });
   expect(response.status()).toBe(200);
-  expect(await response.json()).toEqual({
-    run_id: RUN_ID, status: "NEEDS_HUMAN_REVIEW", analysis_text: "Fixture analysis",
-  });
+  expect(await response.json()).toEqual(SAVED_RUN);
   expect(response.headers()["cache-control"]).toBe("no-store");
   expect(response.headers()["set-cookie"]).toBeUndefined();
   expect(authProxy.calls[0].headers.cookie).toBe("__Host-refactra_session=fixture-session");
 });
 
-test("status preserves the upstream authentication error", async ({ authProxy, request }) => {
-  const response = await request.get(authProxy.origin + RUN_PATH, { headers: { Cookie: OTHER_COOKIES } });
-  expect(response.status()).toBe(401);
-  expect(await response.json()).toEqual({ error: { code: "authentication_required" } });
-  expect(authProxy.calls[0].headers.cookie).toBeUndefined();
+test("plan reads forward the revision and only the session cookie", async ({ authProxy, request }) => {
+  const path = `${PLAN_PATH}?revision=1`;
+  const response = await request.get(authProxy.origin + path, {
+    headers: { Cookie: `refactra_session=fixture-session; ${OTHER_COOKIES}` },
+  });
+  expect(response.status()).toBe(200);
+  expect(await response.json()).toEqual(PLAN);
+  expect(response.headers()["cache-control"]).toBe("no-store");
+  expect(response.headers()["set-cookie"]).toBeUndefined();
+  expect(authProxy.calls[0]).toMatchObject({ url: path, headers: { cookie: "refactra_session=fixture-session" } });
 });
 
+for (const path of [RUN_PATH, PLAN_PATH]) {
+  test(`preserves the upstream authentication error for ${path}`, async ({ authProxy, request }) => {
+    const response = await request.get(authProxy.origin + path, { headers: { Cookie: OTHER_COOKIES } });
+    expect(response.status()).toBe(401);
+    expect(await response.json()).toEqual({ error: { code: "authentication_required" } });
+    expect(authProxy.calls[0].headers.cookie).toBeUndefined();
+  });
+}
+
 for (const [method, route, status] of [
-  ["GET", SUBMIT, 404], ["POST", RUN_PATH, 404], ["DELETE", RUN_PATH, 405],
+  ["GET", SUBMIT, 404], ["POST", RUN_PATH, 404], ["POST", PLAN_PATH, 404], ["DELETE", RUN_PATH, 405],
   ["GET", `${RUN_PATH}/events`, 404], ["GET", `${SUBMIT}/${RUN_ID.replaceAll("-", "")}`, 404],
 ] as const) {
   test(`blocks ${method} ${route}`, async ({ authProxy, request }) => {

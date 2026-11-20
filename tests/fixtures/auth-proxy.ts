@@ -12,6 +12,23 @@ export const CLEAR_OAUTH = "refactra_oauth=; Path=/; Max-Age=0; Expires=Thu, 01 
 export const CLEAR_SESSION = "refactra_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax";
 export const RUN_ID = "367dfc44-100b-4af2-9ed7-ddf97ae24d52";
 export const RUN_PATH = `/api/v1/runs/${RUN_ID}`;
+export const PLAN_PATH = `${RUN_PATH}/plan`;
+export const PLAN = {
+  artifact: { revision: 1, sha256: "b".repeat(64) },
+  content: {
+    summary: "<strong>Extract the cart calculation</strong>",
+    changes: [{ path: "src/cart.py", action: "MODIFY", intent: "Extract calculation" }],
+    acceptance_criteria: [{ id: "AC-1", description: "Preserve totals" }],
+    validation_checks: [{ check_id: "VC1", required: true, paths: ["tests/test_cart.py"], criteria_ids: ["AC-1"] }],
+    preserve_behavior: ["Return the same total for empty carts."],
+    assumptions: ["Keep the public function signature."],
+    blocking_questions: ["Which rounding rule should be preserved?"],
+  },
+};
+export const SAVED_RUN = {
+  run_id: RUN_ID, repository_id: 1001132861, base_branch: "main", base_sha: "a".repeat(40),
+  status: "NEEDS_HUMAN_REVIEW", analysis_text: "Fixture analysis", stop_reason: null,
+};
 
 async function listen(server: Server) {
   server.listen(0, "127.0.0.1");
@@ -78,9 +95,9 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
         return;
       } else if (route.startsWith("/api/v1/runs/")) {
         const authenticated = request.headers.cookie?.includes("refactra_session=fixture-session");
-        const status = !authenticated ? 401 : route === RUN_PATH ? 200 : 404;
+        const status = !authenticated ? 401 : [RUN_PATH, PLAN_PATH].includes(route) ? 200 : 404;
         const body = status === 200
-          ? { run_id: RUN_ID, status: "NEEDS_HUMAN_REVIEW", analysis_text: "Fixture analysis" }
+          ? route === PLAN_PATH ? PLAN : SAVED_RUN
           : { error: { code: status === 401 ? "authentication_required" : "not_found" } };
         response.writeHead(status, {
           "Cache-Control": "public, max-age=3600", "Set-Cookie": "unrelated=must-not-pass; Path=/",

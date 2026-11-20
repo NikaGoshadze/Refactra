@@ -254,6 +254,8 @@ Rerunning the command returns a saved plan or stops if a structured attempt was 
 
 `GET /api/v1/runs/{run_id}/plan` on the backend returns the latest saved plan. Add `?revision=1` to read a specific revision. The API verifies run ownership and current GitHub access before returning the plan or a `plan_not_found` error. The response includes the proposal and artifact metadata. The SHA-256 identifies the exact saved document bytes.
 
+In the browser, click **Load saved plan** when an analysis is ready for review. To return to an earlier run, verify repository access, choose **Open a saved run**, and enter its run ID. The plan view shows the latest saved revision. Loading it uses the saved analysis and plan without making a model request.
+
 ## Read-only OpenAI analysis adapter
 
 `execute_read_only_analysis(session_factory, run_id, attempt_id, provider)` reloads the saved context, counts the complete input through OpenAI's `/v1/responses/input_tokens` endpoint, commits durable admission, and then makes one Responses API call outside database transactions. A trusted operator must authorize repository access first. Construct `OpenAIAnalysisProvider` with the server-only `REFACTRA_OPENAI_API_KEY` from your environment; host Python commands do not load `.env` automatically. No new dependency is required.

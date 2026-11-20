@@ -23,6 +23,12 @@ export type SessionStatus =
   | { authenticated: false; user: null }
   | { authenticated: true; user: { user_id: number; login: string } };
 
+export class ApiError extends Error {
+  constructor(message: string, readonly code: string | undefined) {
+    super(message);
+  }
+}
+
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/v1/${path}`, {
     ...init,
@@ -32,6 +38,8 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (response.status === 204) return undefined as T;
   const body = await response.json();
-  if (!response.ok) throw new Error(body.error?.message ?? "The local API could not handle the request.");
+  if (!response.ok) {
+    throw new ApiError(body.error?.message ?? "The local API could not handle the request.", body.error?.code);
+  }
   return body as T;
 }
