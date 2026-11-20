@@ -1,4 +1,4 @@
-import { PLAN, PLAN_APPROVAL_PATH, PLAN_PATH, PLAN_PROPOSAL, RESULT, RESULT_PATH, REVISED_ARTIFACT, RUN_ID, RUN_PATH, expect, test } from "../fixtures/auth-proxy";
+import { PLAN, PLAN_APPROVAL_PATH, PLAN_PATH, PLAN_PROPOSAL, PUBLICATION_APPROVAL_PATH, RESULT, RESULT_PATH, REVISED_ARTIFACT, RUN_ID, RUN_PATH, expect, test } from "../fixtures/auth-proxy";
 
 const REPOSITORY_ID = 1001132861;
 const receipt = { run_id: RUN_ID, base_branch: "feature/cart", base_sha: "a".repeat(40) };
@@ -153,6 +153,17 @@ test("opens, revises, and approves a saved plan", async ({ page, authProxy }) =>
   await expect(result.getByText("Exit code 0", { exact: false })).toBeVisible();
   await expect(result.getByText(RESULT.diff)).toBeVisible();
   await expect(result.locator("pre strong")).toHaveCount(0);
+  await expect(result.getByText(RESULT.publication_target.commit_sha, { exact: true })).toBeVisible();
+  await expect(result.getByText(RESULT.publication_target.destination.head_branch, { exact: true })).toBeVisible();
+  await result.getByRole("button", { name: "Approve publication" }).click();
+  await expect(result.getByRole("status")).toHaveText("Publication approved for result revision 1.");
+  const publication = authProxy.calls.findLast((call) => call.method === "POST" && call.url === PUBLICATION_APPROVAL_PATH)!;
+  expect(publication.headers.cookie).toBe("refactra_session=fixture-session");
+  expect(JSON.parse(publication.body!)).toEqual({
+    result_id: RESULT.id, target_sha256: RESULT.publication_target.sha256,
+  });
+  await result.getByRole("button", { name: "Refresh saved result" }).click();
+  await expect(result.getByRole("status")).toHaveText("Publication approved for result revision 1.");
 
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(plan).toHaveCount(0);
