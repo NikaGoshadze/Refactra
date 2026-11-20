@@ -9,12 +9,15 @@ from sqlalchemy import func, select
 import refactra.repository_routes as routes
 from refactra.api import create_app
 from refactra.auth_sessions import GitHubIdentity, issue_session, revoke_session
+from refactra.candidate_patch import CandidatePatch
+from refactra.candidate_results import save_validated_candidate
 from refactra.config import Settings
 from refactra.github_app import GitHubAppClient, InstallationToken
 from refactra.models import Run, RunAnalysisContext, RunCommand, RunEvent
 from refactra.openai_analysis import OpenAIAnalysisProvider
-from refactra.refactoring_plan import save_refactoring_plan
+from refactra.refactoring_plan import approve_refactoring_plan, save_refactoring_plan
 from refactra.repository_analysis_worker import WORKFLOW, process_repository_analysis
+from refactra.repository_validation import ValidationResult
 from refactra.worker import claim_command
 
 from .test_openai_analysis import response as model_response
@@ -409,9 +412,78 @@ def test_approval_binds_the_latest_ready_revision_and_locks_edits(
         assert session.scalar(select(func.count()).select_from(RunCommand)) == 2
 
 
+def test_read_saved_candidate_result(browser, session_factory, proposal):
+    client, _, _, _ = browser
+    receipt = submit(client)
+    url = f"{receipt.headers['Location']}/result"
+    run_id = UUID(receipt.json()["run_id"])
+    missing = client.get(url)
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "candidate_result_not_found"
+    assert missing.headers["cache-control"] == "no-store"
+
+    analyze_fixture_run(session_factory)
+    with session_factory.begin() as session:
+        plan = save_refactoring_plan(session, run_id, proposal, expected_revision=0)
+        approve_refactoring_plan(
+            session,
+            run_id,
+            plan_id=plan.id,
+            revision=plan.revision,
+            sha256=plan.sha256,
+            actor_id=12345,
+        )
+        check = ValidationResult(
+            "python.pytest",
+            ["tests/test_cart.py"],
+            True,
+            "PASSED",
+            0,
+            50,
+            "1 passed",
+            None,
+            "fixture",
+        )
+        fixtures = []
+        for total in (2, 3):
+            content = f"def cart(): return {total}\n"
+            patch = CandidatePatch(
+                base_sha=PIN,
+                plan_sha256=plan.sha256,
+                edits=[{"path": "src/cart.py", "action": "MODIFY", "content": content}],
+            )
+            diff = (
+                "--- a/src/cart.py\n+++ b/src/cart.py\n@@ -1 +1 @@\n"
+                f"-def cart(): return 1\n+{content}"
+            )
+            fixtures.append(
+                (save_validated_candidate(session, run_id, patch, diff.encode(), [check]), diff)
+            )
+
+    for path, (saved, diff) in [(url, fixtures[1]), (f"{url}?revision=1", fixtures[0])]:
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
+        data = response.json()
+        assert data["id"] == str(saved.id) and data["revision"] == saved.revision
+        assert data["sha256"] == saved.sha256 and data["diff"] == diff
+        assert data["approved_plan"] == {"id": str(plan.id), "revision": 1, "sha256": plan.sha256}
+        assert data["repository"]["base_sha"] == PIN
+        assert data["validation"][0]["output"] == "1 passed"
+        assert data["validation"][0]["exit_code"] == 0
+        assert "candidate" not in data
+    assert client.get(f"{url}?revision=3").status_code == 404
+
+
 @pytest.mark.parametrize(
     ("method", "suffix"),
-    [("GET", ""), ("GET", "/plan"), ("POST", "/plan"), ("POST", "/plan/approve")],
+    [
+        ("GET", ""),
+        ("GET", "/plan"),
+        ("GET", "/result"),
+        ("POST", "/plan"),
+        ("POST", "/plan/approve"),
+    ],
 )
 @pytest.mark.parametrize(
     "problem,expected",

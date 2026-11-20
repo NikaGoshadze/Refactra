@@ -1,4 +1,4 @@
-import { PLAN, PLAN_APPROVAL_PATH, PLAN_PATH, RUN_ID, RUN_PATH, SAVED_RUN, expect, test } from "../fixtures/auth-proxy";
+import { PLAN, PLAN_APPROVAL_PATH, PLAN_PATH, RESULT, RESULT_PATH, RUN_ID, RUN_PATH, SAVED_RUN, expect, test } from "../fixtures/auth-proxy";
 
 const SUBMIT = "/api/v1/runs";
 const IDENTITY = "fd55f548-7593-46cc-ae08-9c651d1a2c3a";
@@ -57,19 +57,21 @@ test("status forwards the HTTPS session and returns uncached analysis", async ({
   expect(authProxy.calls[0].headers.cookie).toBe("__Host-refactra_session=fixture-session");
 });
 
-test("plan reads forward the revision and only the session cookie", async ({ authProxy, request }) => {
-  const path = `${PLAN_PATH}?revision=1`;
-  const response = await request.get(authProxy.origin + path, {
-    headers: { Cookie: `refactra_session=fixture-session; ${OTHER_COOKIES}` },
+for (const [route, artifact] of [[PLAN_PATH, PLAN], [RESULT_PATH, RESULT]] as const) {
+  test(`forwards the revision and only the session cookie for ${route}`, async ({ authProxy, request }) => {
+    const path = `${route}?revision=1`;
+    const response = await request.get(authProxy.origin + path, {
+      headers: { Cookie: `refactra_session=fixture-session; ${OTHER_COOKIES}` },
+    });
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toEqual(artifact);
+    expect(response.headers()["cache-control"]).toBe("no-store");
+    expect(response.headers()["set-cookie"]).toBeUndefined();
+    expect(authProxy.calls[0]).toMatchObject({ url: path, headers: { cookie: "refactra_session=fixture-session" } });
   });
-  expect(response.status()).toBe(200);
-  expect(await response.json()).toEqual(PLAN);
-  expect(response.headers()["cache-control"]).toBe("no-store");
-  expect(response.headers()["set-cookie"]).toBeUndefined();
-  expect(authProxy.calls[0]).toMatchObject({ url: path, headers: { cookie: "refactra_session=fixture-session" } });
-});
+}
 
-for (const path of [RUN_PATH, PLAN_PATH]) {
+for (const path of [RUN_PATH, PLAN_PATH, RESULT_PATH]) {
   test(`preserves the upstream authentication error for ${path}`, async ({ authProxy, request }) => {
     const response = await request.get(authProxy.origin + path, { headers: { Cookie: OTHER_COOKIES } });
     expect(response.status()).toBe(401);
@@ -81,6 +83,7 @@ for (const path of [RUN_PATH, PLAN_PATH]) {
 for (const [method, route, status] of [
   ["GET", SUBMIT, 404], ["POST", RUN_PATH, 404], ["DELETE", PLAN_PATH, 405], ["DELETE", RUN_PATH, 405],
   ["GET", PLAN_APPROVAL_PATH, 404], ["POST", `${PLAN_APPROVAL_PATH}/extra`, 404],
+  ["POST", RESULT_PATH, 404], ["GET", `${RESULT_PATH}/extra`, 404],
   ["GET", `${RUN_PATH}/events`, 404], ["GET", `${SUBMIT}/${RUN_ID.replaceAll("-", "")}`, 404],
 ] as const) {
   test(`blocks ${method} ${route}`, async ({ authProxy, request }) => {

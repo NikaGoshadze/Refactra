@@ -14,6 +14,7 @@ export const RUN_ID = "367dfc44-100b-4af2-9ed7-ddf97ae24d52";
 export const RUN_PATH = `/api/v1/runs/${RUN_ID}`;
 export const PLAN_PATH = `${RUN_PATH}/plan`;
 export const PLAN_APPROVAL_PATH = `${PLAN_PATH}/approve`;
+export const RESULT_PATH = `${RUN_PATH}/result`;
 export const REVISED_ARTIFACT = {
   id: "98c1fd19-7102-4250-a458-b9aa083db613", revision: 2, sha256: "c".repeat(64),
 };
@@ -38,6 +39,14 @@ export const PLAN = {
 export const SAVED_RUN = {
   run_id: RUN_ID, repository_id: 1001132861, base_branch: "main", base_sha: "a".repeat(40),
   status: "NEEDS_HUMAN_REVIEW", analysis_text: "Fixture analysis", stop_reason: null,
+};
+export const RESULT = {
+  id: "0b5bae48-4f12-4ad1-b3f6-1f0640e3d393", run_id: RUN_ID, revision: 1,
+  sha256: "d".repeat(64), created_at: "2026-11-20T01:30:00Z", repository: PLAN.content.repository,
+  approved_plan: REVISED_ARTIFACT, diff_sha256: "e".repeat(64),
+  diff: "--- a/src/cart.py\n+++ b/src/cart.py\n@@ -1 +1 @@\n-return 1\n+return \"<strong>cart</strong>\"\n",
+  validation: [{ check_id: "python.pytest", paths: ["tests/test_cart.py"], required: true,
+    status: "PASSED", exit_code: 0, output: "3 passed", duration_ms: 50, reason: null, image_id: "fixture" }],
 };
 
 async function listen(server: Server) {
@@ -137,9 +146,9 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
         return;
       } else if (route.startsWith("/api/v1/runs/")) {
         const authenticated = request.headers.cookie?.includes("refactra_session=fixture-session");
-        const status = !authenticated ? 401 : [RUN_PATH, PLAN_PATH].includes(route) ? 200 : 404;
+        const status = !authenticated ? 401 : [RUN_PATH, PLAN_PATH, RESULT_PATH].includes(route) ? 200 : 404;
         const body = status === 200
-          ? route === PLAN_PATH ? PLAN : SAVED_RUN
+          ? route === RESULT_PATH ? RESULT : route === PLAN_PATH ? PLAN : SAVED_RUN
           : { error: { code: status === 401 ? "authentication_required" : "not_found" } };
         response.writeHead(status, {
           "Cache-Control": "public, max-age=3600", "Set-Cookie": "unrelated=must-not-pass; Path=/",

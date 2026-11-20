@@ -1,4 +1,4 @@
-import { PLAN, PLAN_APPROVAL_PATH, PLAN_PATH, PLAN_PROPOSAL, REVISED_ARTIFACT, RUN_ID, RUN_PATH, expect, test } from "../fixtures/auth-proxy";
+import { PLAN, PLAN_APPROVAL_PATH, PLAN_PATH, PLAN_PROPOSAL, RESULT, RESULT_PATH, REVISED_ARTIFACT, RUN_ID, RUN_PATH, expect, test } from "../fixtures/auth-proxy";
 
 const REPOSITORY_ID = 1001132861;
 const receipt = { run_id: RUN_ID, base_branch: "feature/cart", base_sha: "a".repeat(40) };
@@ -140,6 +140,19 @@ test("opens, revises, and approves a saved plan", async ({ page, authProxy }) =>
   expect(JSON.parse(approval.body!)).toEqual({
     plan_id: REVISED_ARTIFACT.id, revision: 2, sha256: REVISED_ARTIFACT.sha256,
   });
+
+  const result = page.getByRole("region", { name: "Candidate result" });
+  await page.route(`**${RESULT_PATH}`, (route) => route.fulfill({ status: 404,
+    json: { error: { code: "candidate_result_not_found" } },
+  }), { times: 1 });
+  await result.getByRole("button", { name: "Load saved result" }).click();
+  await expect(result.getByRole("status")).toHaveText("No validated candidate has been saved for this run yet.");
+  await result.getByRole("button", { name: "Refresh saved result" }).click();
+  await expect(result.getByText(RESULT.sha256, { exact: true })).toBeVisible();
+  await expect(result.getByText("3 passed", { exact: true })).toBeVisible();
+  await expect(result.getByText("Exit code 0", { exact: false })).toBeVisible();
+  await expect(result.getByText(RESULT.diff)).toBeVisible();
+  await expect(result.locator("pre strong")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(plan).toHaveCount(0);

@@ -1,5 +1,6 @@
-"""Protected repository metadata, analysis results, and plan revisions."""
+"""Protected repository metadata and saved workflow artifacts."""
 
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +24,7 @@ from refactra.models import (
     Run,
     RunAnalysisContext,
     RunAnalysisResult,
+    RunCandidateResult,
     RunEvent,
     RunPlan,
     RunPlanApproval,
@@ -31,6 +33,7 @@ from refactra.refactoring_plan import (
     PlanContent,
     PlanProposal,
     PlanReadiness,
+    PlanRepository,
     PlanRevisionConflict,
     approve_refactoring_plan,
     evaluate_plan_readiness,
@@ -42,6 +45,7 @@ from refactra.repository_analysis_worker import WORKFLOW, enqueue_repository_ana
 from refactra.repository_revision import resolve_revision
 from refactra.repository_runs import create_repository_run
 from refactra.repository_snapshot import fetch_source_snapshot
+from refactra.repository_validation import ValidationResult
 from refactra.schemas import (
     RepositoryRunCreate,
     RepositoryRunRead,
@@ -80,14 +84,27 @@ class RepositoryRead(BaseModel):
     access: Literal["read-only"] = "read-only"
 
 
-class PlanArtifact(BaseModel):
+class ArtifactReference(BaseModel):
     id: UUID
-    run_id: UUID
-    kind: Literal["PLAN"] = "PLAN"
     revision: int
     sha256: str
+
+
+class PlanArtifact(ArtifactReference):
+    run_id: UUID
+    kind: Literal["PLAN"] = "PLAN"
     size: int
     created_at: datetime
+
+
+class CandidateResultRead(ArtifactReference):
+    run_id: UUID
+    created_at: datetime
+    repository: PlanRepository
+    approved_plan: ArtifactReference
+    diff: str
+    diff_sha256: str
+    validation: list[ValidationResult]
 
 
 class PlanApprovalRead(BaseModel):
@@ -398,6 +415,57 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                 return _plan_response(session, plan, response)
         except HTTPException as exc:
             return error(exc.status_code, exc.detail)
+
+    @router.get("/runs/{run_id}/result", response_model=CandidateResultRead)
+    def read_candidate_result(
+        run_id: UUID,
+        request: Request,
+        response: Response,
+        revision: Annotated[int | None, Query(ge=1, le=2_147_483_647)] = None,
+    ):
+        try:
+            require_run_access(request, run_id)
+        except HTTPException as exc:
+            return error(exc.status_code, exc.detail)
+
+        with session_factory() as session:
+            query = select(RunCandidateResult).where(RunCandidateResult.run_id == run_id)
+            if revision is not None:
+                query = query.where(RunCandidateResult.revision == revision)
+            result = session.scalar(query.order_by(RunCandidateResult.revision.desc()).limit(1))
+            if result is None:
+                return error(
+                    404,
+                    {
+                        "code": "candidate_result_not_found",
+                        "message": "Candidate result not found.",
+                    },
+                )
+
+            try:
+                saved = json.loads(result.document)
+                payload = CandidateResultRead(
+                    id=result.id,
+                    run_id=run_id,
+                    revision=result.revision,
+                    sha256=result.sha256,
+                    created_at=result.created_at,
+                    repository=saved["repository"],
+                    approved_plan=saved["approved_plan"],
+                    diff=saved["diff"],
+                    diff_sha256=saved["diff_sha256"],
+                    validation=saved["validation"],
+                )
+            except (ValueError, KeyError, TypeError):
+                return error(
+                    500,
+                    {
+                        "code": "candidate_result_unavailable",
+                        "message": "Saved result could not be read.",
+                    },
+                )
+            response.headers["Cache-Control"] = "no-store"
+            return payload
 
     @router.post("/runs/{run_id}/plan", response_model=RepositoryPlanRead)
     def revise_plan(run_id: UUID, body: PlanRevisionCreate, request: Request, response: Response):

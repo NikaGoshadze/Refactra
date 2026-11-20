@@ -18,7 +18,8 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   const [resource, id, section, action] = path;
   const isRun = resource === "runs" && RUN_ID_PATTERN.test(id ?? "");
   const isPlan = isRun && section === "plan";
-  const isRunRead = isRun && (path.length === 2 || (isPlan && path.length === 3));
+  const isRunRead = isRun && (path.length === 2
+    || (path.length === 3 && (isPlan || section === "result")));
   const isPlanWrite = isPlan && request.method === "POST"
     && (path.length === 3 || (path.length === 4 && action === "approve"));
   const sessionOnly = isRepository || isAnalysisSubmit || isRunRead || isPlanWrite;
