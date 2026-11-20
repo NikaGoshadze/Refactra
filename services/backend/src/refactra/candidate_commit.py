@@ -17,6 +17,7 @@ from refactra.candidate_patch import MAX_EDIT_FILE_BYTES, CandidatePatch, apply_
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.models import Run, RunCandidateResult
+from refactra.publication_target import PublicationTargetError, save_publication_target
 from refactra.refactoring_plan import PlanContent, load_approved_plan
 from refactra.repository_snapshot import SourceFile, SourceSnapshot
 from refactra.repository_workspace import (
@@ -67,7 +68,7 @@ def _git(repository: Path, *args: str, data: bytes | None = None, date: str = ""
 
 
 def prepare_candidate_commit(
-    session_factory, run_id: UUID, revision: int, source: Path, output: Path
+    session_factory, run_id: UUID, revision: int, source: Path, output: Path, *, save_target=False
 ) -> dict:
     head_branch = f"refactra/{run_id}/r{revision}"
     with session_factory() as session:
@@ -112,10 +113,11 @@ def prepare_candidate_commit(
         date = f"@{int(result.created_at.timestamp())} +0000"
 
     source = source.resolve(strict=True)
+    reuse_output = save_target and output.is_dir()
     if (
         not source.is_dir()
         or not output.parent.is_dir()
-        or output.exists()
+        or (output.exists() and not reuse_output)
         or output.is_symlink()
         or output.resolve().is_relative_to(source)
     ):
@@ -203,11 +205,26 @@ def prepare_candidate_commit(
             date=date,
         )
         receipt["commit_sha"] = commit.strip().decode()
-        git("update-ref", f"refs/heads/{head_branch}", receipt["commit_sha"])
-        (staging / "receipt.json").write_text(
-            json.dumps(receipt, indent=2) + "\n", encoding="utf-8"
-        )
-        staging.rename(output)
+        head_ref = f"refs/heads/{head_branch}"
+        receipt_text = json.dumps(receipt, indent=2) + "\n"
+        if reuse_output:
+            existing_receipt = (output / "receipt.json").read_text(encoding="utf-8")
+            existing_commit = (
+                _git(output / "repository.git", "rev-parse", "--verify", f"{head_ref}^{{commit}}")
+                .strip()
+                .decode()
+            )
+            if existing_receipt != receipt_text or existing_commit != receipt["commit_sha"]:
+                raise CandidateCommitError("Existing artifact does not match the prepared commit.")
+        else:
+            git("update-ref", head_ref, receipt["commit_sha"])
+            (staging / "receipt.json").write_text(receipt_text, encoding="utf-8")
+            staging.rename(output)
+
+    if save_target:
+        with session_factory.begin() as session:
+            target_sha = save_publication_target(session, receipt)
+        receipt["publication_target_sha256"] = target_sha
     return receipt
 
 
@@ -217,16 +234,24 @@ def main() -> None:
     parser.add_argument("revision", type=int)
     parser.add_argument("--source", type=Path, required=True, help="Local Git clone of the target.")
     parser.add_argument(
-        "--output", type=Path, required=True, help="New directory for the artifact."
+        "--output", type=Path, required=True, help="Directory for the prepared commit artifact."
+    )
+    parser.add_argument(
+        "--save-target", action="store_true", help="Record the verified publication target."
     )
     args = parser.parse_args()
     engine = make_engine(Settings.from_env().database_url)
     try:
         receipt = prepare_candidate_commit(
-            sessions(engine), args.run_id, args.revision, args.source, args.output
+            sessions(engine),
+            args.run_id,
+            args.revision,
+            args.source,
+            args.output,
+            save_target=args.save_target,
         )
         print(json.dumps(receipt))
-    except (CandidateCommitError, WorkspacePreparationError) as error:
+    except (CandidateCommitError, PublicationTargetError, WorkspacePreparationError) as error:
         raise SystemExit(str(error)) from None
     except (OSError, SQLAlchemyError, KeyError, TypeError, ValueError):
         raise SystemExit(

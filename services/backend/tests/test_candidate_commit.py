@@ -2,13 +2,17 @@ import json
 import shutil
 import subprocess
 from hashlib import sha256
+from uuid import UUID
 
 import pytest
+from sqlalchemy import select
 
 from refactra.analysis_context import save_analysis_context
 from refactra.candidate_commit import CandidateCommitError, prepare_candidate_commit
 from refactra.candidate_patch import CandidatePatch
 from refactra.candidate_results import save_validated_candidate
+from refactra.models import RunEvent, RunPublicationTarget
+from refactra.publication_target import PublicationTargetError, save_publication_target
 from refactra.refactoring_plan import approve_refactoring_plan, save_refactoring_plan
 from refactra.repository_analysis_worker import enqueue_repository_analysis
 from refactra.repository_validation import ValidationResult
@@ -133,3 +137,26 @@ def test_prepares_the_saved_diff_as_one_pinned_commit(tmp_path, session_factory,
     assert (
         prepare_candidate_commit(session_factory, run.id, 1, source, tmp_path / "retry") == receipt
     )
+
+    registered = prepare_candidate_commit(
+        session_factory, run.id, 1, source, output, save_target=True
+    )
+    assert (
+        prepare_candidate_commit(session_factory, run.id, 1, source, output, save_target=True)
+        == registered
+    )
+    with session_factory.begin() as session:
+        target = session.get(RunPublicationTarget, UUID(receipt["result_id"]))
+        assert json.loads(target.document) == {"schema_version": "1", **receipt}
+        assert target.sha256 == registered["publication_target_sha256"]
+        assert sha256(target.document).hexdigest() == target.sha256
+        events = session.scalars(
+            select(RunEvent).where(RunEvent.event_type == "PUBLICATION_TARGET_SAVED")
+        ).all()
+        assert len(events) == 1 and events[0].payload["target_sha256"] == target.sha256
+        with pytest.raises(PublicationTargetError, match="different publication target"):
+            save_publication_target(session, {**receipt, "commit_sha": "f" * 40})
+
+    (output / "receipt.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(CandidateCommitError, match="Existing artifact"):
+        prepare_candidate_commit(session_factory, run.id, 1, source, output, save_target=True)
