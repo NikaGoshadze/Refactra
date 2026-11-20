@@ -5,14 +5,17 @@ from hashlib import sha256
 from types import SimpleNamespace
 from uuid import UUID
 
+import httpx
 import pytest
 from sqlalchemy import select
 
 import refactra.publication_branch as publication
+import refactra.publication_pr as draft
 from refactra.analysis_context import save_analysis_context
 from refactra.candidate_commit import CandidateCommitError, prepare_candidate_commit
 from refactra.candidate_patch import CandidatePatch
 from refactra.candidate_results import save_validated_candidate
+from refactra.github_app import GitHubAppError
 from refactra.models import RunEvent, RunPublicationTarget
 from refactra.publication_target import (
     PublicationTargetError,
@@ -33,8 +36,9 @@ def git(directory, *args):
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="Requires local Git.")
+@pytest.mark.parametrize("lost_response", [False, True])
 def test_prepares_the_saved_diff_as_one_pinned_commit(
-    tmp_path, session_factory, proposal, monkeypatch
+    tmp_path, session_factory, proposal, monkeypatch, lost_response
 ):
     source = tmp_path / "clone"
     source.mkdir()
@@ -159,7 +163,9 @@ def test_prepares_the_saved_diff_as_one_pinned_commit(
         with pytest.raises(PublicationTargetError, match="different publication target"):
             save_publication_target(session, {**receipt, "commit_sha": "f" * 40})
 
-    check_branch_publication(session_factory, run, source, output, registered, monkeypatch)
+    check_branch_publication(
+        session_factory, run, source, output, registered, monkeypatch, lost_response
+    )
 
     (output / "receipt.json").write_text("{}", encoding="utf-8")
     with pytest.raises(CandidateCommitError, match="Existing artifact"):
@@ -175,7 +181,9 @@ def test_prepares_the_saved_diff_as_one_pinned_commit(
     assert not invalid_output.exists()
 
 
-def check_branch_publication(session_factory, run, source, artifact, registered, monkeypatch):
+def check_branch_publication(
+    session_factory, run, source, artifact, registered, monkeypatch, lost_response
+):
     push = publication.push_approved_branch
     with pytest.raises(PublicationTargetError, match="owner must approve"):
         push(session_factory, run.id, artifact)
@@ -187,6 +195,8 @@ def check_branch_publication(session_factory, run, source, artifact, registered,
             target_sha256=registered["publication_target_sha256"],
             actor_id=run.requested_by,
         )
+    with pytest.raises(PublicationTargetError, match="Push the approved branch"):
+        draft.open_approved_draft(session_factory, run.id)
 
     upstream = artifact.parent / "upstream.git"
     git(source, "clone", "--bare", str(source), str(upstream))
@@ -231,8 +241,70 @@ def check_branch_publication(session_factory, run, source, artifact, registered,
             select(RunEvent).where(RunEvent.event_type == publication.PUBLICATION_BRANCH_PUSHED)
         ).all()
         assert [event.payload for event in events] == [pushed]
+    monkeypatch.setattr(draft, "resolve_revision", resolve)
+    check_draft_publication(session_factory, run, pushed, monkeypatch, lost_response)
     ref = f"refs/heads/{pushed['head_branch']}"
     git(upstream, "update-ref", ref, run.base_sha)
     with pytest.raises(CandidateCommitError, match="Git could not complete push"):
         push(session_factory, run.id, artifact)
     assert git(upstream, "rev-parse", ref).decode().strip() == run.base_sha
+
+
+def check_draft_publication(session_factory, run, pushed, monkeypatch, lost_response):
+    head = pushed["head_branch"]
+    commit = pushed["commit_sha"]
+    pr = {
+        "number": 18,
+        "state": "open",
+        "draft": True,
+        "base": {"repo": {"id": 42}, "ref": "main", "sha": run.base_sha},
+        "head": {"repo": {"id": 42}, "ref": head, "sha": commit},
+    }
+    methods = []
+    wrong_head = True
+
+    def handler(request):
+        assert request.url.host == "api.github.com"
+        assert request.url.path == "/repos/fixture/repo/pulls"
+        assert request.headers["authorization"] == "Bearer fixture-pr-token"
+        if request.method == "GET":
+            assert request.url.params["head"] == f"fixture:{head}"
+            assert request.url.params["state"] == "all"
+            if wrong_head:
+                entries = [{**pr, "head": {**pr["head"], "sha": run.base_sha}}]
+            else:
+                entries = [pr] if "POST" in methods else []
+            methods.append("GET")
+            return httpx.Response(200, json=entries)
+        assert request.method == "POST"
+        body = json.loads(request.content)
+        assert (body["head"], body["base"], body["draft"]) == (head, "main", True)
+        methods.append("POST")
+        if lost_response:
+            raise httpx.ReadTimeout("Fixture lost the creation response", request=request)
+        return httpx.Response(201, json=pr)
+
+    def mint(installation_id, repository_id):
+        assert (installation_id, repository_id) == (run.github_installation_id, 42)
+        return SimpleNamespace(value="fixture-pr-token")
+
+    app = SimpleNamespace(transport=httpx.MockTransport(handler), mint_pull_request_token=mint)
+    monkeypatch.setattr(draft, "authorize_run_repository", lambda _run: (app, object()))
+    with pytest.raises(PublicationTargetError, match="does not match the approved draft"):
+        draft.open_approved_draft(session_factory, run.id)
+    assert methods == ["GET"]
+    wrong_head = False
+    methods.clear()
+    if lost_response:
+        with pytest.raises(GitHubAppError, match="Retry to check"):
+            draft.open_approved_draft(session_factory, run.id)
+    published = draft.open_approved_draft(session_factory, run.id)
+    assert published["pull_request_url"] == "https://github.com/fixture/repo/pull/18"
+    assert published["target_sha256"] == pushed["target_sha256"]
+    assert draft.open_approved_draft(session_factory, run.id) == published
+    assert methods == (["GET", "POST", "GET"] if lost_response else ["GET", "POST"])
+    with session_factory() as session:
+        events = session.scalars(
+            select(RunEvent).where(RunEvent.event_type == draft.PUBLICATION_PR_OPENED)
+        ).all()
+        assert [event.payload for event in events] == [published]
