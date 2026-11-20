@@ -21,7 +21,7 @@ from refactra.analysis_request import (
     PreparedAnalysisRequest,
 )
 from refactra.models import ModelReservation, RunEvent
-from refactra.planning_request import PLAN_INSTRUCTIONS, load_planning_context
+from refactra.planning_request import PLAN_INSTRUCTIONS, PLAN_TEXT_CONFIG, load_planning_context
 
 BUDGET_LOCK = 72341002  # Separate from the mock worker's session-scoped execution lock.
 
@@ -80,11 +80,14 @@ def reserve_analysis_request(
     ).quantize(Decimal("0.000000000001"), rounding=ROUND_CEILING)
     if cost != expected:
         raise ValueError("Request estimate must match its saved pricing.")
+    model_input = asdict(request.model_input)
+    if request.model_input.instructions == PLAN_INSTRUCTIONS:
+        model_input["text"] = PLAN_TEXT_CONFIG
     fingerprint = sha256(
         json.dumps(
             {
                 "run_id": str(request.run_id),
-                "input": asdict(request.model_input),
+                "input": model_input,
                 "tokens": request.input_tokens,
                 "cost": str(cost),
             },

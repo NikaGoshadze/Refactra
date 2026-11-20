@@ -18,7 +18,7 @@ from refactra.analysis_request import (
     prepare_analysis_request,
 )
 from refactra.model_reservations import reserve_analysis_request, settle_model_usage
-from refactra.planning_request import PLAN_INSTRUCTIONS, load_planning_context
+from refactra.planning_request import PLAN_INSTRUCTIONS, PLAN_TEXT_CONFIG, load_planning_context
 
 # Standard, uncached USD rates verified against OpenAI documentation on 2026-11-19.
 PRICING = ModelPricing("gpt-5.4-mini-2026-03-17", 400_000, Decimal("0.75"), Decimal("4.50"))
@@ -55,12 +55,15 @@ class OpenAIAnalysisProvider:
             or not 1 <= request.max_output_tokens <= MAX_REQUEST_OUTPUT
         ):
             raise ValueError("Unsupported read-only model configuration.")
-        return {
+        body = {
             "model": request.model,
             "instructions": request.instructions,
             "input": request.context_json,
             "reasoning": {"effort": "none"},
         }
+        if request.instructions == PLAN_INSTRUCTIONS:
+            body["text"] = PLAN_TEXT_CONFIG
+        return body
 
     def _post(self, path: str, body: dict) -> dict:
         try:

@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 from hashlib import sha256
 from uuid import uuid5
 
@@ -8,6 +9,7 @@ from sqlalchemy import select
 
 import refactra.repository_plan_worker as planner
 from refactra.analysis_context import save_analysis_context
+from refactra.model_reservations import settle_model_usage
 from refactra.models import ModelReservation, RunEvent
 from refactra.openai_analysis import OpenAIAnalysisProvider
 from refactra.planning_request import PLAN_INSTRUCTIONS
@@ -109,9 +111,12 @@ def test_untrusted_plan_validation_rejects_invalid_paths_and_references(proposal
         PlanProposal.model_validate(proposal)
 
 
-@pytest.mark.parametrize("valid", [True, False])
+@pytest.mark.parametrize(
+    ("valid", "legacy_state"),
+    [(True, None), (False, None), (True, "settled"), (True, "held")],
+)
 def test_operator_plan_uses_saved_inputs_and_one_paid_receipt(
-    session_factory, proposal, monkeypatch, tmp_path, valid
+    session_factory, proposal, monkeypatch, tmp_path, valid, legacy_state
 ):
     run, _, context = prepare(session_factory)
     with session_factory.begin() as session:
@@ -133,13 +138,20 @@ def test_operator_plan_uses_saved_inputs_and_one_paid_receipt(
         assert (installation, repository, user.user_id) == (77, 42, run.requested_by)
 
     monkeypatch.setattr(planner, "require_github_write_access", verify_permission)
-    attempt_id = uuid5(run.id, "repository:initial-plan")
+    legacy_id = uuid5(run.id, "repository:initial-plan")
+    attempt_id = uuid5(run.id, "repository:initial-plan:structured-v1")
     requests = []
 
     def model(request):
         body = json.loads(request.content)
         requests.append(body)
         assert body["instructions"] == PLAN_INSTRUCTIONS
+        assert body["text"]["format"] == {
+            "type": "json_schema",
+            "name": "refactoring_plan",
+            "strict": True,
+            "schema": PlanProposal.model_json_schema(),
+        }
         context = json.loads(body["input"])
         assert context["saved_analysis"] == "src/cart.py:1 needs review"
         assert context["base_sha"] == run.base_sha
@@ -151,7 +163,10 @@ def test_operator_plan_uses_saved_inputs_and_one_paid_receipt(
             assert session.get(ModelReservation, attempt_id).settled_at is None
         assert body["input"] == requests[0]["input"] and body["tools"] == []
         payload = response()
-        payload["output"][0]["content"][0]["text"] = json.dumps(proposal) if valid else "{}"
+        if not valid:
+            # This shape can satisfy the provider schema but still violates a local rule.
+            proposal["validation_checks"][0]["criteria_ids"] = ["AC-unknown"]
+        payload["output"][0]["content"][0]["text"] = json.dumps(proposal)
         return httpx.Response(200, json=payload)
 
     provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(model))
@@ -159,12 +174,38 @@ def test_operator_plan_uses_saved_inputs_and_one_paid_receipt(
         planner.generate_initial_plan(session_factory, run.id, provider)
     assert requests == []
     monkeypatch.setenv("REFACTRA_ALLOWED_GITHUB_USER_IDS", str(run.requested_by))
+    if legacy_state is not None:
+        with session_factory.begin() as session:
+            analysis = session.scalar(
+                select(ModelReservation).where(ModelReservation.run_id == run.id)
+            )
+            session.add(
+                ModelReservation(
+                    id=legacy_id,
+                    run_id=run.id,
+                    budget_month=analysis.budget_month,
+                    request_hash="a" * 64,
+                    model=analysis.model,
+                    input_tokens=100,
+                    output_tokens=3000,
+                    maximum_cost_usd=Decimal("0.02"),
+                    pricing=analysis.pricing,
+                )
+            )
+            session.flush()
+            if legacy_state == "settled":
+                settle_model_usage(session, legacy_id, input_tokens=100, output_tokens=20)
+    if legacy_state == "held":
+        with pytest.raises(planner.PlanGenerationError, match="unknown outcome"):
+            planner.generate_initial_plan(session_factory, run.id, provider)
+        assert requests == []
+        return
     if valid:
         plan = planner.generate_initial_plan(session_factory, run.id, provider)
         assert plan.revision == 1
         assert planner.generate_initial_plan(session_factory, run.id, provider).id == plan.id
     else:
-        with pytest.raises(planner.PlanGenerationError, match="proposal schema"):
+        with pytest.raises(planner.PlanGenerationError, match=r"proposal schema \(value_error\)"):
             planner.generate_initial_plan(session_factory, run.id, provider)
         with pytest.raises(planner.PlanGenerationError, match="cannot be resent"):
             planner.generate_initial_plan(session_factory, run.id, provider)
