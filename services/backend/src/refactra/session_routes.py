@@ -19,6 +19,18 @@ class SessionStatus(BaseModel):
     user: GitHubIdentity | None
 
 
+def is_trusted_mutation(request: Request, config: GitHubOAuthConfig) -> bool:
+    try:
+        origin = urlsplit(config.callback_url)._replace(path="", query="", fragment="").geturl()
+    except ValueError:
+        return False
+    return bool(
+        origin
+        and request.headers.get("origin") == origin
+        and request.headers.get("x-refactra-csrf") == "1"
+    )
+
+
 def create_session_router(session_factory, config: GitHubOAuthConfig | None = None) -> APIRouter:
     config = config or GitHubOAuthConfig.from_env()
     router = APIRouter(prefix="/api/v1/auth", tags=["Session"])
@@ -41,15 +53,7 @@ def create_session_router(session_factory, config: GitHubOAuthConfig | None = No
 
     @router.post("/logout", status_code=204, response_class=Response)
     def logout(request: Request):
-        try:
-            origin = urlsplit(config.callback_url)._replace(path="", query="", fragment="").geturl()
-        except ValueError:
-            origin = ""
-        if (
-            not origin
-            or request.headers.get("origin") != origin
-            or request.headers.get("x-refactra-csrf") != "1"
-        ):
+        if not is_trusted_mutation(request, config):
             return JSONResponse(
                 {
                     "error": {

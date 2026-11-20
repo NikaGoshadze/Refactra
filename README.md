@@ -156,7 +156,7 @@ Missing/invalid branch references and GitHub failures stop resolution without fa
 
 The internal `create_repository_run(session, identity=..., installation_id=..., revision=..., task_text=...)` service persists the requesting user, installation/repository IDs, selected base branch, exact SHA, task and initial `CREATED` state, plus a `RUN_CREATED` event in the caller's transaction. Callers must first verify session/tester/repository eligibility and current GitHub permission, then pass the revision resolved with that installation's scoped token. Only numeric identities and revision/task data are stored; credentials are not accepted by this service.
 
-Repository records use `repository-v0.1`, separate from mock runs, and enqueue no worker command. The live-run endpoint remains disabled. Source retrieval loads `base_sha` from PostgreSQL rather than resolving the branch again. API/UI wiring remains a later batch.
+Repository records use `repository-v0.1`, separate from mock runs. Source retrieval uses the saved `base_sha`. A repository run can be queued after its analysis context is ready.
 
 The internal `fetch_source_snapshot(run, token)` reader accepts a run loaded from PostgreSQL and a fresh scoped token after current access checks. It requests [GitHub's ZIP archive](https://docs.github.com/en/rest/repos/contents#download-a-repository-archive-zip) at the saved SHA, accepts one HTTPS redirect to `codeload.github.com`, and keeps the installation token on the API request only. Downloads stop above 10 MiB; archive-wide limits are 20 MiB uncompressed, 1,000 regular files and 2 MiB per file, including entries in skipped directories. Common dependency/build directories (`node_modules`, `.venv`, `venv`, `__pycache__`, `.next`, `dist`, `build`, `coverage`, `.git`) are omitted from the returned files.
 
@@ -230,7 +230,13 @@ Migration `0005_model_usage` adds nullable pricing and usage fields and an all-o
 
 After authorizing model use for the repository, an internal caller can queue a prepared run with `enqueue_repository_analysis(session, run_id)`. The worker uses its saved, pinned context and GPT-5.4 mini with the default 3,000-token output allowance. Set `REFACTRA_OPENAI_API_KEY` in the worker environment and start `uv run python -m refactra.worker --repository-analysis` after applying migrations. Choose either mock or repository analysis mode for the single worker slot.
 
-Migration `0007_analysis_results` adds `run_analysis_results` and is required for API readiness. The worker saves the result as untrusted text and transitions the run to `NEEDS_HUMAN_REVIEW` in the same transaction. Budget receipts are committed before generation. If a restarted worker finds a receipt without a saved result, it records an unknown outcome or missing result and stops that run. Queue submission and result access are currently internal.
+Migration `0007_analysis_results` adds `run_analysis_results` and is required for API readiness. The worker saves the result as untrusted text and transitions the run to `NEEDS_HUMAN_REVIEW` in the same transaction. Budget receipts are committed before generation. If a restarted worker finds a receipt without a saved result, it records an unknown outcome or missing result and stops that run. Result access is currently internal.
+
+## Protected analysis submission
+
+Set `REFACTRA_ENABLE_REPOSITORY_ANALYSIS=true` for the configured repository API to enable `POST /api/v1/runs`. Submit JSON with `repository_id`, a literal `base_branch`, and `task_text`. Send the session cookie, the configured app `Origin`, `X-Refactra-CSRF: 1`, and a UUID `Idempotency-Key`. The API requires an invited user with current GitHub write access and reads source using the App's scoped read token.
+
+A `202` receipt contains the run ID, repository ID, branch, pinned SHA, and creation timestamp. A retry using the same account, key and input keeps the same commit, even after a failed source download or a branch update. Use a new key to submit different input. The worker can claim the command once the bounded context and command commit together. The web proxy and run-result endpoint will be wired separately.
 
 ## Read-only OpenAI analysis adapter
 

@@ -34,12 +34,16 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app = FastAPI(
         title="Refactra Foundation API",
         version="0.1.0",
-        description="Local mock queue only. Live execution and approvals are not implemented.",
+        description="Local mock queue and optional protected repository analysis.",
         lifespan=lifespan,
     )
     app.include_router(create_github_auth_router(session_factory))
     app.include_router(create_session_router(session_factory))
-    app.include_router(create_repository_router(session_factory))
+    app.include_router(
+        create_repository_router(
+            session_factory, enable_analysis=settings.enable_repository_analysis
+        )
+    )
 
     @app.exception_handler(HTTPException)
     async def http_error(_, exc: HTTPException):
@@ -124,15 +128,17 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
             "github_publication_enabled": False,
         }
 
-    @app.post("/api/v1/runs", status_code=503)
-    def live_disabled():
-        raise HTTPException(
-            503,
-            {
-                "code": "live_execution_disabled",
-                "message": "Live execution is not implemented in this milestone.",
-            },
-        )
+    if not settings.enable_repository_analysis:
+
+        @app.post("/api/v1/runs", status_code=503)
+        def live_disabled():
+            raise HTTPException(
+                503,
+                {
+                    "code": "live_execution_disabled",
+                    "message": "Repository analysis submission is disabled.",
+                },
+            )
 
     @app.post("/api/v1/mock/runs", response_model=MockRunRead, status_code=202)
     def submit_mock(
