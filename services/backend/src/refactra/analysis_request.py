@@ -99,6 +99,7 @@ def prepare_analysis_request(
     monthly_committed_usd: Decimal,
     count_input_tokens: Callable[[AnalysisModelInput], int],
     max_output_tokens: int = DEFAULT_REQUEST_OUTPUT,
+    instructions: str = INSTRUCTIONS,
 ) -> PreparedAnalysisRequest:
     """Counter must cover the final provider envelope, instructions and context.
 
@@ -121,7 +122,7 @@ def prepare_analysis_request(
             raise ValueError
     except (ValueError, KeyError, TypeError, RecursionError):
         raise ValueError("A valid saved analysis context is required.") from None
-    model_input = AnalysisModelInput(pricing.model, INSTRUCTIONS, text, max_output_tokens)
+    model_input = AnalysisModelInput(pricing.model, instructions, text, max_output_tokens)
     tokens = count_input_tokens(model_input)
     if type(tokens) is not int or tokens <= 0:
         raise ValueError("The trusted token counter must return a positive integer.")

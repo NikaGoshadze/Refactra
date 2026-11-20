@@ -21,6 +21,7 @@ from refactra.analysis_request import (
     PreparedAnalysisRequest,
 )
 from refactra.models import ModelReservation, RunEvent
+from refactra.planning_request import PLAN_INSTRUCTIONS, load_planning_context
 
 BUDGET_LOCK = 72341002  # Separate from the mock worker's session-scoped execution lock.
 
@@ -115,13 +116,14 @@ def reserve_analysis_request(
         )
         if committed + cost > ledger_limit_usd:
             raise BudgetExceeded("benchmark_cost")
-    context = load_analysis_context(session, request.run_id)
-    if (
-        context is None
-        or context.document != request.model_input.context_json.encode()
-        or request.model_input.instructions != INSTRUCTIONS
-    ):
-        raise ValueError("Request must use the saved context and trusted analysis instructions.")
+    if request.model_input.instructions == INSTRUCTIONS:
+        context = load_analysis_context(session, request.run_id)
+    elif request.model_input.instructions == PLAN_INSTRUCTIONS:
+        context = load_planning_context(session, request.run_id)
+    else:
+        raise ValueError("Request must use trusted analysis or planning instructions.")
+    if context is None or context.document != request.model_input.context_json.encode():
+        raise ValueError("Request must match the saved context for this step.")
     month = (
         session.scalar(select(func.timezone("UTC", func.clock_timestamp()))).date().replace(day=1)
     )
