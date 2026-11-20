@@ -30,6 +30,7 @@ def test_liveness_and_disabled_features_do_not_require_a_database():
         assert client.get("/health/live").json() == {"status": "ok"}
         assert client.get("/api/v1/capabilities").json() == {
             "mock_enabled": False,
+            "repository_analysis_enabled": False,
             "live_execution_enabled": False,
             "approvals_enabled": False,
             "github_publication_enabled": False,

@@ -123,6 +123,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     def capabilities():
         return {
             "mock_enabled": settings.enable_mock,
+            "repository_analysis_enabled": settings.enable_repository_analysis,
             "live_execution_enabled": False,
             "approvals_enabled": False,
             "github_publication_enabled": False,

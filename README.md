@@ -242,6 +242,8 @@ A `202` receipt contains the run ID, repository ID, branch, pinned SHA, and crea
 
 Both routes are available through the same-origin Next.js proxy. It forwards only Refactra session cookies, preserves the original submission origin and CSRF and idempotency headers, and keeps responses uncached. The proxy allows up to 90 seconds to prepare a submission and 60 seconds to check a run.
 
+After verifying repository access, use **Repository analysis** to choose the base branch and enter a task. The panel shows the pinned commit and polls until the worker saves the analysis or records a failure. A submission retry with the same input reuses its key while the panel is open. The panel clears on sign-out and tracks the current run in memory.
+
 ## Read-only OpenAI analysis adapter
 
 `execute_read_only_analysis(session_factory, run_id, attempt_id, provider)` reloads the saved context, counts the complete input through OpenAI's `/v1/responses/input_tokens` endpoint, commits durable admission, and then makes one Responses API call outside database transactions. A trusted operator must authorize repository access first. Construct `OpenAIAnalysisProvider` with the server-only `REFACTRA_OPENAI_API_KEY` from your environment; host Python commands do not load `.env` automatically. No new dependency is required.

@@ -1,0 +1,75 @@
+import { RUN_ID, RUN_PATH, expect, test } from "../fixtures/auth-proxy";
+
+const REPOSITORY_ID = 1001132861;
+const receipt = { run_id: RUN_ID, base_branch: "feature/cart", base_sha: "a".repeat(40) };
+const analysis = "<strong>Review cart extraction</strong>";
+
+test.beforeEach(async ({ context, page, authProxy }) => {
+  await context.addCookies([{ name: "refactra_session", value: "fixture-session", url: authProxy.origin, httpOnly: true }]);
+  await page.route("**/api/v1/capabilities", (route) => route.fulfill({
+    json: { mock_enabled: true, repository_analysis_enabled: true },
+  }));
+  await page.goto(authProxy.origin);
+  await expect(page.getByRole("region", { name: "Repository analysis" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Check repository access" }).click();
+});
+
+test("verified repository submits a selected branch and shows the saved read-only analysis", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const panel = page.getByRole("region", { name: "Repository analysis" });
+  const branch = panel.getByLabel("Base branch", { exact: true });
+  await expect(branch).toHaveValue("main");
+  await expect(panel.getByRole("button", { name: "Start analysis" })).toBeDisabled();
+  await branch.fill(receipt.base_branch);
+  await panel.getByLabel("What would you like to refactor?").fill("  Review cart  ");
+  await page.route("**/api/v1/runs", async (route) => {
+    expect(route.request().postDataJSON()).toEqual({
+      repository_id: REPOSITORY_ID, base_branch: receipt.base_branch, task_text: "Review cart",
+    });
+    expect(route.request().headers()["x-refactra-csrf"]).toBe("1");
+    expect(route.request().headers()["idempotency-key"]).toMatch(/^[a-f0-9-]{36}$/);
+    await route.fulfill({ status: 202, json: receipt });
+  });
+  let reads = 0;
+  await page.route(`**${RUN_PATH}`, (route) => route.fulfill({
+    json: { ...receipt, stop_reason: null, ...(++reads === 1
+      ? { status: "ANALYZING", analysis_text: null }
+      : { status: "NEEDS_HUMAN_REVIEW", analysis_text: analysis }) },
+  }));
+  await panel.getByRole("button", { name: "Start analysis" }).click();
+  await expect(panel.getByRole("status")).toHaveText("Analyzing");
+  await expect(panel.getByText(receipt.base_sha, { exact: true })).toBeVisible();
+  await expect(panel.getByRole("status")).toHaveText("Ready for review", { timeout: 10000 });
+  await expect(panel.locator("pre")).toHaveText(analysis);
+  await expect(panel.locator("pre strong")).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await expect(panel).toHaveCount(0);
+});
+
+test("submission retry reuses its key and a failed run shows the backend reason", async ({ page }) => {
+  const panel = page.getByRole("region", { name: "Repository analysis" });
+  const start = panel.getByRole("button", { name: "Start analysis" });
+  const keys: string[] = [];
+  await panel.getByLabel("What would you like to refactor?").fill("Review cart");
+  await page.route("**/api/v1/runs", (route) => {
+    keys.push(route.request().headers()["idempotency-key"]);
+    return keys.length === 1
+      ? route.fulfill({ status: 502, json: { error: { message: "Source download failed." } } })
+      : route.fulfill({ status: 202, json: receipt });
+  });
+  let reads = 0;
+  await page.route(`**${RUN_PATH}`, (route) => ++reads === 1
+    ? route.fulfill({ status: 502, json: { error: { message: "Could not verify repository access." } } })
+    : route.fulfill({ json: { ...receipt, status: "FAILED", analysis_text: null,
+      stop_reason: { message: "The run reached an analysis budget limit." } } }));
+  await start.click();
+  await expect(panel.getByRole("alert")).toHaveText("Source download failed.");
+  await start.click();
+  await expect(panel.getByRole("alert")).toHaveText("Could not verify repository access.");
+  expect(keys).toHaveLength(2);
+  expect(keys[1]).toBe(keys[0]);
+  await panel.getByRole("button", { name: "Retry status" }).click();
+  await expect(panel.getByRole("status")).toHaveText("Analysis failed");
+  await expect(panel.getByRole("alert")).toHaveText("The run reached an analysis budget limit.");
+});

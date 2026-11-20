@@ -16,7 +16,7 @@ export default function Home() {
         <section className="intro">
           <p className="eyebrow">YOUR REPOSITORY. YOUR APPROVAL.</p>
           <h1>A clearer path<br />from task to change.</h1>
-          <p className="intro-copy">Refactra is being built to analyze, plan and refactor code through two human approvals. This workspace demonstrates verified repository access and a durable mock task queue.</p>
+          <p className="intro-copy">Connect your repository and submit a task to review a read-only analysis of a pinned commit.</p>
         </section>
         </RepositoryConnection>
         <RunConsole />
@@ -28,10 +28,10 @@ export default function Home() {
             <li><span>03</span><strong>Edit, test & review</strong><small>Restricted execution</small></li>
             <li><span>04</span><strong>Approve a draft PR</strong><small>Human checkpoint</small></li>
           </ol>
-          <p className="roadmap-note">Planned capabilities — these stages are not executable in this foundation build.</p>
+          <p className="roadmap-note">Read-only analysis is available when enabled. Approvals, edits and draft PRs are planned.</p>
         </section>
       </main>
-      <footer><span>Built deliberately, one verified boundary at a time.</span><span>No live AI · No GitHub writes</span></footer>
+      <footer><span>Refactra</span><span>Read-only analysis</span></footer>
     </div>
   );
 }
