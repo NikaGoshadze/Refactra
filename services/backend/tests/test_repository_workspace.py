@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4, uuid5
 
 import httpx
@@ -6,8 +7,8 @@ import pytest
 
 from refactra import repository_workspace as workspace
 from refactra.analysis_context import save_analysis_context
-from refactra.candidate_patch import CandidatePatchError
-from refactra.models import ModelReservation
+from refactra.candidate_patch import CandidatePatch, CandidatePatchError
+from refactra.models import ModelReservation, RunCommand, RunGeneratedCandidate
 from refactra.openai_analysis import OpenAIAnalysisProvider
 from refactra.refactoring_plan import (
     APPLY_PLAN_APPROVAL,
@@ -16,11 +17,12 @@ from refactra.refactoring_plan import (
     save_refactoring_plan,
 )
 from refactra.repository_analysis_worker import (
+    GENERATE_CANDIDATE,
     WORKFLOW,
     enqueue_repository_analysis,
     process_repository_plan_approval,
 )
-from refactra.repository_candidate import generate_candidate
+from refactra.repository_candidate import generate_candidate, process_repository_candidate
 from refactra.repository_snapshot import SourceFile, SourceSnapshot
 from refactra.worker import claim_command
 
@@ -59,9 +61,9 @@ def test_workspace_rejects_incompatible_paths(proposal, path, action, sources, e
         workspace._workspace_files(snapshot, content)
 
 
-@pytest.mark.parametrize("edit_path", ["src/cart.py", "src/unrelated.py"])
+@pytest.mark.parametrize("scenario", ["valid", "recover", "outside_scope"])
 def test_workspace_requires_verified_approval_and_stages_pinned_source(
-    session_factory, proposal, token, monkeypatch, edit_path
+    session_factory, proposal, token, monkeypatch, scenario
 ):
     run, _, context = prepare(session_factory)
     with session_factory.begin() as session:
@@ -118,6 +120,7 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
         ]
     assert calls == [SHA] and not root.exists()
 
+    edit_path = "src/unrelated.py" if scenario == "outside_scope" else "src/cart.py"
     patch = {
         "base_sha": run.base_sha,
         "plan_sha256": plan.sha256,
@@ -150,14 +153,40 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
         return httpx.Response(200, json=result)
 
     provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(model))
-    if edit_path == "src/cart.py":
+    generation = claim_command(
+        session_factory, "worker", workflow=WORKFLOW, kind=GENERATE_CANDIDATE
+    )
+    assert generation is not None
+    if scenario == "recover":
         assert generate_candidate(session_factory, run.id, provider).model_dump() == patch
+        with session_factory.begin() as session:
+            row = session.get(RunCommand, generation)
+            row.lease_until = datetime.now(UTC) - timedelta(minutes=1)
+        assert (
+            claim_command(session_factory, "restart", workflow=WORKFLOW, kind=GENERATE_CANDIDATE)
+            == generation
+        )
+        assert not process_repository_candidate(session_factory, generation, "worker", provider)
+        snapshots = len(calls)
+        assert process_repository_candidate(session_factory, generation, "restart", provider)
+        assert len(calls) == snapshots
     else:
-        with pytest.raises(CandidatePatchError, match="approved file paths and actions"):
-            generate_candidate(session_factory, run.id, provider)
-    with pytest.raises(CandidatePatchError, match="attempt is already recorded"):
-        generate_candidate(session_factory, run.id, provider)
+        assert process_repository_candidate(session_factory, generation, "worker", provider)
     assert requests == ["/v1/responses/input_tokens", "/v1/responses"]
     with session_factory() as session:
         attempt_id = uuid5(run.id, f"repository:candidate:v1:{plan.sha256}")
         assert session.get(ModelReservation, attempt_id).actual_output_tokens == 20
+        saved = session.get(RunGeneratedCandidate, run.id)
+        command = session.get(RunCommand, generation)
+        if scenario == "outside_scope":
+            assert saved is None and command.status == "FAILED"
+        else:
+            assert command.status == "DONE"
+            assert saved.reservation_id == attempt_id
+            assert CandidatePatch.model_validate_json(saved.document).model_dump() == patch
+    if scenario == "outside_scope":
+        with pytest.raises(CandidatePatchError, match="attempt is already recorded"):
+            generate_candidate(session_factory, run.id, provider)
+    else:
+        assert generate_candidate(session_factory, run.id, provider).model_dump() == patch
+    assert len(requests) == 2

@@ -18,10 +18,12 @@ from refactra.models import Run, RunCommand, RunEvent
 from refactra.openai_analysis import OpenAIAnalysisProvider
 from refactra.refactoring_plan import APPLY_PLAN_APPROVAL
 from refactra.repository_analysis_worker import (
+    GENERATE_CANDIDATE,
     WORKFLOW,
     process_repository_analysis,
     process_repository_plan_approval,
 )
+from refactra.repository_candidate import process_repository_candidate
 
 logger = logging.getLogger("refactra.worker")
 WORKER_LOCK = 72341001
@@ -130,18 +132,25 @@ def main():
     modes.add_argument(
         "--repository-approval", action="store_true", help="Verify approved plan handoffs."
     )
+    modes.add_argument(
+        "--repository-candidate",
+        action="store_true",
+        help="Verify plans and prepare model patches.",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     settings = Settings.from_env()
     provider = None
     mode = "mock"
     kind = "START"
-    if args.repository_analysis:
+    if args.repository_analysis or args.repository_candidate:
         key = os.getenv("REFACTRA_OPENAI_API_KEY", "").strip()
         if not key:
-            raise SystemExit("Repository analysis requires REFACTRA_OPENAI_API_KEY.")
+            raise SystemExit("Repository model work requires REFACTRA_OPENAI_API_KEY.")
         provider = OpenAIAnalysisProvider(key)
-        mode = "repository_analysis"
+        mode = "repository_candidate" if args.repository_candidate else "repository_analysis"
+        if args.repository_candidate:
+            kind = GENERATE_CANDIDATE
     elif args.repository_approval:
         mode = "repository_approval"
         kind = APPLY_PLAN_APPROVAL
@@ -163,10 +172,20 @@ def main():
             while not stopped.is_set():
                 guard.execute(text("SELECT 1"))  # Loss of the lock connection stops this worker.
                 command_id = claim_command(session_factory, worker_id, workflow=workflow, kind=kind)
+                approval_handoff = args.repository_approval
+                if command_id is None and args.repository_candidate:
+                    command_id = claim_command(
+                        session_factory, worker_id, workflow=workflow, kind=APPLY_PLAN_APPROVAL
+                    )
+                    approval_handoff = True
                 if command_id:
-                    if args.repository_approval:
+                    if approval_handoff:
                         processed = process_repository_plan_approval(
                             session_factory, command_id, worker_id
+                        )
+                    elif args.repository_candidate:
+                        processed = process_repository_candidate(
+                            session_factory, command_id, worker_id, provider
                         )
                     elif provider is None:
                         processed = process_command(session_factory, command_id, worker_id)

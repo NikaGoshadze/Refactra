@@ -7,6 +7,7 @@ from uuid import UUID, uuid5
 
 from fastapi import HTTPException
 from pydantic import ValidationError
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from refactra.analysis_request import MAX_REQUEST_OUTPUT, BudgetExceeded
@@ -15,38 +16,128 @@ from refactra.candidate_request import CANDIDATE_INSTRUCTIONS, prepare_candidate
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.github_app import GitHubAppError
-from refactra.models import ModelReservation
+from refactra.models import ModelReservation, Run, RunEvent, RunGeneratedCandidate
 from refactra.openai_analysis import (
     AnalysisProviderError,
     OpenAIAnalysisProvider,
     execute_model_request,
 )
+from refactra.refactoring_plan import load_approved_plan
+from refactra.repository_analysis_worker import (
+    GENERATE_CANDIDATE,
+    _claimed_command,
+    candidate_command_key,
+)
 from refactra.repository_workspace import WorkspacePreparationError, prepare_approved_workspace
 
 
-def generate_candidate(session_factory, run_id: UUID, provider) -> CandidatePatch:
+def _attempt_id(run_id: UUID, plan_sha256: str) -> UUID:
+    return uuid5(run_id, f"repository:candidate:v1:{plan_sha256}")
+
+
+def generate_candidate(
+    session_factory, run_id: UUID, provider, *, check_admission=None
+) -> CandidatePatch:
     with prepare_approved_workspace(session_factory, run_id) as workspace:
-        attempt_id = uuid5(run_id, f"repository:candidate:v1:{workspace.sha256}")
+        attempt_id = _attempt_id(run_id, workspace.sha256)
         with session_factory() as session:
+            saved = session.get(RunGeneratedCandidate, run_id)
+            if saved is not None:
+                if saved.reservation_id != attempt_id:
+                    raise CandidatePatchError("The saved candidate does not match this plan.")
+                return CandidatePatch.model_validate_json(saved.document)
             if session.get(ModelReservation, attempt_id) is not None:
                 raise CandidatePatchError("A candidate attempt is already recorded for this plan.")
             context = prepare_candidate_context(session, run_id, workspace)
-        result = execute_model_request(
+        patch = None
+        rejected = None
+
+        def save_response(session, result):
+            nonlocal patch, rejected
+            try:
+                candidate = CandidatePatch.model_validate_json(result.text)
+                apply_candidate_patch(workspace, candidate)
+            except ValidationError:
+                rejected = "The generated candidate did not match the patch format."
+            except CandidatePatchError as error:
+                rejected = str(error)
+            except OSError:
+                rejected = "The candidate could not be checked in the disposable workspace."
+            else:
+                patch = candidate
+                session.add(
+                    RunGeneratedCandidate(
+                        run_id=run_id,
+                        reservation_id=attempt_id,
+                        document=patch.model_dump_json().encode(),
+                    )
+                )
+
+        execute_model_request(
             session_factory,
             attempt_id,
             provider,
             context,
             instructions=CANDIDATE_INSTRUCTIONS,
             max_output_tokens=MAX_REQUEST_OUTPUT,
+            check_admission=check_admission,
+            save_response=save_response,
         )
-        try:
-            patch = CandidatePatch.model_validate_json(result.text)
-        except ValidationError:
-            raise CandidatePatchError(
-                "The generated candidate did not match the patch format."
-            ) from None
-        apply_candidate_patch(workspace, patch)
+        if patch is None:
+            raise CandidatePatchError(rejected or "The generated candidate could not be saved.")
         return patch
+
+
+def process_repository_candidate(
+    session_factory, command_id: UUID, worker_id: str, provider
+) -> bool:
+    with session_factory.begin() as session:
+        command = _claimed_command(session, command_id, worker_id)
+        now = session.scalar(select(func.now()))
+        if command is None or command.kind != GENERATE_CANDIDATE or command.lease_until <= now:
+            return False
+        run_id, attempt, dedupe_key = command.run_id, command.attempts, command.dedupe_key
+
+    def check_admission(session):
+        command = _claimed_command(session, command_id, worker_id)
+        if command is None or command.attempts != attempt:
+            raise CandidatePatchError("The candidate claim was lost before model admission.")
+
+    error_code = None
+    try:
+        with session_factory() as session:
+            run = session.get(Run, run_id)
+            plan = load_approved_plan(session, run)
+            if dedupe_key != candidate_command_key(run_id, plan.revision):
+                raise CandidatePatchError("The candidate command targets another plan revision.")
+            saved = session.get(RunGeneratedCandidate, run_id)
+            if saved is not None and saved.reservation_id != _attempt_id(run_id, plan.sha256):
+                raise CandidatePatchError("The saved candidate does not match this plan.")
+        if saved is None:
+            generate_candidate(session_factory, run_id, provider, check_admission=check_admission)
+    except BudgetExceeded:
+        error_code = "candidate_budget_exceeded"
+    except (AnalysisProviderError, GitHubAppError, HTTPException, KeyError, OSError, ValueError):
+        error_code = "candidate_generation_failed"
+
+    with session_factory.begin() as session:
+        command = _claimed_command(session, command_id, worker_id)
+        if command is None or command.attempts != attempt:
+            return False
+        command.status = "FAILED" if error_code else "DONE"
+        command.completed_at = session.scalar(select(func.now()))
+        command.lease_until = None
+        session.add(
+            RunEvent(
+                run_id=run_id,
+                event_type="CANDIDATE_GENERATION_FAILED" if error_code else "CANDIDATE_GENERATED",
+                payload={
+                    "command_id": str(command_id),
+                    **({"code": error_code} if error_code else {}),
+                },
+            )
+        )
+        return True
 
 
 def main() -> None:
