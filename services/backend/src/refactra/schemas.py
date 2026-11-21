@@ -51,7 +51,6 @@ class StopReason(BaseModel):
 class RepositoryRunRead(RepositoryRunReceipt):
     status: Literal["CREATED", "ANALYZING", "NEEDS_HUMAN_REVIEW", "FAILED"]
     updated_at: datetime
-    analysis_text: str | None
     stop_reason: StopReason | None
 
 

@@ -3,6 +3,7 @@
 import json
 import re
 from hashlib import sha256
+from pathlib import PurePosixPath
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -20,10 +21,12 @@ from sqlalchemy.orm import Session, undefer
 
 from refactra.analysis_context import load_analysis_context
 from refactra.models import Run, RunAnalysisResult, RunCommand, RunEvent, RunPlan, RunPlanApproval
+from refactra.repository_selection import is_excluded_source_path
 
 MAX_PLAN_BYTES = 64 * 1024
 SUPPORTED_PLAN_CHECK_IDS = ("python.pytest",)
 APPLY_PLAN_APPROVAL = "APPLY_PLAN_APPROVAL"
+PROTECTED_PYTHON_FILES = {"conftest.py", "setup.py", "sitecustomize.py", "usercustomize.py"}
 PlanText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
 Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")]
 
@@ -106,11 +109,37 @@ class PlanReadiness(BaseModel):
     blocking_question_count: int
     unsupported_check_ids: list[str]
     has_required_supported_check: bool
+    scope_errors: list[str]
+
+
+def is_editable_plan_path(path: PurePosixPath) -> bool:
+    return (
+        path.suffix in {".py", ".pyi"}
+        and path.name.casefold() not in PROTECTED_PYTHON_FILES
+        and not any(part.startswith(".") for part in path.parts)
+        and not is_excluded_source_path(path)
+    )
 
 
 def evaluate_plan_readiness(proposal: PlanProposal) -> PlanReadiness:
     """Check proposal metadata against the initial Python validation catalog."""
+    scope_errors = [
+        f"{edit.path} is outside the editable Python scope."
+        for edit in proposal.changes
+        if not is_editable_plan_path(PurePosixPath(edit.path))
+    ]
+    deleted = {edit.path for edit in proposal.changes if edit.action == "DELETE"}
+    for check in proposal.validation_checks:
+        if check.check_id != "python.pytest":
+            continue
+        if not check.paths:
+            scope_errors.append("Select at least one pytest test file.")
+        for path in check.paths:
+            name = PurePosixPath(path).name
+            if path in deleted or not re.fullmatch(r"(?:test_.*|.*_test)\.py", name):
+                scope_errors.append(f"{path} must be a pytest test file retained by the plan.")
     return PlanReadiness(
+        scope_errors=list(dict.fromkeys(scope_errors)),
         blocking_question_count=len(proposal.blocking_questions),
         unsupported_check_ids=sorted(
             {
@@ -187,7 +216,7 @@ def save_refactoring_plan(
     return plan
 
 
-def _require_reviewable_plan(run: Run, plan: RunPlan) -> None:
+def _require_reviewable_plan(run: Run, plan: RunPlan) -> PlanReadiness:
     try:
         content = PlanContent.model_validate_json(plan.document)
     except ValidationError:
@@ -208,6 +237,7 @@ def _require_reviewable_plan(run: Run, plan: RunPlan) -> None:
         raise PlanRevisionConflict(
             "Resolve blocking questions and validation checks before approving."
         )
+    return readiness
 
 
 def approval_command_key(run_id: UUID, revision: int) -> str:
@@ -257,7 +287,8 @@ def approve_refactoring_plan(
             return existing
         raise PlanRevisionConflict("This run already has an approved plan.")
 
-    _require_reviewable_plan(run, plan)
+    if _require_reviewable_plan(run, plan).scope_errors:
+        raise PlanRevisionConflict("Resolve the file and validation scope issues before approving.")
     approval = RunPlanApproval(
         run_id=run_id, revision=revision, sha256=sha256, approved_by=actor_id
     )

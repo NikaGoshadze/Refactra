@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError, request } from "@/lib/api";
 import { CandidateResultPanel } from "./candidate-result-panel";
 
@@ -10,7 +10,7 @@ type PlanWrite = "revision" | "approval";
 type SavedPlan = {
   artifact: { id: string; revision: number; sha256: string };
   approval: ApprovalReceipt | null;
-  readiness: { unsupported_check_ids: string[]; has_required_supported_check: boolean };
+  readiness: { unsupported_check_ids: string[]; has_required_supported_check: boolean; scope_errors: string[] };
   content: {
     summary: string;
     changes: { path: string; action: string; intent: string }[];
@@ -23,16 +23,15 @@ type SavedPlan = {
 };
 
 type PlanState =
-  | { status: "idle" | "loading" | "missing" }
+  | { status: "idle" | "loading" | "pending" | "missing" }
   | { status: "loaded"; plan: SavedPlan }
   | { status: "error"; message: string };
 
-function PlanNotes({ title, entries, empty }: { title: string; entries: string[]; empty?: string }) {
-  if (!entries.length && !empty) return null;
+function PlanNotes({ title, entries }: { title: string; entries: string[] }) {
   return (
     <div>
       <h4>{title}</h4>
-      {entries.length ? <ul>{entries.map((entry, index) => <li key={index}>{entry}</li>)}</ul> : <p>{empty}</p>}
+      {entries.length ? <ul>{entries.map((entry, index) => <li key={index}>{entry}</li>)}</ul> : <p>None recorded.</p>}
     </div>
   );
 }
@@ -45,11 +44,15 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
   const pending = useRef<AbortController | null>(null);
   useEffect(() => () => pending.current?.abort(), []);
   const plan = state.status === "loaded" ? state.plan : null;
-  const canApprove = plan?.approval === null && !draftEdited
-    && plan.content.blocking_questions.length === 0
-    && plan.readiness.has_required_supported_check && plan.readiness.unsupported_check_ids.length === 0;
+  const blockers = plan ? [
+    ...(plan.content.blocking_questions.length ? ["Resolve the blocking questions."] : []),
+    ...(!plan.readiness.has_required_supported_check ? ["Add a required supported validation check."] : []),
+    ...(plan.readiness.unsupported_check_ids.length ? ["Replace unsupported validation checks."] : []),
+    ...(plan.readiness.scope_errors ?? []),
+  ] : [];
+  const canApprove = plan?.approval === null && !draftEdited && blockers.length === 0;
 
-  async function loadPlan() {
+  const loadPlan = useCallback(async () => {
     if (pending.current) return;
     const controller = new AbortController();
     pending.current = controller;
@@ -63,7 +66,9 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
       if (!controller.signal.aborted) setState({ status: "loaded", plan });
     } catch (error) {
       if (controller.signal.aborted) return;
-      if (error instanceof ApiError && error.code === "plan_not_found") {
+      if (error instanceof ApiError && error.code === "plan_pending") {
+        setState({ status: "pending" });
+      } else if (error instanceof ApiError && error.code === "plan_not_found") {
         setState({ status: "missing" });
       } else {
         const message = error instanceof DOMException && error.name === "TimeoutError"
@@ -74,7 +79,13 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
     } finally {
       pending.current = null;
     }
-  }
+  }, [runId]);
+
+  useEffect(() => {
+    if (state.status !== "idle" && state.status !== "pending") return;
+    const timer = window.setTimeout(loadPlan, state.status === "idle" ? 0 : 2500);
+    return () => window.clearTimeout(timer);
+  }, [loadPlan, state]);
 
   async function writePlan(kind: PlanWrite, reviewedPlan: SavedPlan, body: object) {
     if (pending.current) return;
@@ -131,10 +142,10 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
   return (
     <section className="saved-plan" aria-labelledby="saved-plan-title">
       <h3 id="saved-plan-title">Refactoring plan</h3>
-      <button className="repository-check" type="button" onClick={loadPlan} disabled={state.status === "loading" || writing !== null}>
-        {state.status === "idle" ? "Load saved plan" : "Refresh saved plan"}
-      </button>
-      {state.status === "loading" && <p role="status">Loading saved plan…</p>}
+      {(state.status === "missing" || state.status === "error") &&
+        <button className="repository-check" type="button" onClick={loadPlan}>Retry plan lookup</button>}
+      {(state.status === "idle" || state.status === "loading" || state.status === "pending") &&
+        <p role="status">Preparing plan…</p>}
       {state.status === "missing" && <p role="status">No plan has been saved for this run yet.</p>}
       {state.status === "error" && <p className="error-box" role="alert">{state.message}</p>}
       {plan && <>
@@ -155,7 +166,12 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
           </form>
         </details>}
         {plan.approval === null && <div className="saved-run">
-          <p id="plan-approval-hint">{draftEdited ? "Save your edits or refresh the plan before approving." : "Approval locks this saved revision."}</p>
+          <div id="plan-approval-hint">
+            {draftEdited && <p>Save your edits before approving.</p>}
+            {blockers.length > 0
+              ? <ul>{blockers.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+              : !draftEdited && <p>Approval locks this saved revision.</p>}
+          </div>
           {writeError?.kind === "approval" && <p className="error-box" role="alert">{writeError.message}</p>}
           <button className="repository-check" type="button" onClick={approvePlan}
             aria-describedby="plan-approval-hint" disabled={!canApprove || writing !== null}>
@@ -180,10 +196,8 @@ function PlanReview({ plan: { artifact, content, readiness } }: { plan: SavedPla
         <div><dt>Plan revision</dt><dd aria-live="polite">{artifact.revision}</dd></div>
         <div><dt>SHA-256</dt><dd><code>{artifact.sha256}</code></dd></div>
       </dl>
+      <h4>Summary</h4>
       <p>{content.summary}</p>
-      <PlanNotes title="Unrecognized validation IDs" entries={readiness.unsupported_check_ids} />
-      {!readiness.has_required_supported_check && <p>A registered required validation check is missing.</p>}
-      <PlanNotes title="Blocking questions" entries={content.blocking_questions} empty="None recorded." />
       <div>
         <h4>Proposed changes</h4>
         <ul>{content.changes.map((change) => (
@@ -199,6 +213,8 @@ function PlanReview({ plan: { artifact, content, readiness } }: { plan: SavedPla
       </div>
       <div>
         <h4>Proposed validation checks</h4>
+        {readiness.unsupported_check_ids.length > 0 &&
+          <p>Unsupported checks {readiness.unsupported_check_ids.join(", ")}</p>}
         <ul>{content.validation_checks.map((check, index) => (
           <li key={index}>
             <code>{check.check_id}</code> · {check.required ? "Required" : "Optional"}
@@ -208,6 +224,7 @@ function PlanReview({ plan: { artifact, content, readiness } }: { plan: SavedPla
         ))}</ul>
       </div>
       <PlanNotes title="Assumptions" entries={content.assumptions} />
+      <PlanNotes title="Blocking questions" entries={content.blocking_questions} />
     </>
   );
 }

@@ -246,7 +246,7 @@ Set `REFACTRA_ENABLE_REPOSITORY_ANALYSIS=true` for the configured repository API
 
 A `202` receipt contains the run ID, repository ID, branch, pinned SHA, and creation timestamp. Its `Location` header points to the run status. A retry using the same account, key and input keeps the same commit, even after a failed source download or a branch update. Use a new key to submit different input. The worker can claim the command once the bounded context and command commit together.
 
-`GET /api/v1/runs/{run_id}` returns the pinned revision and run status. It includes `analysis_text` once the saved result is ready for human review, or a sanitized `stop_reason` if analysis failed. Treat the result as untrusted model text. Each read requires ownership, an active session, and current repository access under the configured installation. Existing runs remain readable when new submissions are disabled.
+`GET /api/v1/runs/{run_id}` returns the pinned revision and run status, plus a sanitized `stop_reason` if analysis failed. The worker uses the saved analysis internally. Each read requires ownership, an active session, and current repository access under the configured installation. Existing runs remain readable when new submissions are disabled.
 
 Both routes are available through the same-origin Next.js proxy. It forwards only Refactra session cookies, preserves the original submission origin and CSRF and idempotency headers, and keeps responses uncached. The proxy allows up to 90 seconds to prepare a submission and 60 seconds to check a run.
 
@@ -275,7 +275,7 @@ uv run --project services/backend --env-file .env python -m refactra.worker --re
 
 1. Open [the local workspace](http://localhost:3000), sign in, and click **Check repository access**.
 2. Select a base branch, enter a small refactoring task with a test path, and click **Start analysis**. Note the pinned commit shown for the run.
-3. When analysis is ready, click **Load saved plan**. If the plan lists blocking questions, use **Revise plan draft** to record the answers and save a revision. Review and approve the saved plan.
+3. The plan appears when it is ready. If it lists blocking questions, use **Revise plan draft** to record the answers and save a revision. Review and approve the saved plan.
 4. Watch the candidate panel update through validation. Review the saved diff, passing test output, and publication target, then click **Approve publication**.
 5. Open the GitHub draft link when it appears in the candidate panel.
 
@@ -297,7 +297,7 @@ Rerunning the command returns a saved plan or stops if a structured attempt was 
 
 The planner and plan read API also report the number of blocking questions, unregistered validation IDs, and whether a registered check is required. The initial Python profile recognizes `python.pytest` during plan review. Earlier drafts with IDs like `VC1` stay reviewable and need revision. These checks inspect plan metadata only. Running tests and approving a plan are later steps.
 
-In the browser, click **Load saved plan** when an analysis is ready for review. To return to an earlier run, verify repository access, choose **Open a saved run**, and enter its run ID. The plan view shows the latest saved revision. Loading it uses the saved analysis and plan without making a model request.
+The browser loads the plan automatically. To return to an earlier run, verify repository access, choose **Open a saved run**, and enter its run ID. The plan view shows the latest saved revision.
 
 Use **Revise plan draft** to edit the proposal JSON. Record answers in the relevant fields, remove resolved questions, and update any unrecognized validation IDs. The protected `POST /api/v1/runs/{run_id}/plan` takes `{expected_revision, proposal}` and returns the saved draft with updated readiness. A changed draft appends an immutable revision. A stale edit returns 409, and retrying the same saved content returns its existing revision.
 
