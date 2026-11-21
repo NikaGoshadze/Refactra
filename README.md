@@ -254,7 +254,7 @@ Start the protected repository API and web app, then run one worker on the Docke
 uv run python -m refactra.worker --repository-workflow --candidate-source <local-clone> --candidate-artifacts <existing-artifact-directory>
 ```
 
-Run the command from `services/backend` and leave the worker running. Use the configured repository's Git clone and an artifact directory under the ignored `.runtime` location. After submitting a run in the browser, the worker saves the analysis and queues the first plan. Load the saved plan to review and approve it, then load the candidate result to review and approve publication. The worker processes both approvals and the browser shows the draft link after refreshing the result.
+Run the command from `services/backend` and leave the worker running. Use the configured repository's Git clone and an artifact directory under the ignored `.runtime` location. After submitting a run in the browser, the worker saves the analysis and queues the first plan. Load the saved plan to review and approve it. The candidate panel updates automatically through validation and shows the draft link after you approve publication.
 
 This mode queues planning for analyses it completes. Use the operator command below if an earlier analysis has no saved plan.
 
@@ -292,7 +292,7 @@ Add `--validate` with `--candidate` to run the approved pytest files and report 
 
 Add `--save-result` to the same command to store a successful candidate, its diff, and its validation evidence in PostgreSQL. This requires migration `0011_candidate_results`. The command returns a result ID, revision, and checksum. Saving the same candidate and diff again returns the original result. A different passing candidate gets a new revision.
 
-Open the saved run and load its approved plan, then select **Load saved result** to review the latest candidate diff and validation output. The protected `GET /api/v1/runs/{run_id}/result` endpoint also accepts `?revision=1` to retrieve a specific saved result.
+Open the saved run and load its approved plan to see the candidate status, diff, and validation output. The protected `GET /api/v1/runs/{run_id}/result` endpoint accepts `?progress=true` for the current stage and latest result, or `?revision=1` to retrieve a specific saved result.
 
 To prepare the reviewed revision for publication, run this from `services/backend` with `REFACTRA_DATABASE_URL` set and Git installed.
 
@@ -304,7 +304,7 @@ Use a trusted local clone that contains the pinned commit and a new output direc
 
 Add `--save-target` to save the verified commit and PR destination in PostgreSQL for publication review. This option requires migration `0012_publication_targets` and accepts an existing output directory when its receipt and Git ref match the recomputed commit. Repeating the command returns the same `publication_target_sha256`.
 
-Refresh the saved result in the browser to review the commit and branches. After migration `0015_candidate_publication`, **Approve publication** records the exact target and queues publication. With the clone and artifact flags enabled, the candidate worker pushes the prepared commit and opens or recovers its draft PR. Earlier approvals can still use the operator commands below.
+Review the commit and branches in the saved result. After migration `0015_candidate_publication`, **Approve publication** records the exact target and queues publication. With the clone and artifact flags enabled, the candidate worker pushes the prepared commit and opens or recovers its draft PR. Earlier approvals can still use the operator commands below.
 
 After approval, an operator can run `uv run python -m refactra.publication_branch <run-id> --artifact <prepared-directory>` from `services/backend`. Use the protected repository and database settings and an App installation with Contents read and write access for the selected repository. The command rechecks owner access and the pinned base, pushes the approved commit to its designated branch, and records the verified head in PostgreSQL. Repeating it with the same remote head returns the same receipt.
 

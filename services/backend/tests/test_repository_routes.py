@@ -25,6 +25,7 @@ from refactra.publication_target import (
 )
 from refactra.refactoring_plan import approve_refactoring_plan, save_refactoring_plan
 from refactra.repository_analysis_worker import WORKFLOW, process_repository_analysis
+from refactra.repository_candidate import VALIDATE_CANDIDATE
 from refactra.repository_validation import ValidationResult
 from refactra.worker import claim_command
 
@@ -429,6 +430,10 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
     assert missing.status_code == 404
     assert missing.json()["error"]["code"] == "candidate_result_not_found"
     assert missing.headers["cache-control"] == "no-store"
+    live_url = f"{url}?progress=true"
+    initial = client.get(live_url)
+    assert initial.json() == {"status": "idle", "message": None, "result": None}
+    assert initial.headers["cache-control"] == "no-store"
 
     analyze_fixture_run(session_factory)
     with session_factory.begin() as session:
@@ -441,6 +446,13 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
             sha256=plan.sha256,
             actor_id=12345,
         )
+    assert client.get(live_url).json()["status"] == "queued"
+    with session_factory.begin() as session:
+        job = RunCommand(run_id=run_id, kind=VALIDATE_CANDIDATE, dedupe_key="fixture-validation")
+        session.add(job)
+    assert client.get(live_url).json()["status"] == "validating"
+
+    with session_factory.begin() as session:
         check = ValidationResult(
             "python.pytest",
             ["tests/test_cart.py"],
@@ -483,6 +495,13 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
         assert data["publication"] is None
         assert "candidate" not in data
     assert client.get(f"{url}?revision=3").status_code == 404
+    assert client.get(live_url).json()["status"] == "preparing"
+    with session_factory.begin() as session:
+        session.get(RunCommand, job.id).status = "FAILED"
+    stopped = client.get(live_url).json()
+    assert stopped["status"] == "failed"
+    assert stopped["message"] == "Tests passed, but the worker could not prepare the commit."
+    assert stopped["result"]["diff"] == fixtures[1][1]
 
     latest, _ = fixtures[1]
     with session_factory.begin() as session:
@@ -503,6 +522,7 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
             },
         )
     target = client.get(url).json()["publication_target"]
+    assert client.get(live_url).json()["status"] == "idle"
     assert target["sha256"] == target_sha and target["commit_sha"] == "c" * 40
     assert target["destination"]["base_branch"] == "feature/cart"
     body = {"result_id": str(latest.id), "target_sha256": target_sha}
@@ -516,6 +536,7 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
         assert approved.json() == {**body, "result_revision": 2, "approved_by": 12345}
     assert client.get(url).json()["publication_approval"] == approved.json()
     assert client.get(url).json()["publication"] is None
+    assert client.get(live_url).json()["status"] == "publishing"
     with session_factory() as session:
         events = session.scalars(
             select(RunEvent).where(RunEvent.event_type == PUBLICATION_APPROVED)
@@ -549,6 +570,13 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
         )
     assert client.get(url).json()["publication"] == {"status": "branch_pushed"}
     with session_factory.begin() as session:
+        job = session.scalar(select(RunCommand).where(RunCommand.kind == PUBLISH_CANDIDATE))
+        job.status = "FAILED"
+    failed = client.get(live_url).json()
+    assert failed["status"] == "failed"
+    assert failed["message"] == "The worker could not finish publishing the draft PR."
+    assert failed["result"]["publication"] == {"status": "branch_pushed"}
+    with session_factory.begin() as session:
         session.add(RunEvent(run_id=run_id, event_type=PUBLICATION_PR_OPENED, payload=draft))
     assert client.get(url).json()["publication"] == {
         "status": "draft_opened",
@@ -556,6 +584,9 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
         "url": link,
     }
     assert client.get(f"{url}?revision=1").json()["publication"] is None
+    published = client.get(live_url).json()
+    assert published["status"] == "idle"
+    assert published["result"]["publication"]["url"] == link
 
 
 @pytest.mark.parametrize(
@@ -564,6 +595,7 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
         ("GET", ""),
         ("GET", "/plan"),
         ("GET", "/result"),
+        ("GET", "/result?progress=true"),
         ("POST", "/plan"),
         ("POST", "/plan/approve"),
         ("POST", "/result/approve"),
