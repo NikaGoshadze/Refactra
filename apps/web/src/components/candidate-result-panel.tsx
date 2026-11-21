@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { ApiError, request } from "@/lib/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { request } from "@/lib/api";
 
 type PublicationApproval = { result_revision: number };
 type PublicationTarget = {
@@ -29,43 +29,72 @@ type CandidateResult = {
   }[];
 };
 
-type ResultState =
-  | { status: "idle" | "loading" | "missing" }
-  | { status: "loaded"; result: CandidateResult }
-  | { status: "error"; message: string };
+const activeMessages = {
+  queued: "Waiting for the worker to verify the plan approval.",
+  generating: "Generating the candidate patch.",
+  validating: "Running validation checks.",
+  preparing: "Tests passed. Preparing the commit for review.",
+  publishing: "Publishing the draft PR.",
+};
+
+type CandidateProgress = {
+  status: keyof typeof activeMessages | "idle" | "failed";
+  message: string | null;
+  result: CandidateResult | null;
+};
 
 export function CandidateResultPanel({ runId }: { runId: string }) {
-  const [state, setState] = useState<ResultState>({ status: "idle" });
+  const [progress, setProgress] = useState<CandidateProgress | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const [approving, setApproving] = useState(false);
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const pending = useRef<AbortController | null>(null);
-  useEffect(() => () => pending.current?.abort(), []);
-
-  async function loadResult() {
+  const loadResult = useCallback(async () => {
     if (pending.current) return;
     const controller = new AbortController();
     pending.current = controller;
+    setLoading(true);
+    setLoadError(null);
     setApprovalError(null);
-    setState({ status: "loading" });
     try {
-      const result = await request<CandidateResult>(`runs/${runId}/result`, {
+      const saved = await request<CandidateProgress>(`runs/${runId}/result?progress=true`, {
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(65000)]),
       });
-      if (!controller.signal.aborted) setState({ status: "loaded", result });
+      if (!controller.signal.aborted) setProgress(saved);
     } catch (error) {
       if (controller.signal.aborted) return;
-      if (error instanceof ApiError && error.code === "candidate_result_not_found") {
-        setState({ status: "missing" });
-      } else {
-        const message = error instanceof DOMException && error.name === "TimeoutError"
-          ? "Result lookup timed out. Try again."
-          : error instanceof Error ? error.message : "Could not load the saved result.";
-        setState({ status: "error", message });
-      }
+      setLoadError(error instanceof DOMException && error.name === "TimeoutError"
+        ? "Result lookup timed out. Refresh to try again."
+        : error instanceof Error ? error.message : "Could not load the saved result.");
     } finally {
       pending.current = null;
+      if (!controller.signal.aborted) setLoading(false);
     }
-  }
+  }, [runId]);
+
+  useEffect(() => {
+    const initial = window.setTimeout(loadResult, 0);
+    return () => {
+      window.clearTimeout(initial);
+      pending.current?.abort();
+    };
+  }, [loadResult]);
+
+  const status = progress?.status;
+  useEffect(() => {
+    if (!status || status === "idle" || status === "failed" || loadError || approving) return;
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      if (pending.current) return;
+      if (Date.now() - started >= 180_000) {
+        setLoadError("Still waiting for the worker. Refresh to check again.");
+      } else {
+        void loadResult();
+      }
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [status, loadError, approving, loadResult]);
 
   async function approvePublication(result: CandidateResult) {
     if (pending.current || !result.publication_target || result.publication_approval) return;
@@ -81,7 +110,8 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(65000)]),
       });
       if (!controller.signal.aborted) {
-        setState({ status: "loaded", result: { ...result, publication_approval: approval } });
+        setProgress({ status: "publishing", message: null,
+          result: { ...result, publication_approval: approval } });
       }
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -93,26 +123,29 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
     }
   }
 
-  const result = state.status === "loaded" ? state.result : null;
+  const result = progress?.result;
   const target = result?.publication_target;
   const publication = result?.publication;
+  const activity = status && status !== "failed" && status !== "idle" ? activeMessages[status] : null;
   return (
     <section className="saved-run" aria-labelledby="candidate-result-title">
       <h4 id="candidate-result-title">Candidate result</h4>
-      <button className="repository-check" type="button" onClick={loadResult} disabled={state.status === "loading" || approving}>
-        {state.status === "idle" ? "Load saved result" : "Refresh saved result"}
+      <button className="repository-check" type="button" onClick={loadResult} disabled={loading || approving}>
+        Refresh saved result
       </button>
-      {state.status === "loading" && <p role="status">Loading saved result…</p>}
-      {state.status === "missing" && <p role="status">No validated candidate has been saved for this run yet.</p>}
-      {state.status === "error" && <p className="error-box" role="alert">{state.message}</p>}
-      {state.status === "loaded" && <>
+      {!progress && !loadError && <p role="status">Loading saved result…</p>}
+      {status === "idle" && !result && <p role="status">No validated candidate has been saved for this run yet.</p>}
+      {activity && !loadError && publication?.status !== "branch_pushed" && <p role="status">{activity}</p>}
+      {loadError && <p className="error-box" role="alert">{loadError}</p>}
+      {status === "failed" && <p className="error-box" role="alert">{progress?.message}</p>}
+      {result && <>
         <dl className="repository-details">
-          <div><dt>Result revision</dt><dd>{state.result.revision}</dd></div>
-          <div><dt>Approved plan revision</dt><dd>{state.result.approved_plan.revision}</dd></div>
-          <div><dt>Result SHA-256</dt><dd><code>{state.result.sha256}</code></dd></div>
+          <div><dt>Result revision</dt><dd>{result.revision}</dd></div>
+          <div><dt>Approved plan revision</dt><dd>{result.approved_plan.revision}</dd></div>
+          <div><dt>Result SHA-256</dt><dd><code>{result.sha256}</code></dd></div>
         </dl>
         <h5>Validation checks</h5>
-        <ul>{state.result.validation.map((check, index) => (
+        <ul>{result.validation.map((check, index) => (
           <li key={index}>
             <code>{check.check_id}</code> · {check.status}
             {check.exit_code !== null && <span> · Exit code {check.exit_code}</span>}
@@ -122,7 +155,7 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
           </li>
         ))}</ul>
         <h5>Saved diff</h5>
-        <pre className="analysis-result">{state.result.diff}</pre>
+        <pre className="analysis-result">{result.diff}</pre>
       </>}
       {result && <div className="saved-run">
         {target && <>
@@ -134,18 +167,21 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
             <div><dt>Head branch</dt><dd><code>{target.destination.head_branch}</code></dd></div>
           </dl>
         </>}
-        {publication?.status === "branch_pushed" && <p role="status">Branch pushed. Waiting for the draft PR.</p>}
+        {publication?.status === "branch_pushed" && <p role="status">
+          {status === "publishing" && !loadError ? "Branch pushed. Waiting for the draft PR." : "Branch pushed."}
+        </p>}
         {publication?.status === "draft_opened" && <p role="status">
           Draft PR opened.{" "}
           <a className="publication-link" href={publication.url}>View draft PR #{publication.number} on GitHub</a>
         </p>}
-        {!publication && (result.publication_approval ? (
+        {status === "idle" && !publication && (result.publication_approval ? (
           <p role="status">Publication approved for result revision {result.publication_approval.result_revision}.</p>
-        ) : target ? (
-          <button className="repository-check" type="button" onClick={() => approvePublication(result)} disabled={approving}>
+        ) : target ? <>
+          <p role="status">Candidate ready for review.</p>
+          <button className="repository-check" type="button" onClick={() => approvePublication(result)} disabled={loading || approving || Boolean(loadError)}>
             {approving ? "Recording approval…" : "Approve publication"}
           </button>
-        ) : <p>Waiting for a prepared publication target.</p>)}
+        </> : <p>Publication target has not been prepared.</p>)}
         {approvalError && <p className="error-box" role="alert">{approvalError}</p>}
       </div>}
     </section>

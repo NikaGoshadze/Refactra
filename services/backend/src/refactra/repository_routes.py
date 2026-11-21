@@ -25,12 +25,14 @@ from refactra.models import (
     RunAnalysisContext,
     RunAnalysisResult,
     RunCandidateResult,
+    RunCommand,
     RunEvent,
     RunPlan,
     RunPlanApproval,
     RunPublicationTarget,
 )
 from refactra.publication_target import (
+    PUBLISH_CANDIDATE,
     PublicationApproval,
     PublicationBranchRead,
     PublicationDraftRead,
@@ -40,6 +42,7 @@ from refactra.publication_target import (
     load_publication_progress,
 )
 from refactra.refactoring_plan import (
+    APPLY_PLAN_APPROVAL,
     PlanContent,
     PlanProposal,
     PlanReadiness,
@@ -51,7 +54,12 @@ from refactra.refactoring_plan import (
     save_refactoring_plan,
 )
 from refactra.repository_access import RepositoryAccessPolicy
-from refactra.repository_analysis_worker import WORKFLOW, enqueue_repository_analysis
+from refactra.repository_analysis_worker import (
+    GENERATE_CANDIDATE,
+    WORKFLOW,
+    enqueue_repository_analysis,
+)
+from refactra.repository_candidate import VALIDATE_CANDIDATE
 from refactra.repository_revision import resolve_revision
 from refactra.repository_runs import create_repository_run
 from refactra.repository_snapshot import fetch_source_snapshot
@@ -134,6 +142,38 @@ class CandidateResultRead(ArtifactReference):
     publication_target: PublicationTargetRead | None
     publication_approval: PublicationApproval | None
     publication: PublicationBranchRead | PublicationDraftRead | None
+
+
+class CandidateProgressRead(BaseModel):
+    status: Literal[
+        "idle", "queued", "generating", "validating", "preparing", "publishing", "failed"
+    ]
+    message: str | None = None
+    result: CandidateResultRead | None
+
+
+CANDIDATE_STAGES = {
+    APPLY_PLAN_APPROVAL: ("queued", "The worker could not verify the approved plan."),
+    GENERATE_CANDIDATE: ("generating", "The worker could not generate the candidate patch."),
+    VALIDATE_CANDIDATE: ("validating", "Candidate validation failed."),
+    PUBLISH_CANDIDATE: ("publishing", "The worker could not finish publishing the draft PR."),
+}
+
+
+def _candidate_progress(
+    activity: tuple[str, str] | None, result: CandidateResultRead | None
+) -> CandidateProgressRead:
+    if activity is None or (result and isinstance(result.publication, PublicationDraftRead)):
+        return CandidateProgressRead(status="idle", result=result)
+    kind, status = activity
+    if status == "DONE" or (result and result.publication_target and kind != PUBLISH_CANDIDATE):
+        return CandidateProgressRead(status="idle", result=result)
+    stage, failure = CANDIDATE_STAGES[kind]
+    if kind == VALIDATE_CANDIDATE and result:
+        stage, failure = "preparing", "Tests passed, but the worker could not prepare the commit."
+    if status == "FAILED":
+        return CandidateProgressRead(status="failed", message=failure, result=result)
+    return CandidateProgressRead(status=stage, result=result)
 
 
 class PlanApprovalRead(BaseModel):
@@ -445,12 +485,13 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
         except HTTPException as exc:
             return error(exc.status_code, exc.detail)
 
-    @router.get("/runs/{run_id}/result", response_model=CandidateResultRead)
+    @router.get("/runs/{run_id}/result", response_model=CandidateResultRead | CandidateProgressRead)
     def read_candidate_result(
         run_id: UUID,
         request: Request,
         response: Response,
         revision: Annotated[int | None, Query(ge=1, le=2_147_483_647)] = None,
+        progress: bool = False,
     ):
         try:
             require_run_access(request, run_id)
@@ -458,11 +499,26 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
             return error(exc.status_code, exc.detail)
 
         with session_factory() as session:
+            # Read the queue first. A finished job's artifacts must already be visible.
+            activity = None
+            live = progress and revision is None
+            if live:
+                row = session.execute(
+                    select(RunCommand.kind, RunCommand.status)
+                    .where(RunCommand.run_id == run_id, RunCommand.kind.in_(CANDIDATE_STAGES))
+                    .order_by(RunCommand.created_at.desc(), RunCommand.id.desc())
+                    .limit(1)
+                ).one_or_none()
+                if row is not None:
+                    activity = (row.kind, row.status)
             query = select(RunCandidateResult).where(RunCandidateResult.run_id == run_id)
             if revision is not None:
                 query = query.where(RunCandidateResult.revision == revision)
             result = session.scalar(query.order_by(RunCandidateResult.revision.desc()).limit(1))
             if result is None:
+                if live:
+                    response.headers["Cache-Control"] = "no-store"
+                    return _candidate_progress(activity, None)
                 return error(
                     404,
                     {
@@ -520,7 +576,7 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                     },
                 )
             response.headers["Cache-Control"] = "no-store"
-            return payload
+            return _candidate_progress(activity, payload) if live else payload
 
     @router.post("/runs/{run_id}/result/approve", response_model=PublicationApproval)
     def approve_result(

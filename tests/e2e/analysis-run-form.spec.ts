@@ -132,8 +132,23 @@ test("opens, revises, and approves a saved plan", async ({ page, authProxy }) =>
   await draft.fill(`${savedDraft}\n`);
   await expect(approve).toBeDisabled();
   await draft.fill(savedDraft);
+  const result = page.getByRole("region", { name: "Candidate result" });
+  const link = "https://github.com/fixture/example/pull/7";
+  let phase: "validating" | "preparing" | "review" | "draft" = "validating";
+  await page.route(`**${RESULT_PATH}?progress=true`, async (route) => {
+    if (phase === "validating") {
+      await route.fulfill({ json: { status: phase, message: null, result: null } });
+      return;
+    }
+    const response = await route.fetch();
+    const saved = await response.json();
+    const status = phase === "preparing" ? phase : "idle";
+    if (phase === "preparing") saved.publication_target = null;
+    if (phase === "draft") saved.publication = { status: "draft_opened", number: 7, url: link };
+    await route.fulfill({ response, json: { status, message: null, result: saved } });
+  });
   await approve.click();
-  await expect(plan.getByRole("status")).toHaveText("Approval recorded for revision 2.");
+  await expect(plan.getByText("Approval recorded for revision 2.")).toBeVisible();
   await expect(plan.getByText("Revise plan draft")).toHaveCount(0);
   const approval = authProxy.calls.findLast((call) => call.method === "POST" && call.url === PLAN_APPROVAL_PATH)!;
   expect(approval.headers.cookie).toBe("refactra_session=fixture-session");
@@ -141,44 +156,45 @@ test("opens, revises, and approves a saved plan", async ({ page, authProxy }) =>
     plan_id: REVISED_ARTIFACT.id, revision: 2, sha256: REVISED_ARTIFACT.sha256,
   });
 
-  const result = page.getByRole("region", { name: "Candidate result" });
-  await page.route(`**${RESULT_PATH}`, (route) => route.fulfill({ status: 404,
-    json: { error: { code: "candidate_result_not_found" } },
-  }), { times: 1 });
-  await result.getByRole("button", { name: "Load saved result" }).click();
-  await expect(result.getByRole("status")).toHaveText("No validated candidate has been saved for this run yet.");
-  await result.getByRole("button", { name: "Refresh saved result" }).click();
+  await expect(result.getByRole("status")).toHaveText("Running validation checks.");
+  phase = "preparing";
+  await expect(result.getByRole("status")).toHaveText("Tests passed. Preparing the commit for review.", { timeout: 10000 });
+  await expect(result.getByRole("button", { name: "Approve publication" })).toHaveCount(0);
+  phase = "review";
   await expect(result.getByText(RESULT.sha256, { exact: true })).toBeVisible();
   await expect(result.getByText("3 passed", { exact: true })).toBeVisible();
   await expect(result.getByText("Exit code 0", { exact: false })).toBeVisible();
   await expect(result.getByText(RESULT.diff)).toBeVisible();
   await expect(result.locator("pre strong")).toHaveCount(0);
-  await expect(result.getByText(RESULT.publication_target.commit_sha, { exact: true })).toBeVisible();
+  await expect(result.getByText(RESULT.publication_target.commit_sha, { exact: true })).toBeVisible({ timeout: 10000 });
   await expect(result.getByText(RESULT.publication_target.destination.head_branch, { exact: true })).toBeVisible();
+  await expect(result.getByRole("status")).toHaveText("Candidate ready for review.");
   await result.getByRole("button", { name: "Approve publication" }).click();
-  await expect(result.getByRole("status")).toHaveText("Publication approved for result revision 1.");
+  await expect(result.getByRole("status")).toHaveText("Publishing the draft PR.");
   const publication = authProxy.calls.findLast((call) => call.method === "POST" && call.url === PUBLICATION_APPROVAL_PATH)!;
   expect(publication.headers.cookie).toBe("refactra_session=fixture-session");
   expect(JSON.parse(publication.body!)).toEqual({
     result_id: RESULT.id, target_sha256: RESULT.publication_target.sha256,
   });
-  await result.getByRole("button", { name: "Refresh saved result" }).click();
-  await expect(result.getByRole("status")).toHaveText("Publication approved for result revision 1.");
-
-  const link = "https://github.com/fixture/example/pull/7";
-  for (const [progress, status] of [
-    [{ status: "branch_pushed" }, "Branch pushed. Waiting for the draft PR."],
-    [{ status: "draft_opened", number: 7, url: link }, "Draft PR opened."],
-  ] as const) {
-    await page.route(`**${RESULT_PATH}`, async (route) => {
-      const response = await route.fetch();
-      await route.fulfill({ response, json: { ...await response.json(), publication: progress } });
-    }, { times: 1 });
-    await result.getByRole("button", { name: "Refresh saved result" }).click();
-    await expect(result.getByRole("status")).toContainText(status);
-  }
-  await expect(result.getByRole("link", { name: "View draft PR #7 on GitHub" })).toHaveAttribute("href", link);
+  phase = "draft";
+  await expect(result.getByRole("link", { name: "View draft PR #7 on GitHub" })).toHaveAttribute("href", link, { timeout: 10000 });
 
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(plan).toHaveCount(0);
+});
+
+test("shows a worker failure when reopening an approved run", async ({ page }) => {
+  await page.route(`**${PLAN_PATH}`, (route) => route.fulfill({
+    json: { ...PLAN, approval: { revision: 1 } },
+  }));
+  await page.route(`**${RESULT_PATH}?progress=true`, (route) => route.fulfill({
+    json: { status: "failed", message: "Candidate validation failed.", result: null },
+  }));
+  await page.getByText("Open a saved run", { exact: true }).click();
+  await page.getByLabel("Run ID", { exact: true }).fill(RUN_ID);
+  await page.getByRole("button", { name: "Open run", exact: true }).click();
+  await page.getByRole("button", { name: "Load saved plan" }).click();
+  const result = page.getByRole("region", { name: "Candidate result" });
+  await expect(result.getByRole("alert")).toHaveText("Candidate validation failed.");
+  await expect(result.getByRole("button", { name: "Approve publication" })).toHaveCount(0);
 });
