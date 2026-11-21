@@ -1,9 +1,14 @@
-from uuid import uuid4
+import json
+from uuid import uuid4, uuid5
 
+import httpx
 import pytest
 
 from refactra import repository_workspace as workspace
 from refactra.analysis_context import save_analysis_context
+from refactra.candidate_patch import CandidatePatchError
+from refactra.models import ModelReservation
+from refactra.openai_analysis import OpenAIAnalysisProvider
 from refactra.refactoring_plan import (
     APPLY_PLAN_APPROVAL,
     PlanContent,
@@ -15,10 +20,12 @@ from refactra.repository_analysis_worker import (
     enqueue_repository_analysis,
     process_repository_plan_approval,
 )
+from refactra.repository_candidate import generate_candidate
 from refactra.repository_snapshot import SourceFile, SourceSnapshot
 from refactra.worker import claim_command
 
 from .test_analysis_context import prepare
+from .test_openai_analysis import response
 from .test_refactoring_plan import analyze_fixture_run
 from .test_refactoring_plan import proposal as proposal
 from .test_repository_snapshot import SHA, transport_for, zip_bytes
@@ -52,15 +59,22 @@ def test_workspace_rejects_incompatible_paths(proposal, path, action, sources, e
         workspace._workspace_files(snapshot, content)
 
 
+@pytest.mark.parametrize("edit_path", ["src/cart.py", "src/unrelated.py"])
 def test_workspace_requires_verified_approval_and_stages_pinned_source(
-    session_factory, proposal, token, monkeypatch
+    session_factory, proposal, token, monkeypatch, edit_path
 ):
     run, _, context = prepare(session_factory)
     with session_factory.begin() as session:
         save_analysis_context(session, context)
         enqueue_repository_analysis(session, run.id)
     analyze_fixture_run(session_factory)
-    archive = zip_bytes([("root/src/cart.py", b"pinned"), ("root/.env", b"secret")])
+    archive = zip_bytes(
+        [
+            ("root/src/cart.py", b"pinned"),
+            ("root/.env", b"secret"),
+            ("root/src/unrelated.py", b"not approved"),
+        ]
+    )
     calls = []
 
     def authorize(persisted_run):
@@ -95,7 +109,7 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
     with workspace.prepare_approved_workspace(session_factory, run.id) as prepared:
         root = prepared.root
         assert prepared.base_sha == run.base_sha and prepared.sha256 == plan.sha256
-        assert prepared.file_count == 1 and (root / "src/cart.py").read_bytes() == b"pinned"
+        assert prepared.file_count == 2 and (root / "src/cart.py").read_bytes() == b"pinned"
         assert not (root / ".env").exists()
         assert not (root / "tests/test_cart.py").exists()
         assert [(change.path, change.action) for change in prepared.changes] == [
@@ -103,3 +117,47 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
             ("tests/test_cart.py", "CREATE"),
         ]
     assert calls == [SHA] and not root.exists()
+
+    patch = {
+        "base_sha": run.base_sha,
+        "plan_sha256": plan.sha256,
+        "edits": [
+            {"path": edit_path, "action": "MODIFY", "content": "def cart(): return 2\n"},
+            {
+                "path": "tests/test_cart.py",
+                "action": "CREATE",
+                "content": "def test_cart(): pass\n",
+            },
+        ],
+    }
+    requests = []
+
+    def model(request):
+        requests.append(request.url.path)
+        payload = json.loads(request.content)
+        assert payload["text"]["format"]["name"] == "candidate_patch"
+        assert payload["text"]["format"]["strict"] is True
+        prompt = json.loads(payload["input"])
+        assert prompt["source"] == {"src/cart.py": "pinned"}
+        assert prompt["approved_plan"] == json.loads(plan.document)
+        if request.url.path.endswith("/input_tokens"):
+            return httpx.Response(
+                200, json={"object": "response.input_tokens", "input_tokens": 100}
+            )
+        assert payload["tools"] == [] and payload["store"] is False
+        result = response()
+        result["output"][0]["content"][0]["text"] = json.dumps(patch)
+        return httpx.Response(200, json=result)
+
+    provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(model))
+    if edit_path == "src/cart.py":
+        assert generate_candidate(session_factory, run.id, provider).model_dump() == patch
+    else:
+        with pytest.raises(CandidatePatchError, match="approved file paths and actions"):
+            generate_candidate(session_factory, run.id, provider)
+    with pytest.raises(CandidatePatchError, match="attempt is already recorded"):
+        generate_candidate(session_factory, run.id, provider)
+    assert requests == ["/v1/responses/input_tokens", "/v1/responses"]
+    with session_factory() as session:
+        attempt_id = uuid5(run.id, f"repository:candidate:v1:{plan.sha256}")
+        assert session.get(ModelReservation, attempt_id).actual_output_tokens == 20

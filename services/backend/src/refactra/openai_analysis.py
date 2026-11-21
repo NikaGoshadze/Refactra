@@ -7,7 +7,7 @@ from uuid import UUID
 
 import httpx
 
-from refactra.analysis_context import load_analysis_context
+from refactra.analysis_context import PreparedAnalysisContext, load_analysis_context
 from refactra.analysis_request import (
     DEFAULT_REQUEST_OUTPUT,
     INSTRUCTIONS,
@@ -17,6 +17,7 @@ from refactra.analysis_request import (
     ModelPricing,
     prepare_analysis_request,
 )
+from refactra.candidate_request import CANDIDATE_INSTRUCTIONS, CANDIDATE_TEXT_CONFIG
 from refactra.model_reservations import reserve_analysis_request, settle_model_usage
 from refactra.planning_request import PLAN_INSTRUCTIONS, PLAN_TEXT_CONFIG, load_planning_context
 
@@ -63,6 +64,8 @@ class OpenAIAnalysisProvider:
         }
         if request.instructions == PLAN_INSTRUCTIONS:
             body["text"] = PLAN_TEXT_CONFIG
+        elif request.instructions == CANDIDATE_INSTRUCTIONS:
+            body["text"] = CANDIDATE_TEXT_CONFIG
         return body
 
     def _post(self, path: str, body: dict) -> dict:
@@ -187,6 +190,30 @@ def execute_read_only_analysis(
         )
     if context is None:
         raise ValueError("A saved analysis context is required.")
+    return execute_model_request(
+        session_factory,
+        attempt_id,
+        provider,
+        context,
+        instructions=PLAN_INSTRUCTIONS if planning else INSTRUCTIONS,
+        max_output_tokens=max_output_tokens,
+        ledger_limit_usd=ledger_limit_usd,
+        check_admission=check_admission,
+    )
+
+
+def execute_model_request(
+    session_factory,
+    attempt_id: UUID,
+    provider,
+    context: PreparedAnalysisContext,
+    *,
+    instructions: str,
+    max_output_tokens: int,
+    ledger_limit_usd=None,
+    check_admission=None,
+):
+    """Count and reserve one model call using a trusted context and instruction set."""
     request = prepare_analysis_request(
         context,
         provider.pricing,
@@ -194,7 +221,7 @@ def execute_read_only_analysis(
         monthly_committed_usd=Decimal("0"),
         count_input_tokens=provider.count_input_tokens,
         max_output_tokens=max_output_tokens,
-        instructions=PLAN_INSTRUCTIONS if planning else INSTRUCTIONS,
+        instructions=instructions,
     )
     # Durable admission recalculates real balances; preflight snapshots are not authority.
     with session_factory.begin() as session:
