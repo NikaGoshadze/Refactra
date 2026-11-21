@@ -275,7 +275,7 @@ uv run --project services/backend --env-file .env python -m refactra.worker --re
 
 1. Open [the local workspace](http://localhost:3000), sign in, and click **Check repository access**.
 2. Select a base branch, enter a small refactoring task with a test path, and click **Start analysis**. Note the pinned commit shown for the run.
-3. The plan appears when it is ready. If it lists blocking questions, use **Revise plan draft** to record the answers and save a revision. Review and approve the saved plan.
+3. The plan appears when it is ready. Use **Edit plan** to change fields directly, or answer questions and click **Update plan** to request a new draft. Review and approve the latest saved plan.
 4. Watch the candidate panel update through validation. Review the saved diff, passing test output, and publication target, then click **Approve publication**.
 5. Open the GitHub draft link when it appears in the candidate panel.
 
@@ -299,7 +299,7 @@ The planner and plan read API also report the number of blocking questions, unre
 
 The browser loads the plan automatically. To return to an earlier run, verify repository access, choose **Open a saved run**, and enter its run ID. The plan view shows the latest saved revision.
 
-Use **Revise plan draft** to edit the proposal JSON. Record answers in the relevant fields, remove resolved questions, and update any unrecognized validation IDs. The protected `POST /api/v1/runs/{run_id}/plan` takes `{expected_revision, proposal}` and returns the saved draft with updated readiness. A changed draft appends an immutable revision. A stale edit returns 409, and retrying the same saved content returns its existing revision.
+Use **Edit plan** to update fields and save a revision. To ask the worker for a new draft, answer the blocking questions or describe the desired changes, then select **Update plan**. The protected `POST /api/v1/runs/{run_id}/plan` accepts `{expected_revision, proposal}` for a direct edit or `{expected_revision, notes, answers}` to queue feedback. The worker uses the pinned inputs and the specified revision. Each changed draft is saved as an immutable revision.
 
 The protected `POST /api/v1/runs/{run_id}/plan/approve` accepts `{plan_id, revision, sha256}` with the active owner's session, trusted Origin, and `X-Refactra-CSRF: 1`. The latest revision must match all three fields, have zero blocking questions, and use registered validation IDs with a required check. PostgreSQL records one decision and event per run. Plan reads include the receipt for that revision, and new draft edits are locked once approved.
 

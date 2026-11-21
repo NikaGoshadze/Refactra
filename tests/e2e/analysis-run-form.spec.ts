@@ -36,10 +36,16 @@ test("verified repository submits a selected branch and shows the saved read-onl
       ? { status: "ANALYZING", analysis_text: null }
       : { status: "NEEDS_HUMAN_REVIEW", analysis_text: analysis }) },
   }));
+  await page.route(`**${PLAN_PATH}`, (route) => route.fulfill({
+    json: { ...PLAN, content: { ...PLAN.content, blocking_questions: [] },
+      readiness: { has_required_supported_check: true, unsupported_check_ids: [], scope_errors: [] },
+    },
+  }));
   await panel.getByRole("button", { name: "Start analysis" }).click();
   await expect(panel.getByRole("status")).toHaveText("Preparing plan…");
   await expect(panel.getByText(receipt.base_sha, { exact: true })).toBeVisible();
-  await expect(panel.getByText(PLAN.content.summary, { exact: true })).toBeVisible({ timeout: 10000 });
+  await expect(panel.locator("p").filter({ hasText: PLAN.content.summary })).toBeVisible({ timeout: 10000 });
+  await expect(panel.getByRole("button", { name: "Approve plan revision 1" })).toBeEnabled();
   await expect(panel.getByText(analysis, { exact: true })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
@@ -83,12 +89,13 @@ test("opens, revises, and approves a saved plan", async ({ page, authProxy }) =>
   }), { times: 1 });
   await page.getByRole("button", { name: "Open run", exact: true }).click();
   await expect(plan.getByRole("status")).toHaveText("Preparing plan…");
-  await expect(plan.getByText(PLAN.content.summary, { exact: true })).toBeVisible();
+  await expect(plan.locator("p").filter({ hasText: PLAN.content.summary })).toBeVisible();
   await expect(plan.getByText(PLAN.artifact.sha256, { exact: true })).toBeVisible();
   await expect(plan.getByText("src/cart.py", { exact: true })).toBeVisible();
   await expect(plan.getByText("Unsupported checks VC1")).toBeVisible();
   await expect(plan.getByText("Resolve the blocking questions.")).toBeVisible();
-  await expect(plan.getByText(PLAN.content.blocking_questions[0], { exact: true })).toBeVisible();
+  const answer = plan.getByLabel(PLAN.content.blocking_questions[0], { exact: true });
+  await expect(answer).toBeVisible();
   await expect(plan.getByRole("button", { name: "Approve plan revision 1" })).toBeDisabled();
   await expect(plan.getByText("Extract the cart calculation", { exact: true })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -97,37 +104,52 @@ test("opens, revises, and approves a saved plan", async ({ page, authProxy }) =>
     ["GET", RUN_PATH], ["GET", PLAN_PATH],
   ]);
 
-  await plan.getByText("Revise plan draft").click();
-  const draft = plan.getByLabel("Plan draft JSON");
-  const proposal = JSON.parse(await draft.inputValue());
-  expect(proposal).toEqual(PLAN_PROPOSAL);
-  proposal.blocking_questions = [];
-  proposal.preserve_behavior.push("Round half to even.");
-  proposal.validation_checks[0].check_id = "python.pytest";
-  const edited = JSON.stringify(proposal);
-  await draft.fill(edited);
+  await plan.getByText("Edit plan", { exact: true }).click();
+  const draft = plan.getByLabel("Summary", { exact: true });
+  await draft.fill("Extract cart rounding.");
   const saveButton = plan.getByRole("button", { name: "Save plan revision" });
-  await page.route(`**${PLAN_PATH}`, (route) => route.fulfill({ status: 502,
-    json: { error: { code: "github_unavailable", message: "Repository access could not be verified." } },
-  }), { times: 1 });
+  await page.route(`**${PLAN_PATH}`, (route) => {
+    expect(route.request().postDataJSON()).toEqual({
+      expected_revision: 1, proposal: { ...PLAN_PROPOSAL, summary: "Extract cart rounding." },
+    });
+    return route.fulfill({ status: 502,
+      json: { error: { code: "github_unavailable", message: "Repository access could not be verified." } },
+    });
+  }, { times: 1 });
   await saveButton.click();
   await expect(plan.getByRole("alert")).toContainText("Repository access could not be verified.");
-  await expect(draft).toHaveValue(edited);
-  await saveButton.click();
+  await expect(draft).toHaveValue("Extract cart rounding.");
+  await plan.getByRole("button", { name: "Discard edits" }).click();
+
+  const revisedContent = { ...PLAN.content, blocking_questions: [],
+    preserve_behavior: [...PLAN.content.preserve_behavior, "Round half to even."],
+    validation_checks: [{ ...PLAN.content.validation_checks[0], check_id: "python.pytest" }],
+  };
+  await page.route(`**${PLAN_PATH}`, (route) => {
+    if (route.request().method() === "POST") {
+      expect(route.request().postDataJSON()).toEqual({
+        expected_revision: 1, notes: "Keep the Python test.", answers: ["Round half to even."],
+      });
+      return route.fulfill({ json: { ...PLAN, feedback_status: "pending" } });
+    }
+    return route.fulfill({ json: { ...PLAN, content: revisedContent, artifact: REVISED_ARTIFACT,
+      readiness: { has_required_supported_check: true, unsupported_check_ids: [], scope_errors: [] },
+    } });
+  });
+  await answer.fill("Round half to even.");
+  await plan.getByLabel("Changes you want").fill("Keep the Python test.");
+  await plan.getByRole("button", { name: "Update plan" }).click();
+  await expect(plan.getByText("Updating plan…")).toBeVisible();
   await expect(plan.getByText("Round half to even.", { exact: true })).toBeVisible();
   await expect(plan.getByText(REVISED_ARTIFACT.sha256, { exact: true })).toBeVisible();
   await expect(plan.getByText("Unsupported checks VC1")).toHaveCount(0);
-  const save = authProxy.calls.findLast((call) => call.method === "POST" && call.url === PLAN_PATH)!;
-  expect(save.headers.cookie).toBe("refactra_session=fixture-session");
-  expect(JSON.parse(save.body!)).toEqual({ expected_revision: 1, proposal });
 
   const approve = plan.getByRole("button", { name: "Approve plan revision 2" });
   await expect(approve).toBeEnabled();
-  await plan.getByText("Revise plan draft").click();
-  const savedDraft = await draft.inputValue();
-  await draft.fill(`${savedDraft}\n`);
+  await plan.getByText("Edit plan", { exact: true }).click();
+  await draft.fill("Changed summary.");
   await expect(approve).toBeDisabled();
-  await draft.fill(savedDraft);
+  await plan.getByRole("button", { name: "Discard edits" }).click();
   const result = page.getByRole("region", { name: "Candidate result" });
   const link = "https://github.com/fixture/example/pull/7";
   let phase: "validating" | "preparing" | "review" | "draft" = "validating";
@@ -145,7 +167,7 @@ test("opens, revises, and approves a saved plan", async ({ page, authProxy }) =>
   });
   await approve.click();
   await expect(plan.getByText("Approval recorded for revision 2.")).toBeVisible();
-  await expect(plan.getByText("Revise plan draft")).toHaveCount(0);
+  await expect(plan.getByText("Edit plan", { exact: true })).toHaveCount(0);
   const approval = authProxy.calls.findLast((call) => call.method === "POST" && call.url === PLAN_APPROVAL_PATH)!;
   expect(approval.headers.cookie).toBe("refactra_session=fixture-session");
   expect(JSON.parse(approval.body!)).toEqual({

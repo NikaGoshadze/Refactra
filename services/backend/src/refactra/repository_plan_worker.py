@@ -28,6 +28,7 @@ from refactra.refactoring_plan import (
     PlanContent,
     PlanProposal,
     evaluate_plan_readiness,
+    load_plan_feedback,
     load_refactoring_plan,
     save_refactoring_plan,
 )
@@ -70,23 +71,36 @@ def authorize_plan(run: Run) -> tuple[InstallationToken, httpx.BaseTransport | N
     return token, app.transport
 
 
-def generate_initial_plan(session_factory, run_id: UUID, provider, *, check_admission=None):
+def generate_initial_plan(
+    session_factory,
+    run_id: UUID,
+    provider,
+    *,
+    check_admission=None,
+    feedback_id: UUID | None = None,
+):
     """Recheck repository access and make one budgeted plan attempt."""
     legacy_id = uuid5(run_id, "repository:initial-plan")
-    attempt_id = uuid5(run_id, "repository:initial-plan:structured-v1")
+    attempt_id = feedback_id or uuid5(run_id, "repository:initial-plan:structured-v1")
     with session_factory() as session:
         run = session.get(Run, run_id)
         if run is None or run.workflow_version != WORKFLOW or run.status != "NEEDS_HUMAN_REVIEW":
             raise PlanGenerationError("A repository run with completed analysis is required.")
     authorize_plan(run)
     with session_factory() as session:
+        feedback = load_plan_feedback(session, run_id, feedback_id) if feedback_id else None
+        if feedback_id and feedback is None:
+            raise PlanGenerationError("Saved plan feedback is required.")
+        expected_revision = feedback["expected_revision"] if feedback else 0
         existing = load_refactoring_plan(session, run_id)
-        if existing is not None:
+        if existing is not None and existing.revision > expected_revision:
             return existing
+        if feedback_id and (existing is None or existing.revision != expected_revision):
+            raise PlanGenerationError("The plan changed before feedback could be applied.")
         if session.get(ModelReservation, attempt_id) is not None:
             raise PlanGenerationError("A plan attempt is already recorded. It cannot be resent.")
         legacy = session.get(ModelReservation, legacy_id)
-        if legacy is not None and legacy.settled_at is None:
+        if not feedback_id and legacy is not None and legacy.settled_at is None:
             raise PlanGenerationError("An earlier plan attempt has an unknown outcome.")
 
     plan = None
@@ -100,8 +114,8 @@ def generate_initial_plan(session_factory, run_id: UUID, provider, *, check_admi
             # Only the validator's type is safe to include in operator output.
             schema_error = error.errors(include_input=False, include_context=False)[0]["type"]
         else:
-            plan = load_refactoring_plan(session, run_id) or save_refactoring_plan(
-                session, run_id, proposal.model_dump(), expected_revision=0
+            plan = save_refactoring_plan(
+                session, run_id, proposal.model_dump(), expected_revision=expected_revision
             )
 
     execute_read_only_analysis(
@@ -127,7 +141,7 @@ def process_initial_plan(session_factory, command_id: UUID, worker_id: str, prov
         if command is None or command.kind != GENERATE_PLAN or command.lease_until <= now:
             return False
         run_id, attempt = command.run_id, command.attempts
-        valid = command.dedupe_key == initial_plan_command_key(run_id)
+        initial = command.dedupe_key == initial_plan_command_key(run_id)
 
     def check_admission(session):
         command = _claimed_command(session, command_id, worker_id)
@@ -136,9 +150,13 @@ def process_initial_plan(session_factory, command_id: UUID, worker_id: str, prov
 
     code = None
     try:
-        if not valid:
-            raise PlanGenerationError("Expected a queued initial plan command.")
-        generate_initial_plan(session_factory, run_id, provider, check_admission=check_admission)
+        generate_initial_plan(
+            session_factory,
+            run_id,
+            provider,
+            check_admission=check_admission,
+            feedback_id=None if initial else command_id,
+        )
     except BudgetExceeded:
         code = "plan_budget_exceeded"
     except (AnalysisProviderError, GitHubAppError, HTTPException, KeyError, OSError, ValueError):

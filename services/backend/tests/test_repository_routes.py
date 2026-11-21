@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -6,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
+import refactra.repository_plan_worker as plan_worker
 import refactra.repository_routes as routes
 from refactra.api import create_app
 from refactra.auth_sessions import GitHubIdentity, issue_session, revoke_session
@@ -23,7 +25,7 @@ from refactra.publication_target import (
     publication_command_key,
     save_publication_target,
 )
-from refactra.refactoring_plan import approve_refactoring_plan, save_refactoring_plan
+from refactra.refactoring_plan import GENERATE_PLAN, approve_refactoring_plan, save_refactoring_plan
 from refactra.repository_analysis_worker import WORKFLOW, process_repository_analysis
 from refactra.repository_candidate import VALIDATE_CANDIDATE
 from refactra.repository_validation import ValidationResult
@@ -368,6 +370,59 @@ def test_revising_a_plan_appends_once_and_preserves_previous_revision(
     historical = client.get(f"{url}?revision=1").json()
     assert historical["artifact"]["sha256"] == initial.sha256
     assert historical["content"]["blocking_questions"] == previous["blocking_questions"]
+
+
+def test_plan_feedback_is_queued_once_and_revises_the_saved_plan(
+    browser, session_factory, proposal, monkeypatch
+):
+    client, _, _, _ = browser
+    receipt = submit(client)
+    url = f"{receipt.headers['Location']}/plan"
+    run_id = UUID(receipt.json()["run_id"])
+    analyze_fixture_run(session_factory)
+    question = "How should empty carts behave?"
+    with session_factory.begin() as session:
+        previous = dict(proposal, blocking_questions=[question])
+        plan = save_refactoring_plan(session, run_id, previous, expected_revision=0)
+
+    headers = {"Origin": "https://refactra.example", "X-Refactra-CSRF": "1"}
+    feedback = {
+        "expected_revision": 1,
+        "notes": "Keep the change small.",
+        "answers": ["Return zero."],
+    }
+    for _ in range(2):
+        pending = client.post(url, json=feedback, headers=headers)
+        assert pending.status_code == 200 and pending.json()["feedback_status"] == "pending"
+    assert client.get(url).json()["feedback_status"] == "pending"
+    approval = {"plan_id": str(plan.id), "revision": 1, "sha256": plan.sha256}
+    assert client.post(f"{url}/approve", json=approval, headers=headers).status_code == 409
+    edit = {"expected_revision": 1, "proposal": proposal}
+    assert client.post(url, json=edit, headers=headers).status_code == 409
+
+    def model(request):
+        context = json.loads(json.loads(request.content)["input"])
+        assert context["previous_plan"]["blocking_questions"] == [question]
+        assert context["reviewer_feedback"]["questions_and_answers"] == [
+            {"question": question, "answer": "Return zero."}
+        ]
+        if request.url.path.endswith("/input_tokens"):
+            return httpx.Response(
+                200, json={"object": "response.input_tokens", "input_tokens": 100}
+            )
+        payload = model_response()
+        payload["output"][0]["content"][0]["text"] = json.dumps(proposal)
+        return httpx.Response(200, json=payload)
+
+    monkeypatch.setattr(plan_worker, "authorize_plan", lambda _: None)
+    provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(model))
+    job = claim_command(session_factory, "fixture", workflow=WORKFLOW, kind=GENERATE_PLAN)
+    assert plan_worker.process_initial_plan(session_factory, job, "fixture", provider)
+    assert claim_command(session_factory, "fixture", workflow=WORKFLOW, kind=GENERATE_PLAN) is None
+    updated = client.get(url).json()
+    assert updated["artifact"]["revision"] == 2 and updated["feedback_status"] is None
+    assert updated["content"]["blocking_questions"] == []
+    assert client.get(f"{url}?revision=1").json()["content"]["blocking_questions"] == [question]
 
 
 @pytest.mark.parametrize("blocker", ["question", "check_id", "file", "test_target"])

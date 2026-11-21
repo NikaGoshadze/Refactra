@@ -43,6 +43,7 @@ from refactra.publication_target import (
 from refactra.refactoring_plan import (
     APPLY_PLAN_APPROVAL,
     PlanContent,
+    PlanFeedback,
     PlanProposal,
     PlanReadiness,
     PlanRepository,
@@ -50,6 +51,8 @@ from refactra.refactoring_plan import (
     approve_refactoring_plan,
     evaluate_plan_readiness,
     load_refactoring_plan,
+    plan_feedback_status,
+    queue_plan_feedback,
     save_refactoring_plan,
 )
 from refactra.repository_access import RepositoryAccessPolicy
@@ -191,6 +194,7 @@ class RepositoryPlanRead(BaseModel):
     content: PlanContent
     readiness: PlanReadiness
     approval: PlanApprovalRead | None
+    feedback_status: Literal["pending", "failed", "unchanged"] | None = None
 
 
 class PlanRevisionCreate(BaseModel):
@@ -208,14 +212,21 @@ class PlanApprovalCreate(BaseModel):
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
-def _plan_response(session: Session, plan: RunPlan, response: Response) -> RepositoryPlanRead:
+def _plan_response(
+    session: Session, plan: RunPlan, response: Response, *, latest: bool = False
+) -> RepositoryPlanRead:
+    approval = session.get(RunPlanApproval, plan.run_id)
+    feedback_status = plan_feedback_status(session, plan) if approval is None else None
+    if latest and feedback_status == "DONE":
+        current = load_refactoring_plan(session, plan.run_id)
+        if current is not None and current.revision > plan.revision:
+            return _plan_response(session, current, response)
     try:
         content = PlanContent.model_validate_json(plan.document)
     except ValidationError:
         raise HTTPException(
             500, {"code": "plan_unavailable", "message": "Saved plan could not be read."}
         ) from None
-    approval = session.get(RunPlanApproval, plan.run_id)
     response.headers["Cache-Control"] = "no-store"
     return RepositoryPlanRead(
         artifact=PlanArtifact(
@@ -228,6 +239,12 @@ def _plan_response(session: Session, plan: RunPlan, response: Response) -> Repos
         ),
         content=content,
         readiness=evaluate_plan_readiness(content),
+        feedback_status={
+            "PENDING": "pending",
+            "CLAIMED": "pending",
+            "FAILED": "failed",
+            "DONE": "unchanged",
+        }.get(feedback_status),
         approval=(
             PlanApprovalRead.model_validate(approval)
             if approval is not None
@@ -473,9 +490,10 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                 status = None
                 if revision is None:
                     status = session.scalar(
-                        select(RunCommand.status).where(
-                            RunCommand.run_id == run_id, RunCommand.kind == GENERATE_PLAN
-                        )
+                        select(RunCommand.status)
+                        .where(RunCommand.run_id == run_id, RunCommand.kind == GENERATE_PLAN)
+                        .order_by(RunCommand.created_at)
+                        .limit(1)
                     )
                 plan = load_refactoring_plan(session, run_id, revision=revision)
                 if plan is None:
@@ -492,7 +510,7 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                     return error(
                         404, {"code": "plan_not_found", "message": "Plan revision not found."}
                     )
-                return _plan_response(session, plan, response)
+                return _plan_response(session, plan, response, latest=revision is None)
         except HTTPException as exc:
             return error(exc.status_code, exc.detail)
 
@@ -622,7 +640,9 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
             return error(409, {"code": "publication_approval_conflict", "message": str(exc)})
 
     @router.post("/runs/{run_id}/plan", response_model=RepositoryPlanRead)
-    def revise_plan(run_id: UUID, body: PlanRevisionCreate, request: Request, response: Response):
+    def revise_plan(
+        run_id: UUID, body: PlanRevisionCreate | PlanFeedback, request: Request, response: Response
+    ):
         if not is_trusted_mutation(request, oauth):
             return error(
                 403,
@@ -634,6 +654,14 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                 RepositoryAccessPolicy.from_env().require_eligible_session(
                     session, request.cookies.get(oauth.session_cookie_name), repository_id
                 )
+                if isinstance(body, PlanFeedback):
+                    return _plan_response(
+                        session, queue_plan_feedback(session, run_id, body), response
+                    )
+                session.get(Run, run_id, with_for_update=True)
+                current = load_refactoring_plan(session, run_id)
+                if current and plan_feedback_status(session, current) in {"PENDING", "CLAIMED"}:
+                    raise PlanRevisionConflict("Wait for the updated plan before saving edits.")
                 plan = save_refactoring_plan(
                     session,
                     run_id,
