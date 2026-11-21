@@ -174,13 +174,14 @@ def execute_read_only_analysis(
     max_output_tokens: int = DEFAULT_REQUEST_OUTPUT,
     check_admission=None,
     planning: bool = False,
+    save_response=None,
 ):
     """Trusted caller must authorize repository access before invoking this helper.
 
     Reload saved input, count it, commit admission, then make one physical call outside
     database transactions. Unknown outcomes keep the hold; existing receipts never resend.
     The optional admission check runs in the reservation transaction. The caller
-    owns result persistence.
+    may save the result in the settlement transaction with save_response.
     """
     with session_factory() as session:
         context = (
@@ -199,6 +200,7 @@ def execute_read_only_analysis(
         max_output_tokens=max_output_tokens,
         ledger_limit_usd=ledger_limit_usd,
         check_admission=check_admission,
+        save_response=save_response,
     )
 
 

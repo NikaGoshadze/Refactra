@@ -227,7 +227,7 @@ class RunCommand(Base):
     __tablename__ = "run_commands"
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('START', 'APPLY_PLAN_APPROVAL', 'GENERATE_CANDIDATE', "
+            "kind IN ('START', 'GENERATE_PLAN', 'APPLY_PLAN_APPROVAL', 'GENERATE_CANDIDATE', "
             "'VALIDATE_CANDIDATE', 'PUBLISH_CANDIDATE')",
             name="ck_commands_kind",
         ),

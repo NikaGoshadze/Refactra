@@ -10,6 +10,7 @@ from alembic import command
 from sqlalchemy import select
 
 import refactra.repository_plan_worker as planner
+import refactra.worker as worker
 from refactra.analysis_context import save_analysis_context
 from refactra.model_reservations import settle_model_usage
 from refactra.models import ModelReservation, RunCommand, RunEvent, RunPlanApproval
@@ -24,6 +25,7 @@ from refactra.refactoring_plan import (
     save_refactoring_plan,
 )
 from refactra.repository_analysis_worker import (
+    GENERATE_PLAN,
     WORKFLOW,
     enqueue_repository_analysis,
     process_repository_analysis,
@@ -108,6 +110,83 @@ def analyze_fixture_run(session_factory):
     provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(mock_model))
     command = claim_command(session_factory, "fixture", workflow=WORKFLOW)
     assert process_repository_analysis(session_factory, command, "fixture", provider)
+
+
+@pytest.mark.parametrize("outcome", ["fresh", "reclaimed", "denied"])
+def test_workflow_worker_saves_initial_plan_without_a_manual_command(
+    database, session_factory, proposal, monkeypatch, tmp_path, outcome
+):
+    run, _, context = prepare(session_factory)
+    with session_factory.begin() as session:
+        save_analysis_context(session, context)
+        enqueue_repository_analysis(session, run.id)
+
+    calls = []
+
+    def model(request):
+        calls.append(request.url.path)
+        if request.url.path.endswith("/input_tokens"):
+            return httpx.Response(
+                200, json={"object": "response.input_tokens", "input_tokens": 100}
+            )
+        body = json.loads(request.content)
+        payload = response()
+        if body["instructions"] == PLAN_INSTRUCTIONS:
+            payload["output"][0]["content"][0]["text"] = json.dumps(proposal)
+        return httpx.Response(200, json=payload)
+
+    provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(model))
+
+    def authorize(run_to_check):
+        assert run_to_check.id == run.id
+        if outcome == "denied":
+            raise ValueError("Private authorization failure.")
+
+    monkeypatch.setattr(planner, "authorize_plan", authorize)
+    monkeypatch.setattr(worker, "make_engine", lambda _: database)
+    monkeypatch.setattr(worker, "OpenAIAnalysisProvider", lambda _: provider)
+    monkeypatch.setattr(worker, "WORKER_LOCK", run.id.int >> 65)
+    monkeypatch.setattr(worker.signal, "signal", lambda *_: None)
+    monkeypatch.setenv("REFACTRA_OPENAI_API_KEY", "fixture")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "worker",
+            "--repository-workflow",
+            "--once",
+            "--candidate-source",
+            str(tmp_path),
+            "--candidate-artifacts",
+            str(tmp_path),
+        ],
+    )
+    worker.main()
+
+    if outcome == "reclaimed":
+        command_id = claim_command(session_factory, "old", workflow=WORKFLOW, kind=GENERATE_PLAN)
+        planner.generate_initial_plan(session_factory, run.id, provider)
+        with session_factory.begin() as session:
+            session.get(RunCommand, command_id).lease_until = datetime.now(UTC) - timedelta(
+                minutes=1
+            )
+
+    worker.main()
+    worker.main()
+    with session_factory() as session:
+        job = session.scalar(select(RunCommand).where(RunCommand.kind == GENERATE_PLAN))
+        plan = load_refactoring_plan(session, run.id)
+        if outcome == "denied":
+            assert job.status == "FAILED" and plan is None
+            event = session.scalar(
+                select(RunEvent).where(RunEvent.event_type == "PLAN_GENERATION_FAILED")
+            )
+            assert event.payload == {"code": "plan_generation_failed", "command_id": str(job.id)}
+        else:
+            assert job.status == "DONE" and plan.revision == 1
+        assert session.get(RunPlanApproval, run.id) is None
+    assert calls == ["/v1/responses/input_tokens", "/v1/responses"] * (
+        1 if outcome == "denied" else 2
+    )
 
 
 @pytest.mark.parametrize("scenario", ["new", "legacy", "mismatch"])

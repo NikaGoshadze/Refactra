@@ -246,6 +246,18 @@ Both routes are available through the same-origin Next.js proxy. It forwards onl
 
 After verifying repository access, use **Repository analysis** to choose the base branch and enter a task. The panel shows the pinned commit and polls until the worker saves the analysis or records a failure. A submission retry with the same input reuses its key while the panel is open. The panel clears on sign-out and tracks the current run in memory.
 
+## Run the full repository workflow locally
+
+Start the protected repository API and web app, then run one worker on the Docker host. Stop any running mock or repository worker first since they share the same execution slot. Use the same database, OpenAI key and GitHub App settings as the operator commands below, including a host path to the PEM.
+
+```text
+uv run python -m refactra.worker --repository-workflow --candidate-source <local-clone> --candidate-artifacts <existing-artifact-directory>
+```
+
+Run the command from `services/backend` and leave the worker running. Use the configured repository's Git clone and an artifact directory under the ignored `.runtime` location. After submitting a run in the browser, the worker saves the analysis and queues the first plan. Load the saved plan to review and approve it, then load the candidate result to review and approve publication. The worker processes both approvals and the browser shows the draft link after refreshing the result.
+
+This mode queues planning for analyses it completes. Use the operator command below if an earlier analysis has no saved plan.
+
 ## Refactoring plan checkpoint
 
 Migration `0008_run_plans` adds plan revisions. After a run has saved analysis, an internal caller can pass a structured proposal to `save_refactoring_plan`. The server binds it to that run and commit. PostgreSQL stores the exact JSON bytes, bounded to 64 KiB, and checks their SHA-256 hash. An identical retry returns the current revision. A changed proposal appends a revision only when the caller's expected revision still matches. A saved proposal is untrusted input for human review.
