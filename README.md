@@ -1,8 +1,14 @@
 # Refactra
 
-Autonomous repository refactoring and draft pull-request automation with five sequential agent roles and two human approvals.
+Refactra turns a repository refactoring request into a tested patch and a GitHub draft pull request. You approve the plan and then review the diff before approving publication.
 
-Current stage: Phase 1 — Architecture & Foundation. A local mock skeleton connects a Next.js UI, FastAPI, PostgreSQL and a separate command worker. The real agent workflow is not implemented or deployed.
+Next.js and FastAPI handle the browser and API. PostgreSQL stores the run, plan revisions, approvals, and validation results so a separate worker can resume queued work.
+
+## Demo
+
+In the verified AI-Hub run, Refactra extracted the pizza chatbot's summary formatter while preserving its Georgian output. The worker completed all six queued steps on their first attempt, three offline pytest tests passed, and the browser showed the draft link after publication approval. The PR was subsequently merged. [AI-Hub demo PR #4](https://github.com/NikaGoshadze/AI-Hub/pull/4)
+
+To run your own demo, follow the [local workflow setup](#run-the-full-repository-workflow-locally).
 
 ## Run locally
 
@@ -28,7 +34,7 @@ The named PostgreSQL volume survives `down`. Removing that volume deletes local 
 
 ## Optional local GitHub sign-in
 
-The mock queue works without GitHub. Sign-in establishes identity; protected repository metadata is available when the API override is enabled. Live refactoring remains unimplemented.
+GitHub sign-in establishes the identity used for protected repository access and approvals. The local mock queue is available without signing in.
 
 Create your local configuration from the repository root with Python 3.12:
 
@@ -124,7 +130,7 @@ The workspace's Repository connection panel targets the selected AI-Hub developm
 
 Repository proxy calls forward only Refactra session cookies (local and HTTPS names), preserve backend status/JSON, and force `no-store` on responses. OAuth/unrelated cookies and browser Authorization headers are not forwarded to this route. The proxy permits up to 60 seconds for the backend's sequential GitHub checks; other route timeouts are unchanged. Proxy tests use an isolated production Next.js server and a simulated API, including a response delayed beyond five seconds.
 
-The returned App token remains inside the backend and read-only even when the user has write access. The operator-only `github-check` command remains separate and uses no browser session. Live refactoring and publication remain disabled.
+The metadata request uses a repository-scoped read token inside the backend. The live workflow uses separate App tokens for publication after approval.
 
 ## Optional protected repository API runtime
 
@@ -146,7 +152,7 @@ To remove the API key mount and repository settings again:
 docker compose -f compose.yaml up -d --no-deps --force-recreate --wait api
 ```
 
-That recreates only the API with the base configuration; it preserves the PostgreSQL volume and existing sessions. No real refactoring or publication is enabled by this override.
+That recreates the API with the base configuration and preserves the PostgreSQL volume and existing sessions. The repository API override supports [the full workflow](#run-the-full-repository-workflow-locally) when analysis and the host worker are enabled.
 
 ## Repository revision foundation
 
@@ -248,13 +254,34 @@ After verifying repository access, use **Repository analysis** to choose the bas
 
 ## Run the full repository workflow locally
 
-Start the protected repository API and web app, then run one worker on the Docker host. Stop any running mock or repository worker first since they share the same execution slot. Use the same database, OpenAI key and GitHub App settings as the operator commands below, including a host path to the PEM.
+Complete [GitHub sign-in](#optional-local-github-sign-in) and the [protected repository API setup](#optional-protected-repository-api-runtime). For publication, give the installed App **Contents** and **Pull requests** read and write access on the demo repository. Put `REFACTRA_OPENAI_API_KEY` in the ignored `.env`, and make sure Git, Docker, and `uv` are available on the host.
 
-```text
-uv run python -m refactra.worker --repository-workflow --candidate-source <local-clone> --candidate-artifacts <existing-artifact-directory>
+From the Refactra root in PowerShell, start the protected stack. Stop any other Refactra worker before launching the workflow worker since both use the same execution slot.
+
+```powershell
+docker compose stop worker
+$env:REFACTRA_ENABLE_REPOSITORY_ANALYSIS = 'true'
+.\scripts\start-local.ps1 -RepositoryApi
 ```
 
-Run the command from `services/backend` and leave the worker running. Use the configured repository's Git clone and an artifact directory under the ignored `.runtime` location. After submitting a run in the browser, the worker saves the analysis and queues the first plan. Load the saved plan to review and approve it. The candidate panel updates automatically through validation and shows the draft link after you approve publication.
+With a clone of the configured repository alongside Refactra, launch the worker on the Docker host and leave it running. Fetch your selected base branch in that clone so the worker can build the review commit from the pinned source.
+
+```powershell
+$source = (Resolve-Path '../AI-Hub').Path
+$env:REFACTRA_GITHUB_PRIVATE_KEY_PATH = (Resolve-Path '.runtime/secrets/github-app.pem').Path
+$artifacts = (New-Item -ItemType Directory -Path '.runtime/demo-artifacts' -Force).FullName
+uv run --project services/backend --env-file .env python -m refactra.worker --repository-workflow --candidate-source $source --candidate-artifacts $artifacts
+```
+
+1. Open [the local workspace](http://localhost:3000), sign in, and click **Check repository access**.
+2. Select a base branch, enter a small refactoring task with a test path, and click **Start analysis**. Note the pinned commit shown for the run.
+3. When analysis is ready, click **Load saved plan**. If the plan lists blocking questions, use **Revise plan draft** to record the answers and save a revision. Review and approve the saved plan.
+4. Watch the candidate panel update through validation. Review the saved diff, passing test output, and publication target, then click **Approve publication**.
+5. Open the GitHub draft link when it appears in the candidate panel.
+
+To repeat the exact formatter task, use a branch at the [original AI-Hub base commit](https://github.com/NikaGoshadze/AI-Hub/tree/82b3f25a17cf72cf25d92e0e9726818fcec8831d), which precedes the merged change.
+
+> Extract the `!summary` display logic from `pizza_app/main.py` into a pure `summary_lines` helper in `pizza_app/chat_summary.py` that returns a list of strings to print. Preserve the exact Georgian messages, leading newlines, and summary text. Keep command detection and both script and package startup intact. Treat a missing or empty summary the same way. Add offline tests in `pizza_app/test_chat_summary.py` for missing, empty, and populated summaries. Use `python.pytest` on that test file.
 
 This mode queues planning for analyses it completes. Use the operator command below if an earlier analysis has no saved plan.
 
