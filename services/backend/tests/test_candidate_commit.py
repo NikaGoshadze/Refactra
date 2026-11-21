@@ -18,10 +18,10 @@ from refactra.analysis_context import save_analysis_context
 from refactra.candidate_commit import CandidateCommitError, prepare_candidate_commit
 from refactra.candidate_patch import CandidatePatch
 from refactra.candidate_results import save_validated_candidate
-from refactra.github_app import GitHubAppError
 from refactra.models import RunCandidateResult, RunCommand, RunEvent, RunPublicationTarget
 from refactra.openai_analysis import OpenAIAnalysisProvider
 from refactra.publication_target import (
+    PUBLISH_CANDIDATE,
     PublicationTargetError,
     approve_publication_target,
     save_publication_target,
@@ -249,7 +249,7 @@ def test_prepares_the_saved_diff_as_one_pinned_commit(
         )
         saved = save_validated_candidate(session, run.id, candidate, diff, [check])
 
-    output = tmp_path / "prepared"
+    output = tmp_path / f"{run.id}-r1"
     receipt = prepare_candidate_commit(session_factory, run.id, 1, source, output)
     assert json.loads((output / "receipt.json").read_bytes()) == receipt
     assert receipt["result_sha256"] == saved.sha256
@@ -323,6 +323,9 @@ def check_branch_publication(
     push = publication.push_approved_branch
     with pytest.raises(PublicationTargetError, match="owner must approve"):
         push(session_factory, run.id, artifact)
+    assert (
+        claim_command(session_factory, "worker", workflow=WORKFLOW, kind=PUBLISH_CANDIDATE) is None
+    )
     with session_factory.begin() as session:
         approve_publication_target(
             session,
@@ -378,7 +381,10 @@ def check_branch_publication(
         ).all()
         assert [event.payload for event in events] == [pushed]
     monkeypatch.setattr(draft, "resolve_revision", resolve)
-    check_draft_publication(session_factory, run, pushed, monkeypatch, lost_response)
+    check_draft_publication(
+        session_factory, run, pushed, monkeypatch, lost_response, artifacts=artifact.parent
+    )
+    assert len(requested_scope) == (2 if lost_response else 3)
     ref = f"refs/heads/{pushed['head_branch']}"
     git(upstream, "update-ref", ref, run.base_sha)
     with pytest.raises(CandidateCommitError, match="Git could not complete push"):
@@ -386,7 +392,7 @@ def check_branch_publication(
     assert git(upstream, "rev-parse", ref).decode().strip() == run.base_sha
 
 
-def check_draft_publication(session_factory, run, pushed, monkeypatch, lost_response):
+def check_draft_publication(session_factory, run, pushed, monkeypatch, lost_response, *, artifacts):
     head = pushed["head_branch"]
     commit = pushed["commit_sha"]
     pr = {
@@ -431,15 +437,35 @@ def check_draft_publication(session_factory, run, pushed, monkeypatch, lost_resp
     assert methods == ["GET"]
     wrong_head = False
     methods.clear()
+    if not lost_response:
+        # Simulate a push that reached the remote before its receipt was saved.
+        with session_factory.begin() as session:
+            branch = session.scalar(
+                select(RunEvent).where(RunEvent.event_type == publication.PUBLICATION_BRANCH_PUSHED)
+            )
+            session.delete(branch)
+    job = claim_command(session_factory, "worker", workflow=WORKFLOW, kind=PUBLISH_CANDIDATE)
+    assert job is not None
+    process = draft.process_approved_publication
+    assert process(session_factory, job, "worker", artifacts=artifacts)
     if lost_response:
-        with pytest.raises(GitHubAppError, match="Retry to check"):
-            draft.open_approved_draft(session_factory, run.id)
+        with session_factory.begin() as session:
+            command = session.get(RunCommand, job)
+            assert command.status == "PENDING" and command.completed_at is None
+            command.available_at = datetime.now(UTC) - timedelta(seconds=1)
+        assert (
+            claim_command(session_factory, "restart", workflow=WORKFLOW, kind=PUBLISH_CANDIDATE)
+            == job
+        )
+        assert not process(session_factory, job, "worker", artifacts=artifacts)
+        assert process(session_factory, job, "restart", artifacts=artifacts)
     published = draft.open_approved_draft(session_factory, run.id)
     assert published["pull_request_url"] == "https://github.com/fixture/repo/pull/18"
     assert published["target_sha256"] == pushed["target_sha256"]
     assert draft.open_approved_draft(session_factory, run.id) == published
     assert methods == (["GET", "POST", "GET"] if lost_response else ["GET", "POST"])
     with session_factory() as session:
+        assert session.get(RunCommand, job).status == "DONE"
         events = session.scalars(
             select(RunEvent).where(RunEvent.event_type == draft.PUBLICATION_PR_OPENED)
         ).all()

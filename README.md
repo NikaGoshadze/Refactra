@@ -292,7 +292,7 @@ Use a trusted local clone that contains the pinned commit and a new output direc
 
 Add `--save-target` to save the verified commit and PR destination in PostgreSQL for publication review. This option requires migration `0012_publication_targets` and accepts an existing output directory when its receipt and Git ref match the recomputed commit. Repeating the command returns the same `publication_target_sha256`.
 
-Refresh the saved result in the browser to review the commit and branches. **Approve publication** records the run owner's decision for that exact target. A later publication step uses that decision to open the draft PR.
+Refresh the saved result in the browser to review the commit and branches. After migration `0015_candidate_publication`, **Approve publication** records the exact target and queues publication. With the clone and artifact flags enabled, the candidate worker pushes the prepared commit and opens or recovers its draft PR. Earlier approvals can still use the operator commands below.
 
 After approval, an operator can run `uv run python -m refactra.publication_branch <run-id> --artifact <prepared-directory>` from `services/backend`. Use the protected repository and database settings and an App installation with Contents read and write access for the selected repository. The command rechecks owner access and the pinned base, pushes the approved commit to its designated branch, and records the verified head in PostgreSQL. Repeating it with the same remote head returns the same receipt.
 

@@ -19,6 +19,8 @@ from refactra.publication_target import (
     PUBLICATION_APPROVED,
     PUBLICATION_BRANCH_PUSHED,
     PUBLICATION_PR_OPENED,
+    PUBLISH_CANDIDATE,
+    publication_command_key,
     save_publication_target,
 )
 from refactra.refactoring_plan import approve_refactoring_plan, save_refactoring_plan
@@ -519,6 +521,12 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
             select(RunEvent).where(RunEvent.event_type == PUBLICATION_APPROVED)
         ).all()
         assert [event.payload for event in events] == [approved.json()]
+        commands = session.scalars(
+            select(RunCommand).where(RunCommand.kind == PUBLISH_CANDIDATE)
+        ).all()
+        assert [(job.run_id, job.dedupe_key, job.status) for job in commands] == [
+            (run_id, publication_command_key(run_id, target_sha), "PENDING")
+        ]
 
     pushed = {
         "target_sha256": target_sha,
