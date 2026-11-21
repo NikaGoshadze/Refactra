@@ -20,6 +20,11 @@ from refactra.analysis_request import (
     BudgetExceeded,
     PreparedAnalysisRequest,
 )
+from refactra.candidate_request import (
+    CANDIDATE_INSTRUCTIONS,
+    CANDIDATE_TEXT_CONFIG,
+    check_candidate_context,
+)
 from refactra.models import ModelReservation, RunEvent
 from refactra.planning_request import PLAN_INSTRUCTIONS, PLAN_TEXT_CONFIG, load_planning_context
 
@@ -83,6 +88,8 @@ def reserve_analysis_request(
     model_input = asdict(request.model_input)
     if request.model_input.instructions == PLAN_INSTRUCTIONS:
         model_input["text"] = PLAN_TEXT_CONFIG
+    elif request.model_input.instructions == CANDIDATE_INSTRUCTIONS:
+        model_input["text"] = CANDIDATE_TEXT_CONFIG
     fingerprint = sha256(
         json.dumps(
             {
@@ -119,14 +126,18 @@ def reserve_analysis_request(
         )
         if committed + cost > ledger_limit_usd:
             raise BudgetExceeded("benchmark_cost")
-    if request.model_input.instructions == INSTRUCTIONS:
-        context = load_analysis_context(session, request.run_id)
-    elif request.model_input.instructions == PLAN_INSTRUCTIONS:
-        context = load_planning_context(session, request.run_id)
+    instructions = request.model_input.instructions
+    if instructions == CANDIDATE_INSTRUCTIONS:
+        check_candidate_context(session, request.run_id, request.model_input.context_json)
     else:
-        raise ValueError("Request must use trusted analysis or planning instructions.")
-    if context is None or context.document != request.model_input.context_json.encode():
-        raise ValueError("Request must match the saved context for this step.")
+        if instructions == INSTRUCTIONS:
+            context = load_analysis_context(session, request.run_id)
+        elif instructions == PLAN_INSTRUCTIONS:
+            context = load_planning_context(session, request.run_id)
+        else:
+            raise ValueError("Request must use trusted model instructions.")
+        if context is None or context.document != request.model_input.context_json.encode():
+            raise ValueError("Request must match the saved context for this step.")
     month = (
         session.scalar(select(func.timezone("UTC", func.clock_timestamp()))).date().replace(day=1)
     )
