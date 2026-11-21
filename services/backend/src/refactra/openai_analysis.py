@@ -212,6 +212,7 @@ def execute_model_request(
     max_output_tokens: int,
     ledger_limit_usd=None,
     check_admission=None,
+    save_response=None,
 ):
     """Count and reserve one model call using a trusted context and instruction set."""
     request = prepare_analysis_request(
@@ -245,4 +246,6 @@ def execute_model_request(
         settle_model_usage(
             session, attempt_id, input_tokens=result.usage[0], output_tokens=result.usage[1]
         )
+        if save_response is not None:
+            save_response(session, result)
     return result

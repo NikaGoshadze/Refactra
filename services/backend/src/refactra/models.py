@@ -168,6 +168,19 @@ class RunPlanApproval(Base):
     )
 
 
+class RunGeneratedCandidate(Base):
+    __tablename__ = "run_generated_candidates"
+    __table_args__ = (
+        CheckConstraint(
+            "octet_length(document) BETWEEN 1 AND 1048576", name="ck_generated_candidate_size"
+        ),
+    )
+
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("run_plan_approvals.run_id"), primary_key=True)
+    reservation_id: Mapped[UUID] = mapped_column(ForeignKey("model_reservations.id"), unique=True)
+    document: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+
+
 class RunCandidateResult(Base):
     __tablename__ = "run_candidate_results"
     __table_args__ = (
@@ -213,7 +226,10 @@ class RunPublicationTarget(Base):
 class RunCommand(Base):
     __tablename__ = "run_commands"
     __table_args__ = (
-        CheckConstraint("kind IN ('START', 'APPLY_PLAN_APPROVAL')", name="ck_commands_kind"),
+        CheckConstraint(
+            "kind IN ('START', 'APPLY_PLAN_APPROVAL', 'GENERATE_CANDIDATE')",
+            name="ck_commands_kind",
+        ),
         CheckConstraint(
             "status IN ('PENDING', 'CLAIMED', 'DONE', 'FAILED')", name="ck_commands_status"
         ),

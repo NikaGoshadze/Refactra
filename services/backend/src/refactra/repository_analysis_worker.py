@@ -21,6 +21,11 @@ from refactra.refactoring_plan import (
 )
 
 WORKFLOW = "repository-v0.1"
+GENERATE_CANDIDATE = "GENERATE_CANDIDATE"
+
+
+def candidate_command_key(run_id: UUID, revision: int) -> str:
+    return f"repository:candidate-generation:{run_id}:{revision}"
 
 
 def enqueue_repository_analysis(session: Session, run_id: UUID) -> UUID:
@@ -156,6 +161,13 @@ def process_repository_plan_approval(session_factory, command_id: UUID, worker_i
             command.status = "DONE"
             event_type = "PLAN_APPROVAL_VERIFIED"
             payload = {"plan_id": str(plan.id), "revision": plan.revision, "sha256": plan.sha256}
+            session.add(
+                RunCommand(
+                    run_id=run.id,
+                    kind=GENERATE_CANDIDATE,
+                    dedupe_key=candidate_command_key(run.id, plan.revision),
+                )
+            )
         command.completed_at = now
         command.lease_until = None
         session.add(
