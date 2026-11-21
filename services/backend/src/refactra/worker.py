@@ -18,6 +18,8 @@ from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.models import Run, RunCommand, RunEvent
 from refactra.openai_analysis import OpenAIAnalysisProvider
+from refactra.publication_pr import process_approved_publication
+from refactra.publication_target import PUBLISH_CANDIDATE
 from refactra.refactoring_plan import APPLY_PLAN_APPROVAL
 from refactra.repository_analysis_worker import (
     GENERATE_CANDIDATE,
@@ -137,7 +139,7 @@ def main():
     modes.add_argument(
         "--repository-candidate",
         action="store_true",
-        help="Verify plans and prepare model patches.",
+        help="Process approved candidates and publish when artifact flags are set.",
     )
     parser.add_argument("--candidate-source", type=Path, help="Trusted local Git clone.")
     parser.add_argument(
@@ -173,6 +175,11 @@ def main():
         kind = APPLY_PLAN_APPROVAL
     elif not settings.enable_mock:
         raise SystemExit("Mock mode is disabled.")
+    kinds = [kind]
+    if args.repository_candidate:
+        if args.candidate_artifacts:
+            kinds.extend((VALIDATE_CANDIDATE, PUBLISH_CANDIDATE))
+        kinds.append(APPLY_PLAN_APPROVAL)
     workflow = "mock-v0.1" if mode == "mock" else WORKFLOW
     engine = make_engine(settings.database_url)
     session_factory = sessions(engine)
@@ -188,25 +195,18 @@ def main():
             logger.info(json.dumps({"event": "worker_started", "mode": mode}))
             while not stopped.is_set():
                 guard.execute(text("SELECT 1"))  # Loss of the lock connection stops this worker.
-                command_id = claim_command(session_factory, worker_id, workflow=workflow, kind=kind)
-                approval_handoff = args.repository_approval
-                validation_handoff = False
-                if command_id is None and args.candidate_source:
+                for claimed_kind in kinds:
                     command_id = claim_command(
-                        session_factory, worker_id, workflow=workflow, kind=VALIDATE_CANDIDATE
+                        session_factory, worker_id, workflow=workflow, kind=claimed_kind
                     )
-                    validation_handoff = command_id is not None
-                if command_id is None and args.repository_candidate:
-                    command_id = claim_command(
-                        session_factory, worker_id, workflow=workflow, kind=APPLY_PLAN_APPROVAL
-                    )
-                    approval_handoff = True
+                    if command_id is not None:
+                        break
                 if command_id:
-                    if approval_handoff:
+                    if claimed_kind == APPLY_PLAN_APPROVAL:
                         processed = process_repository_plan_approval(
                             session_factory, command_id, worker_id
                         )
-                    elif validation_handoff:
+                    elif claimed_kind == VALIDATE_CANDIDATE:
                         processed = process_candidate_validation(
                             session_factory,
                             command_id,
@@ -214,7 +214,14 @@ def main():
                             source=args.candidate_source,
                             artifacts=args.candidate_artifacts,
                         )
-                    elif args.repository_candidate:
+                    elif claimed_kind == PUBLISH_CANDIDATE:
+                        processed = process_approved_publication(
+                            session_factory,
+                            command_id,
+                            worker_id,
+                            artifacts=args.candidate_artifacts,
+                        )
+                    elif claimed_kind == GENERATE_CANDIDATE:
                         processed = process_repository_candidate(
                             session_factory, command_id, worker_id, provider
                         )

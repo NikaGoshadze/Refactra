@@ -2,11 +2,13 @@
 
 import argparse
 import json
+from datetime import timedelta
+from pathlib import Path
 from uuid import UUID
 
 import httpx
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -14,12 +16,16 @@ from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.github_app import GitHubAppError
 from refactra.models import Run, RunEvent
-from refactra.publication_branch import load_approved_target
+from refactra.publication_branch import load_approved_target, push_approved_branch
 from refactra.publication_target import (
     PUBLICATION_BRANCH_PUSHED,
     PUBLICATION_PR_OPENED,
+    PUBLISH_CANDIDATE,
     PublicationTargetError,
+    load_publication_approval,
+    publication_command_key,
 )
+from refactra.repository_analysis_worker import _claimed_command
 from refactra.repository_plan_worker import authorize_run_repository
 from refactra.repository_revision import resolve_revision
 
@@ -141,6 +147,62 @@ def open_approved_draft(session_factory, run_id: UUID) -> dict:
         }
         session.add(RunEvent(run_id=run_id, event_type=PUBLICATION_PR_OPENED, payload=receipt))
     return receipt
+
+
+def process_approved_publication(
+    session_factory, command_id: UUID, worker_id: str, *, artifacts: Path
+) -> bool:
+    with session_factory.begin() as session:
+        command = _claimed_command(session, command_id, worker_id)
+        now = session.scalar(select(func.now()))
+        if command is None or command.kind != PUBLISH_CANDIDATE or command.lease_until <= now:
+            return False
+        run_id, attempt = command.run_id, command.attempts
+        approval = load_publication_approval(session, run_id)
+        valid = approval is not None and command.dedupe_key == publication_command_key(
+            run_id, approval.target_sha256
+        )
+        pushed = _publication_event(session, run_id, PUBLICATION_BRANCH_PUSHED)
+
+    code = "publication_approval_mismatch"
+    success = retry = False
+    if valid:
+        try:
+            if pushed is None:
+                code = "publication_push_failed"
+                artifact = artifacts / f"{run_id}-r{approval.result_revision}"
+                push_approved_branch(session_factory, run_id, artifact)
+            code = "publication_draft_failed"
+            open_approved_draft(session_factory, run_id)
+            success = True
+        except GitHubAppError:
+            retry = attempt < 2
+        except (HTTPException, KeyError, OSError, TypeError, ValueError):
+            # Persist the stage without copying credentials or upstream responses.
+            pass
+
+    with session_factory.begin() as session:
+        command = _claimed_command(session, command_id, worker_id)
+        if command is None or command.attempts != attempt:
+            return False
+        now = session.scalar(select(func.now()))
+        command.lease_until = None
+        if retry:
+            command.status = "PENDING"
+            command.claimed_by = None
+            command.available_at = now + timedelta(seconds=5)
+        else:
+            command.status = "DONE" if success else "FAILED"
+            command.completed_at = now
+        if not success:
+            session.add(
+                RunEvent(
+                    run_id=run_id,
+                    event_type="PUBLICATION_RETRY_SCHEDULED" if retry else "PUBLICATION_STOPPED",
+                    payload={"command_id": str(command_id), "code": code},
+                )
+            )
+        return True
 
 
 def main() -> None:

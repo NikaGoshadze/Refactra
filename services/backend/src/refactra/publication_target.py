@@ -10,11 +10,16 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from refactra.models import Run, RunCandidateResult, RunEvent, RunPublicationTarget
+from refactra.models import Run, RunCandidateResult, RunCommand, RunEvent, RunPublicationTarget
 
 PUBLICATION_APPROVED = "PUBLICATION_APPROVED"
 PUBLICATION_BRANCH_PUSHED = "PUBLICATION_BRANCH_PUSHED"
 PUBLICATION_PR_OPENED = "PUBLICATION_PR_OPENED"
+PUBLISH_CANDIDATE = "PUBLISH_CANDIDATE"
+
+
+def publication_command_key(run_id: UUID, target_sha256: str) -> str:
+    return f"repository:publication:{run_id}:{target_sha256}"
 
 
 class PublicationTargetError(ValueError):
@@ -113,6 +118,13 @@ def approve_publication_target(
     session.add(
         RunEvent(
             run_id=run_id, event_type=PUBLICATION_APPROVED, payload=approval.model_dump(mode="json")
+        )
+    )
+    session.add(
+        RunCommand(
+            run_id=run_id,
+            kind=PUBLISH_CANDIDATE,
+            dedupe_key=publication_command_key(run_id, target_sha256),
         )
     )
     return approval
