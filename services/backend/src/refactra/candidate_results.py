@@ -24,6 +24,23 @@ def _canonical(data: dict) -> bytes:
     return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
 
+def _candidate_payload(candidate: CandidatePatch) -> dict:
+    patch = candidate.model_dump(mode="json")
+    patch["edits"].sort(key=lambda edit: edit["path"])
+    return patch
+
+
+def load_validated_candidate(
+    session: Session, run_id: UUID, candidate: CandidatePatch
+) -> RunCandidateResult | None:
+    digest = sha256(_canonical(_candidate_payload(candidate))).hexdigest()
+    return session.scalar(
+        select(RunCandidateResult).where(
+            RunCandidateResult.run_id == run_id, RunCandidateResult.candidate_sha256 == digest
+        )
+    )
+
+
 def save_validated_candidate(
     session: Session,
     run_id: UUID,
@@ -56,8 +73,7 @@ def save_validated_candidate(
     if not diff or len(diff) > MAX_DIFF_BYTES:
         raise CandidateResultError("The validation result needs a bounded review diff.")
 
-    patch = candidate.model_dump(mode="json")
-    patch["edits"].sort(key=lambda edit: edit["path"])
+    patch = _candidate_payload(candidate)
     candidate_hash = sha256(_canonical(patch)).hexdigest()
     diff_hash = sha256(diff).hexdigest()
     existing = session.scalar(

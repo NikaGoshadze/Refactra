@@ -16,7 +16,7 @@ from refactra.candidate_request import CANDIDATE_INSTRUCTIONS, prepare_candidate
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.github_app import GitHubAppError
-from refactra.models import ModelReservation, Run, RunEvent, RunGeneratedCandidate
+from refactra.models import ModelReservation, Run, RunCommand, RunEvent, RunGeneratedCandidate
 from refactra.openai_analysis import (
     AnalysisProviderError,
     OpenAIAnalysisProvider,
@@ -29,6 +29,12 @@ from refactra.repository_analysis_worker import (
     candidate_command_key,
 )
 from refactra.repository_workspace import WorkspacePreparationError, prepare_approved_workspace
+
+VALIDATE_CANDIDATE = "VALIDATE_CANDIDATE"
+
+
+def validation_command_key(run_id: UUID, revision: int) -> str:
+    return f"repository:candidate-validation:{run_id}:{revision}"
 
 
 def _attempt_id(run_id: UUID, plan_sha256: str) -> UUID:
@@ -70,6 +76,13 @@ def generate_candidate(
                         run_id=run_id,
                         reservation_id=attempt_id,
                         document=patch.model_dump_json().encode(),
+                    )
+                )
+                session.add(
+                    RunCommand(
+                        run_id=run_id,
+                        kind=VALIDATE_CANDIDATE,
+                        dedupe_key=validation_command_key(run_id, workspace.revision),
                     )
                 )
 
