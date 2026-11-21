@@ -1,6 +1,7 @@
 import json
 import shutil
 import subprocess
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from types import SimpleNamespace
 from uuid import UUID
@@ -9,24 +10,39 @@ import httpx
 import pytest
 from sqlalchemy import select
 
+import refactra.candidate_validation_worker as validation_worker
 import refactra.publication_branch as publication
 import refactra.publication_pr as draft
+import refactra.repository_workspace as workspace
 from refactra.analysis_context import save_analysis_context
 from refactra.candidate_commit import CandidateCommitError, prepare_candidate_commit
 from refactra.candidate_patch import CandidatePatch
 from refactra.candidate_results import save_validated_candidate
 from refactra.github_app import GitHubAppError
-from refactra.models import RunEvent, RunPublicationTarget
+from refactra.models import RunCandidateResult, RunCommand, RunEvent, RunPublicationTarget
+from refactra.openai_analysis import OpenAIAnalysisProvider
 from refactra.publication_target import (
     PublicationTargetError,
     approve_publication_target,
     save_publication_target,
 )
-from refactra.refactoring_plan import approve_refactoring_plan, save_refactoring_plan
-from refactra.repository_analysis_worker import enqueue_repository_analysis
+from refactra.refactoring_plan import (
+    APPLY_PLAN_APPROVAL,
+    approve_refactoring_plan,
+    save_refactoring_plan,
+)
+from refactra.repository_analysis_worker import (
+    WORKFLOW,
+    enqueue_repository_analysis,
+    process_repository_plan_approval,
+)
+from refactra.repository_candidate import VALIDATE_CANDIDATE, generate_candidate
+from refactra.repository_snapshot import SourceFile, SourceSnapshot
 from refactra.repository_validation import ValidationResult
+from refactra.worker import claim_command
 
 from .test_analysis_context import prepare
+from .test_openai_analysis import response
 from .test_refactoring_plan import analyze_fixture_run
 from .test_refactoring_plan import proposal as proposal
 
@@ -36,10 +52,121 @@ def git(directory, *args):
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="Requires local Git.")
-@pytest.mark.parametrize("lost_response", [False, True])
-def test_prepares_the_saved_diff_as_one_pinned_commit(
-    tmp_path, session_factory, proposal, monkeypatch, lost_response
+@pytest.mark.parametrize("passes", [True, False])
+def test_worker_validates_generated_patch_and_recovers_commit_preparation(
+    pinned_source, tmp_path, session_factory, proposal, monkeypatch, passes
 ):
+    source, base = pinned_source
+    run, _, context = prepare(session_factory, base_sha=base)
+    with session_factory.begin() as session:
+        save_analysis_context(session, context)
+        enqueue_repository_analysis(session, run.id)
+    analyze_fixture_run(session_factory)
+    proposal["changes"].append(
+        {"path": "tests/test_cart.py", "action": "CREATE", "intent": "Cover cart calculation."}
+    )
+    with session_factory.begin() as session:
+        plan = save_refactoring_plan(session, run.id, proposal, expected_revision=0)
+        approve_refactoring_plan(
+            session,
+            run.id,
+            plan_id=plan.id,
+            revision=1,
+            sha256=plan.sha256,
+            actor_id=run.requested_by,
+        )
+    approval = claim_command(session_factory, "worker", workflow=WORKFLOW, kind=APPLY_PLAN_APPROVAL)
+    assert process_repository_plan_approval(session_factory, approval, "worker")
+    snapshot = SourceSnapshot(42, base, (SourceFile("src/cart.py", b"def cart(): return 1\n"),))
+    monkeypatch.setattr(workspace, "authorize_plan", lambda _: (None, None))
+    monkeypatch.setattr(workspace, "fetch_source_snapshot", lambda *_, **__: snapshot)
+    patch = CandidatePatch(
+        base_sha=base,
+        plan_sha256=plan.sha256,
+        edits=[
+            {"path": "src/cart.py", "action": "MODIFY", "content": "def cart(): return 2\n"},
+            {
+                "path": "tests/test_cart.py",
+                "action": "CREATE",
+                "content": "def test_cart(): pass\n",
+            },
+        ],
+    )
+    payload = response()
+    payload["output"][0]["content"][0]["text"] = patch.model_dump_json()
+
+    def provider_response(request):
+        if request.url.path.endswith("/input_tokens"):
+            return httpx.Response(
+                200, json={"object": "response.input_tokens", "input_tokens": 100}
+            )
+        return httpx.Response(200, json=payload)
+
+    provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(provider_response))
+    assert generate_candidate(session_factory, run.id, provider) == patch
+    calls = []
+
+    def validate(staged):
+        assert (staged.root / "src/cart.py").read_text().strip() == "def cart(): return 2"
+        calls.append(staged.base_sha)
+        status, exit_code = ("PASSED", 0) if passes else ("FAILED", 1)
+        return [
+            ValidationResult(
+                "python.pytest",
+                ["tests/test_cart.py"],
+                True,
+                status,
+                exit_code,
+                10,
+                "",
+                None,
+                "fixture",
+            )
+        ]
+
+    monkeypatch.setattr(validation_worker, "validate_candidate", validate)
+    job = claim_command(session_factory, "worker", workflow=WORKFLOW, kind=VALIDATE_CANDIDATE)
+    assert job is not None
+    process = validation_worker.process_candidate_validation
+    options = {"source": source, "artifacts": tmp_path}
+    worker = "worker"
+    if passes:
+
+        def interrupt(*_, **__):
+            raise KeyboardInterrupt
+
+        with monkeypatch.context() as interrupted:
+            interrupted.setattr(validation_worker, "prepare_candidate_commit", interrupt)
+            with pytest.raises(KeyboardInterrupt):
+                process(session_factory, job, worker, **options)
+        with session_factory.begin() as session:
+            session.get(RunCommand, job).lease_until = datetime.now(UTC) - timedelta(minutes=1)
+        assert (
+            claim_command(session_factory, "restart", workflow=WORKFLOW, kind=VALIDATE_CANDIDATE)
+            == job
+        )
+        assert not process(session_factory, job, worker, **options)
+        worker = "restart"
+    assert process(session_factory, job, worker, **options)
+    assert calls == [base]
+    with session_factory() as session:
+        result = session.scalar(
+            select(RunCandidateResult).where(RunCandidateResult.run_id == run.id)
+        )
+        assert session.get(RunCommand, job).status == ("DONE" if passes else "FAILED")
+        if passes:
+            target = session.get(RunPublicationTarget, result.id)
+            receipt = json.loads(target.document)
+            artifact = tmp_path / f"{run.id}-r1" / "repository.git"
+            parent = git(artifact, "show", "-s", "--format=%P", receipt["commit_sha"])
+            assert parent.strip().decode() == base
+        else:
+            assert result is None
+            assert session.scalar(select(RunPublicationTarget)) is None
+
+
+@pytest.fixture
+def pinned_source(tmp_path):
     source = tmp_path / "clone"
     source.mkdir()
     git(source, "init", "--template=", "--object-format=sha1", "--initial-branch=main")
@@ -63,6 +190,15 @@ def test_prepares_the_saved_diff_as_one_pinned_commit(
         "Base",
     )
     base = git(source, "rev-parse", "HEAD").strip().decode()
+    return source, base
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="Requires local Git.")
+@pytest.mark.parametrize("lost_response", [False, True])
+def test_prepares_the_saved_diff_as_one_pinned_commit(
+    tmp_path, session_factory, proposal, monkeypatch, lost_response, pinned_source
+):
+    source, base = pinned_source
     unrelated = b"# operator's uncommitted changes\n"
     (source / "src" / "cart.py").write_bytes(unrelated)
     run, _, context = prepare(session_factory, base_sha=base)

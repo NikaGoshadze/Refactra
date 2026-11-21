@@ -7,11 +7,13 @@ import os
 import signal
 import threading
 from datetime import timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from refactra.candidate_validation_worker import process_candidate_validation
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.models import Run, RunCommand, RunEvent
@@ -23,7 +25,7 @@ from refactra.repository_analysis_worker import (
     process_repository_analysis,
     process_repository_plan_approval,
 )
-from refactra.repository_candidate import process_repository_candidate
+from refactra.repository_candidate import VALIDATE_CANDIDATE, process_repository_candidate
 
 logger = logging.getLogger("refactra.worker")
 WORKER_LOCK = 72341001
@@ -137,7 +139,22 @@ def main():
         action="store_true",
         help="Verify plans and prepare model patches.",
     )
+    parser.add_argument("--candidate-source", type=Path, help="Trusted local Git clone.")
+    parser.add_argument(
+        "--candidate-artifacts", type=Path, help="Directory for prepared artifacts."
+    )
     args = parser.parse_args()
+    if args.candidate_source or args.candidate_artifacts:
+        if not (
+            args.repository_candidate
+            and args.candidate_source
+            and args.candidate_artifacts
+            and args.candidate_source.is_dir()
+            and args.candidate_artifacts.is_dir()
+        ):
+            parser.error(
+                "Validation requires --repository-candidate and both existing directories."
+            )
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     settings = Settings.from_env()
     provider = None
@@ -173,6 +190,12 @@ def main():
                 guard.execute(text("SELECT 1"))  # Loss of the lock connection stops this worker.
                 command_id = claim_command(session_factory, worker_id, workflow=workflow, kind=kind)
                 approval_handoff = args.repository_approval
+                validation_handoff = False
+                if command_id is None and args.candidate_source:
+                    command_id = claim_command(
+                        session_factory, worker_id, workflow=workflow, kind=VALIDATE_CANDIDATE
+                    )
+                    validation_handoff = command_id is not None
                 if command_id is None and args.repository_candidate:
                     command_id = claim_command(
                         session_factory, worker_id, workflow=workflow, kind=APPLY_PLAN_APPROVAL
@@ -182,6 +205,14 @@ def main():
                     if approval_handoff:
                         processed = process_repository_plan_approval(
                             session_factory, command_id, worker_id
+                        )
+                    elif validation_handoff:
+                        processed = process_candidate_validation(
+                            session_factory,
+                            command_id,
+                            worker_id,
+                            source=args.candidate_source,
+                            artifacts=args.candidate_artifacts,
                         )
                     elif args.repository_candidate:
                         processed = process_repository_candidate(
