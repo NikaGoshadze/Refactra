@@ -262,7 +262,7 @@ def test_run_status_returns_the_saved_worker_result(browser, session_factory):
     queued = client.get(url).json()
     assert {field: queued[field] for field in receipt} == receipt
     assert queued["status"] == "CREATED"
-    assert queued["analysis_text"] is queued["stop_reason"] is None
+    assert queued["stop_reason"] is None and "analysis_text" not in queued
 
     def model(request):
         if request.url.path.endswith("/input_tokens"):
@@ -270,7 +270,7 @@ def test_run_status_returns_the_saved_worker_result(browser, session_factory):
                 200, json={"object": "response.input_tokens", "input_tokens": 100}
             )
         analyzing = client.get(url).json()
-        assert analyzing["status"] == "ANALYZING" and analyzing["analysis_text"] is None
+        assert analyzing["status"] == "ANALYZING" and "analysis_text" not in analyzing
         return httpx.Response(200, json=model_response())
 
     provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(model))
@@ -281,8 +281,8 @@ def test_run_status_returns_the_saved_worker_result(browser, session_factory):
     assert result.headers["cache-control"] == "no-store"
     body = result.json()
     assert body["status"] == "NEEDS_HUMAN_REVIEW"
-    assert body["analysis_text"] == "src/cart.py:1 needs review" and body["stop_reason"] is None
-    assert set(body) == set(receipt) | {"analysis_text", "status", "stop_reason", "updated_at"}
+    assert body["stop_reason"] is None
+    assert set(body) == set(receipt) | {"status", "stop_reason", "updated_at"}
 
 
 def test_read_saved_plan_revisions(browser, session_factory, proposal):
@@ -328,6 +328,7 @@ def test_read_saved_plan_revisions(browser, session_factory, proposal):
             "blocking_question_count": 1 if plan.revision == 1 else 0,
             "unsupported_check_ids": ["VC1"] if plan.revision == 1 else [],
             "has_required_supported_check": plan.revision == 2,
+            "scope_errors": [],
         }
     assert client.get(f"{url}?revision=3").status_code == 404
     assert client.get(f"{url}?revision=0").status_code == 422
@@ -369,7 +370,7 @@ def test_revising_a_plan_appends_once_and_preserves_previous_revision(
     assert historical["content"]["blocking_questions"] == previous["blocking_questions"]
 
 
-@pytest.mark.parametrize("blocker", ["question", "check_id"])
+@pytest.mark.parametrize("blocker", ["question", "check_id", "file", "test_target"])
 def test_approval_binds_the_latest_ready_revision_and_locks_edits(
     browser, session_factory, proposal, blocker
 ):
@@ -382,8 +383,12 @@ def test_approval_binds_the_latest_ready_revision_and_locks_edits(
     draft = dict(proposal)
     if blocker == "question":
         draft["blocking_questions"] = ["How should empty carts behave?"]
-    else:
+    elif blocker == "check_id":
         draft["validation_checks"] = [dict(proposal["validation_checks"][0], check_id="VC1")]
+    elif blocker == "file":
+        draft["changes"] = [{"path": ".env", "action": "DELETE", "intent": "Remove tracked file"}]
+    else:
+        draft["validation_checks"] = [dict(proposal["validation_checks"][0], paths=["src/main.py"])]
     with session_factory.begin() as session:
         first = save_refactoring_plan(session, run_id, draft, expected_revision=0)
     old = {"plan_id": str(first.id), "revision": 1, "sha256": first.sha256}
@@ -392,7 +397,9 @@ def test_approval_binds_the_latest_ready_revision_and_locks_edits(
     rejected = client.post(f"{url}/approve", json=old)
     assert rejected.status_code == 403 and calls == []
     blocked = client.post(f"{url}/approve", json=old, headers=headers)
-    assert blocked.status_code == 409 and "Resolve blocking questions" in blocked.text
+    assert blocked.status_code == 409 and "Resolve" in blocked.text
+    if blocker in {"file", "test_target"}:
+        assert client.get(url).json()["readiness"]["scope_errors"]
 
     revised = client.post(url, json={"expected_revision": 1, "proposal": proposal}, headers=headers)
     artifact = revised.json()["artifact"]
@@ -676,5 +683,5 @@ def test_failed_run_returns_only_safe_failure_reason(
         )
     result = client.get(accepted.headers["Location"])
     assert result.status_code == 200 and "secret" not in result.text
-    assert result.json()["analysis_text"] is None
+    assert "analysis_text" not in result.json()
     assert result.json()["stop_reason"]["code"] == public_code

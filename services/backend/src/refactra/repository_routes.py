@@ -23,7 +23,6 @@ from refactra.github_repository_access import require_github_write_access
 from refactra.models import (
     Run,
     RunAnalysisContext,
-    RunAnalysisResult,
     RunCandidateResult,
     RunCommand,
     RunEvent,
@@ -56,6 +55,7 @@ from refactra.refactoring_plan import (
 from refactra.repository_access import RepositoryAccessPolicy
 from refactra.repository_analysis_worker import (
     GENERATE_CANDIDATE,
+    GENERATE_PLAN,
     WORKFLOW,
     enqueue_repository_analysis,
 )
@@ -444,11 +444,6 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                 run = session.get(Run, run_id)
                 if run is None:
                     return error(404, RUN_NOT_FOUND)
-                result = (
-                    session.get(RunAnalysisResult, run_id)
-                    if run.status == "NEEDS_HUMAN_REVIEW"
-                    else None
-                )
                 response.headers["Cache-Control"] = "no-store"
                 return RepositoryRunRead(
                     run_id=run.id,
@@ -458,7 +453,6 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                     created_at=run.created_at,
                     updated_at=run.updated_at,
                     status=run.status,
-                    analysis_text=result.analysis_text if result is not None else None,
                     stop_reason=(
                         _analysis_stop_reason(session, run_id) if run.status == "FAILED" else None
                     ),
@@ -476,8 +470,25 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
         try:
             require_run_access(request, run_id)
             with session_factory() as session:
+                status = None
+                if revision is None:
+                    status = session.scalar(
+                        select(RunCommand.status).where(
+                            RunCommand.run_id == run_id, RunCommand.kind == GENERATE_PLAN
+                        )
+                    )
                 plan = load_refactoring_plan(session, run_id, revision=revision)
                 if plan is None:
+                    if status in {"PENDING", "CLAIMED"}:
+                        return error(404, {"code": "plan_pending", "message": "Preparing plan."})
+                    if status == "FAILED":
+                        return error(
+                            409,
+                            {
+                                "code": "plan_generation_failed",
+                                "message": "The worker could not generate a plan.",
+                            },
+                        )
                     return error(
                         404, {"code": "plan_not_found", "message": "Plan revision not found."}
                     )

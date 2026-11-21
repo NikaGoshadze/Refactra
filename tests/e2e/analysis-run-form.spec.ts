@@ -37,11 +37,10 @@ test("verified repository submits a selected branch and shows the saved read-onl
       : { status: "NEEDS_HUMAN_REVIEW", analysis_text: analysis }) },
   }));
   await panel.getByRole("button", { name: "Start analysis" }).click();
-  await expect(panel.getByRole("status")).toHaveText("Analyzing");
+  await expect(panel.getByRole("status")).toHaveText("Preparing plan…");
   await expect(panel.getByText(receipt.base_sha, { exact: true })).toBeVisible();
-  await expect(panel.getByRole("status")).toHaveText("Ready for review", { timeout: 10000 });
-  await expect(panel.locator("pre")).toHaveText(analysis);
-  await expect(panel.locator("pre strong")).toHaveCount(0);
+  await expect(panel.getByText(PLAN.content.summary, { exact: true })).toBeVisible({ timeout: 10000 });
+  await expect(panel.getByText(analysis, { exact: true })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(panel).toHaveCount(0);
@@ -78,20 +77,17 @@ test("opens, revises, and approves a saved plan", async ({ page, authProxy }) =>
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByText("Open a saved run", { exact: true }).click();
   await page.getByLabel("Run ID", { exact: true }).fill(RUN_ID);
-  await page.getByRole("button", { name: "Open run", exact: true }).click();
-  await expect(page.getByText("Fixture analysis")).toBeVisible();
-
   const plan = page.getByRole("region", { name: "Refactoring plan" });
   await page.route(`**${PLAN_PATH}`, (route) => route.fulfill({
-    status: 404, json: { error: { code: "plan_not_found" } },
+    status: 404, json: { error: { code: "plan_pending" } },
   }), { times: 1 });
-  await plan.getByRole("button", { name: "Load saved plan" }).click();
-  await expect(plan.getByRole("status")).toHaveText("No plan has been saved for this run yet.");
-  await plan.getByRole("button", { name: "Refresh saved plan" }).click();
+  await page.getByRole("button", { name: "Open run", exact: true }).click();
+  await expect(plan.getByRole("status")).toHaveText("Preparing plan…");
   await expect(plan.getByText(PLAN.content.summary, { exact: true })).toBeVisible();
   await expect(plan.getByText(PLAN.artifact.sha256, { exact: true })).toBeVisible();
   await expect(plan.getByText("src/cart.py", { exact: true })).toBeVisible();
-  await expect(plan.getByRole("heading", { name: "Unrecognized validation IDs" })).toBeVisible();
+  await expect(plan.getByText("Unsupported checks VC1")).toBeVisible();
+  await expect(plan.getByText("Resolve the blocking questions.")).toBeVisible();
   await expect(plan.getByText(PLAN.content.blocking_questions[0], { exact: true })).toBeVisible();
   await expect(plan.getByRole("button", { name: "Approve plan revision 1" })).toBeDisabled();
   await expect(plan.getByText("Extract the cart calculation", { exact: true })).toHaveCount(0);
@@ -120,7 +116,7 @@ test("opens, revises, and approves a saved plan", async ({ page, authProxy }) =>
   await saveButton.click();
   await expect(plan.getByText("Round half to even.", { exact: true })).toBeVisible();
   await expect(plan.getByText(REVISED_ARTIFACT.sha256, { exact: true })).toBeVisible();
-  await expect(plan.getByRole("heading", { name: "Unrecognized validation IDs" })).toHaveCount(0);
+  await expect(plan.getByText("Unsupported checks VC1")).toHaveCount(0);
   const save = authProxy.calls.findLast((call) => call.method === "POST" && call.url === PLAN_PATH)!;
   expect(save.headers.cookie).toBe("refactra_session=fixture-session");
   expect(JSON.parse(save.body!)).toEqual({ expected_revision: 1, proposal });
@@ -193,7 +189,6 @@ test("shows a worker failure when reopening an approved run", async ({ page }) =
   await page.getByText("Open a saved run", { exact: true }).click();
   await page.getByLabel("Run ID", { exact: true }).fill(RUN_ID);
   await page.getByRole("button", { name: "Open run", exact: true }).click();
-  await page.getByRole("button", { name: "Load saved plan" }).click();
   const result = page.getByRole("region", { name: "Candidate result" });
   await expect(result.getByRole("alert")).toHaveText("Candidate validation failed.");
   await expect(result.getByRole("button", { name: "Approve publication" })).toHaveCount(0);

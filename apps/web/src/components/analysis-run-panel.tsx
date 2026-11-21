@@ -10,14 +10,13 @@ type RunStatus = "CREATED" | "ANALYZING" | "NEEDS_HUMAN_REVIEW" | "FAILED";
 type AnalysisRun = Receipt & {
   repository_id: number;
   status: RunStatus;
-  analysis_text: string | null;
   stop_reason: { message: string } | null;
 };
 
 const statusLabel: Record<RunStatus, string> = {
-  CREATED: "Queued",
-  ANALYZING: "Analyzing",
-  NEEDS_HUMAN_REVIEW: "Ready for review",
+  CREATED: "Preparing plan…",
+  ANALYZING: "Preparing plan…",
+  NEEDS_HUMAN_REVIEW: "Preparing plan…",
   FAILED: "Analysis failed",
 };
 const isActive = (status: RunStatus) => status === "CREATED" || status === "ANALYZING";
@@ -165,7 +164,8 @@ export function AnalysisRunPanel({ repositoryId, defaultBranch }: {
           {revision?.base_branch && <div><dt>Branch</dt><dd>{revision.base_branch}</dd></div>}
           {revision?.base_sha && <div><dt>Pinned commit</dt><dd><code>{revision.base_sha}</code></dd></div>}
         </dl>
-        {!statusError && <p role="status">{run ? statusLabel[run.status] : "Checking run status…"}</p>}
+        {!statusError && run?.status !== "NEEDS_HUMAN_REVIEW" &&
+          <p role="status">{run ? statusLabel[run.status] : "Checking run status…"}</p>}
         {statusError && <div className="error-box">
           <p role="alert">{statusError}</p>
           <button type="button" onClick={() => { setStatusError(null); setRetry((value) => value + 1); }}>
@@ -173,7 +173,6 @@ export function AnalysisRunPanel({ repositoryId, defaultBranch }: {
           </button>
         </div>}
         {run?.stop_reason && <p className="error-box" role="alert">{run.stop_reason.message}</p>}
-        {run?.analysis_text && <pre className="analysis-result">{run.analysis_text}</pre>}
         {run?.status === "NEEDS_HUMAN_REVIEW" && <SavedPlanPanel key={runId} runId={runId} />}
       </>}
     </section>

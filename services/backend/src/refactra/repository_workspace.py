@@ -32,16 +32,13 @@ from refactra.refactoring_plan import (
     ProposedChange,
     ValidationCheck,
     approval_command_key,
+    is_editable_plan_path,
     load_approved_plan,
 )
 from refactra.repository_plan_worker import authorize_plan
 from refactra.repository_selection import is_excluded_source_path
 from refactra.repository_snapshot import SourceSnapshot, fetch_source_snapshot
 from refactra.repository_validation import RepositoryValidationError, validate_candidate
-
-PROTECTED_PYTHON_FILES = frozenset(
-    {"conftest.py", "setup.py", "sitecustomize.py", "usercustomize.py"}
-)
 
 
 class WorkspacePreparationError(ValueError):
@@ -91,12 +88,7 @@ def _workspace_files(snapshot: SourceSnapshot, content: PlanContent) -> dict[Pur
     expected_paths = set(files)
     for change in content.changes:
         path = _workspace_path(change.path)
-        if (
-            is_excluded_source_path(path)
-            or any(part.startswith(".") for part in path.parts)
-            or path.suffix not in {".py", ".pyi"}
-            or path.name.casefold() in PROTECTED_PYTHON_FILES
-        ):
+        if not is_editable_plan_path(path):
             raise WorkspacePreparationError(
                 "Approved changes must target editable Python source or tests."
             )
