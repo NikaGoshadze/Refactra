@@ -21,7 +21,12 @@ from refactra.refactoring_plan import (
 )
 
 WORKFLOW = "repository-v0.1"
+GENERATE_PLAN = "GENERATE_PLAN"
 GENERATE_CANDIDATE = "GENERATE_CANDIDATE"
+
+
+def initial_plan_command_key(run_id: UUID) -> str:
+    return f"repository:initial-plan:{run_id}"
 
 
 def candidate_command_key(run_id: UUID, revision: int) -> str:
@@ -52,7 +57,9 @@ def _claimed_command(session, command_id, worker_id):
     return command
 
 
-def _finish(session, command, run, now, *, code, result: AnalysisResult | None = None):
+def _finish(
+    session, command, run, now, *, code, result: AnalysisResult | None = None, queue_plan=False
+):
     if result is not None:
         session.add(
             RunAnalysisResult(
@@ -62,6 +69,14 @@ def _finish(session, command, run, now, *, code, result: AnalysisResult | None =
                 analysis_text=result.text,
             )
         )
+        if queue_plan:
+            session.add(
+                RunCommand(
+                    run_id=run.id,
+                    kind=GENERATE_PLAN,
+                    dedupe_key=initial_plan_command_key(run.id),
+                )
+            )
     success = result is not None or code == "analysis_ready"
     run.status = "NEEDS_HUMAN_REVIEW" if success else "FAILED"
     run.version += 1
@@ -73,7 +88,7 @@ def _finish(session, command, run, now, *, code, result: AnalysisResult | None =
 
 
 def process_repository_analysis(
-    session_factory, command_id: UUID, worker_id: str, provider
+    session_factory, command_id: UUID, worker_id: str, provider, *, queue_plan: bool = False
 ) -> bool:
     with session_factory.begin() as session:
         command = _claimed_command(session, command_id, worker_id)
@@ -137,7 +152,15 @@ def process_repository_analysis(
             if receipt is not None and receipt.settled_at is None:
                 code = "analysis_outcome_unknown"
         run = session.get(Run, run_id, with_for_update=True)
-        _finish(session, command, run, session.scalar(select(func.now())), code=code, result=result)
+        _finish(
+            session,
+            command,
+            run,
+            session.scalar(select(func.now())),
+            code=code,
+            result=result,
+            queue_plan=queue_plan,
+        )
         return True
 
 

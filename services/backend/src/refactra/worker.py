@@ -23,11 +23,13 @@ from refactra.publication_target import PUBLISH_CANDIDATE
 from refactra.refactoring_plan import APPLY_PLAN_APPROVAL
 from refactra.repository_analysis_worker import (
     GENERATE_CANDIDATE,
+    GENERATE_PLAN,
     WORKFLOW,
     process_repository_analysis,
     process_repository_plan_approval,
 )
 from refactra.repository_candidate import VALIDATE_CANDIDATE, process_repository_candidate
+from refactra.repository_plan_worker import process_initial_plan
 
 logger = logging.getLogger("refactra.worker")
 WORKER_LOCK = 72341001
@@ -141,45 +143,52 @@ def main():
         action="store_true",
         help="Process approved candidates and publish when artifact flags are set.",
     )
+    modes.add_argument(
+        "--repository-workflow",
+        action="store_true",
+        help="Process the full repository workflow with both artifact flags set.",
+    )
     parser.add_argument("--candidate-source", type=Path, help="Trusted local Git clone.")
     parser.add_argument(
         "--candidate-artifacts", type=Path, help="Directory for prepared artifacts."
     )
     args = parser.parse_args()
-    if args.candidate_source or args.candidate_artifacts:
+    if args.repository_workflow or args.candidate_source or args.candidate_artifacts:
         if not (
-            args.repository_candidate
+            (args.repository_candidate or args.repository_workflow)
             and args.candidate_source
             and args.candidate_artifacts
             and args.candidate_source.is_dir()
             and args.candidate_artifacts.is_dir()
         ):
             parser.error(
-                "Validation requires --repository-candidate and both existing directories."
+                "Validation requires a candidate or workflow mode and both existing directories."
             )
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     settings = Settings.from_env()
     provider = None
     mode = "mock"
     kind = "START"
-    if args.repository_analysis or args.repository_candidate:
+    if args.repository_analysis or args.repository_candidate or args.repository_workflow:
         key = os.getenv("REFACTRA_OPENAI_API_KEY", "").strip()
         if not key:
             raise SystemExit("Repository model work requires REFACTRA_OPENAI_API_KEY.")
         provider = OpenAIAnalysisProvider(key)
-        mode = "repository_candidate" if args.repository_candidate else "repository_analysis"
-        if args.repository_candidate:
-            kind = GENERATE_CANDIDATE
+        mode = "repository_analysis"
     elif args.repository_approval:
         mode = "repository_approval"
         kind = APPLY_PLAN_APPROVAL
     elif not settings.enable_mock:
         raise SystemExit("Mock mode is disabled.")
     kinds = [kind]
-    if args.repository_candidate:
+    if args.repository_candidate or args.repository_workflow:
+        mode = "repository_workflow" if args.repository_workflow else "repository_candidate"
+        kinds = [GENERATE_CANDIDATE]
         if args.candidate_artifacts:
             kinds.extend((VALIDATE_CANDIDATE, PUBLISH_CANDIDATE))
         kinds.append(APPLY_PLAN_APPROVAL)
+        if args.repository_workflow:
+            kinds.extend((GENERATE_PLAN, "START"))
     workflow = "mock-v0.1" if mode == "mock" else WORKFLOW
     engine = make_engine(settings.database_url)
     session_factory = sessions(engine)
@@ -225,11 +234,19 @@ def main():
                         processed = process_repository_candidate(
                             session_factory, command_id, worker_id, provider
                         )
+                    elif claimed_kind == GENERATE_PLAN:
+                        processed = process_initial_plan(
+                            session_factory, command_id, worker_id, provider
+                        )
                     elif provider is None:
                         processed = process_command(session_factory, command_id, worker_id)
                     else:
                         processed = process_repository_analysis(
-                            session_factory, command_id, worker_id, provider
+                            session_factory,
+                            command_id,
+                            worker_id,
+                            provider,
+                            queue_plan=args.repository_workflow,
                         )
                     logger.info(
                         json.dumps(
