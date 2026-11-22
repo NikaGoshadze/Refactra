@@ -3,6 +3,7 @@
 import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from posixpath import normpath
 
 from refactra.repository_inventory import LANGUAGES, RepositoryInventory
 from refactra.repository_snapshot import SKIP_DIRECTORIES, SourceSnapshot
@@ -13,7 +14,7 @@ MAX_TOTAL_BYTES = 128 * 1024
 STOP_WORDS = frozenset(
     (
         "the and for from with into this that refactor extract change "
-        "file files code test tests src py js ts"
+        "file files code test tests src py js ts add implement modify frontend backend"
     ).split()
 )
 BLOCKED_PARTS = SKIP_DIRECTORIES | {
@@ -76,6 +77,28 @@ def eligible_file_role(path: str, inventory: RepositoryInventory) -> str | None:
     return "test" if path in inventory.test_candidates else "source"
 
 
+def _named_in_task(path: str, task: str) -> bool:
+    name = PurePosixPath(path).name
+    return any(
+        re.search(r"(?<![\w/.-])" + re.escape(value) + r"(?![\w/.-])", task)
+        for value in {path, name}
+    )
+
+
+def _relative_imports(path: PurePosixPath, text: str) -> set[str]:
+    """Recognize the relative links used by Python and JavaScript module imports."""
+    targets = {
+        normpath(str(path.parent / relative))
+        for relative in re.findall(r"""['"](\.{1,2}/[^'"/][^'"\s]*)['"]""", text)
+    }
+    for dots, module in re.findall(r"\bfrom\s+(\.+)([\w.]+)\s+import\b", text):
+        parent = path.parent
+        for _ in dots[1:]:
+            parent = parent.parent
+        targets.add(str(parent / module.replace(".", "/")))
+    return targets
+
+
 def select_task_files(
     snapshot: SourceSnapshot, inventory: RepositoryInventory, task_text: str
 ) -> FileSelection:
@@ -96,6 +119,8 @@ def select_task_files(
     text_paths = set(inventory.text_paths)
     entry_paths = set(inventory.entry_point_candidates)
     candidates, oversized = [], 0
+    imports: dict[str, set[str]] = {}
+    named = set()
     for source in sorted(snapshot.files, key=lambda file: file.path):
         role = eligible_file_role(source.path, inventory)
         if source.path not in text_paths or role is None:
@@ -108,9 +133,17 @@ def select_task_files(
         text = source.content.decode("utf-8-sig").casefold()
         content_hits = sum(term in text for term in terms) if role != "metadata" else 0
         score = 10 * path_hits + content_hits
+        if role == "source":
+            imports[source.path] = _relative_imports(
+                PurePosixPath(source.path), source.content.decode("utf-8-sig")
+            )
         reasons = (
             ("task_path_match",) if path_hits else ("task_content_match",) if content_hits else ()
         )
+        if _named_in_task(source.path, task_text):
+            named.add(source.path)
+            reasons = ("explicit_path",) + reasons
+            score += 1000
         candidates.append((score, SelectedFile(source.path, role, reasons, len(source.content))))
     ranked = sorted(candidates, key=lambda item: (-item[0], item[1].path))
     sources = [item for score, item in ranked if item.role == "source" and score > 0]
@@ -122,7 +155,22 @@ def select_task_files(
             SelectedFile(item.path, item.role, ("structural_fallback",), item.size_bytes)
             for item in sources
         ]
-    focus = sources[:3]
+    focus = sources[:1]
+    related_modules = set().union(*(imports[item.path] for item in focus))
+    focused_paths = {item.path for item in focus}
+    for _, item in ranked:
+        if len(focus) == 3:
+            break
+        if item.role != "source" or item.path in focused_paths:
+            continue
+        path = PurePosixPath(item.path)
+        names = {item.path, str(path.with_suffix(""))}
+        if path.stem in {"__init__", "index"}:
+            names.add(str(path.parent))
+        if names & related_modules:
+            focus.append(SelectedFile(item.path, item.role, ("relative_import",), item.size_bytes))
+    focused_paths = {item.path for item in focus}
+    focus.extend([item for item in sources if item.path not in focused_paths][: 3 - len(focus)])
     focus_names = set().union(*(_words(PurePosixPath(item.path).stem) for item in focus))
     tests, metadata = [], []
     for score, item in ranked:
@@ -145,7 +193,12 @@ def select_task_files(
             )
     tests.sort(key=lambda item: (-item[0], item[1].path))
     metadata.sort(key=lambda item: (-len(PurePosixPath(item.path).parts), item.path))
-    ordered = focus + [item for _, item in tests[:3]] + metadata[:2]
+    explicit = [item for _, item in ranked if item.path in named]
+    ordered = explicit + [
+        item
+        for item in focus + [item for _, item in tests[:3]] + metadata[:2]
+        if item.path not in named
+    ]
     selected, total, omitted = [], 0, oversized
     for item in ordered:
         if len(selected) >= MAX_FILES or total + item.size_bytes > MAX_TOTAL_BYTES:

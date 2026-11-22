@@ -73,6 +73,31 @@ def test_binary_files_are_not_read_as_candidates():
     assert [file.path for file in result.files] == ["src/cart.ts"]
 
 
+def test_finds_backend_route_relative_dependency_and_tests_without_filenames():
+    selected = choose(
+        [
+            ("backend/routes.py", b"from .store import list_rows\n# pagination support"),
+            ("backend/store.py", b"def list_rows(): return []"),
+            ("backend/unrelated.py", b"pass"),
+            ("tests/test_store.py", b"def test_list_rows(): pass"),
+        ],
+        "Add pagination to the backend",
+    )
+    assert [item.path for item in selected.files] == [
+        "backend/routes.py",
+        "backend/store.py",
+        "tests/test_store.py",
+    ]
+    assert selected.files[1].reasons == ("relative_import",)
+
+
+def test_explicit_path_precedes_lexical_matches():
+    files = [("src/filters.py", b"pass"), ("src/cart.py", b"cart cart calculation")]
+    selected = choose(files, "Use the cart calculation in `src/filters.py`")
+    assert selected.files[0].path == "src/filters.py"
+    assert "explicit_path" in selected.files[0].reasons
+
+
 def test_no_lexical_match_uses_entry_points_before_other_sources():
     result = choose(
         [("src/aaa.py", b"pass"), ("src/main.py", b"pass"), ("tests/test_main.py", b"assert True")],

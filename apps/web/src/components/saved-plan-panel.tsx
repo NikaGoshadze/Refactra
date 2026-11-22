@@ -11,7 +11,8 @@ type SavedPlan = {
   artifact: { id: string; revision: number; sha256: string };
   approval: ApprovalReceipt | null;
   feedback_status?: "pending" | "failed" | "unchanged" | null;
-  readiness: { unsupported_check_ids: string[]; has_required_supported_check: boolean; scope_errors: string[] };
+  readiness: { unsupported_check_ids: string[]; has_required_supported_check: boolean; scope_errors: string[];
+    outcome?: "ready" | "needs_clarification" | "unsupported" };
   content: {
     summary: string;
     changes: { path: string; action: string; intent: string }[];
@@ -48,7 +49,9 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
   const revising = plan?.feedback_status === "pending";
   const blockers = plan ? [
     ...(plan.content.blocking_questions.length ? ["Resolve the blocking questions."] : []),
-    ...(!plan.readiness.has_required_supported_check ? ["Add a required supported validation check."] : []),
+    ...(!plan.content.changes.length
+      ? ["Approval requires a plan with proposed changes."]
+      : !plan.readiness.has_required_supported_check ? ["Add a required supported validation check."] : []),
     ...(plan.readiness.unsupported_check_ids.length ? ["Replace unsupported validation checks."] : []),
     ...(plan.readiness.scope_errors ?? []),
   ] : [];
@@ -249,6 +252,7 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
 }
 
 function PlanReview({ plan: { artifact, content, readiness } }: { plan: SavedPlan }) {
+  const outcome = { ready: "Ready for review", needs_clarification: "Needs clarification", unsupported: "Unsupported" };
   return (
     <>
       <dl className="repository-details">
@@ -256,9 +260,11 @@ function PlanReview({ plan: { artifact, content, readiness } }: { plan: SavedPla
         <div><dt>SHA-256</dt><dd><code>{artifact.sha256}</code></dd></div>
       </dl>
       <h4>Summary</h4>
+      {readiness.outcome && <p>{outcome[readiness.outcome]}</p>}
       <p>{content.summary}</p>
       <div>
         <h4>Proposed changes</h4>
+        {!content.changes.length && <p>No changes proposed.</p>}
         <ul>{content.changes.map((change) => (
           <li key={change.path}><strong>{change.action}</strong> <code>{change.path}</code> · {change.intent}</li>
         ))}</ul>
