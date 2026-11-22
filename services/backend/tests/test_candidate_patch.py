@@ -102,3 +102,50 @@ def test_candidate_rejects_a_linked_file(tmp_path, patch_fixture):
     with pytest.raises(CandidatePatchError, match="non-regular file"):
         apply_candidate_patch(workspace, candidate)
     assert outside.read_bytes() == b"outside\n"
+
+
+@pytest.mark.parametrize(
+    ("code", "rejected"),
+    [
+        ("from books_app.main import search\nsearch('book', author='Writer')\n", True),
+        ("from .main import search as lookup\nlookup()\n", True),
+        ("from .main import search\nsearch('book')\n", False),
+        ("from .main import search\nsearch(*args, **kwargs)\n", False),
+        ("from .main import search\ndef f(search):\n    return search(k=3)\n", False),
+    ],
+)
+def test_new_python_calls_respect_local_function_signatures(tmp_path, code, rejected):
+    package = tmp_path / "books_app"
+    package.mkdir()
+    (package / "main.py").write_text(
+        'raise RuntimeError("Never import this module during preflight")\ndef search(query): pass\n'
+    )
+    filepath = "books_app/web_app.py"
+    change = ProposedChange(path=filepath, action="CREATE", intent="Add a search route.")
+    candidate = CandidatePatch(
+        base_sha=BASE,
+        plan_sha256=PLAN,
+        edits=[{"path": filepath, "action": "CREATE", "content": code}],
+    )
+    workspace = ApprovedWorkspace(tmp_path, BASE, 1, PLAN, 1, (change,))
+    if rejected:
+        with pytest.raises(CandidatePatchError, match=r"web_app\.py:2.*search\(query\)"):
+            apply_candidate_patch(workspace, candidate)
+        assert not (tmp_path / filepath).exists()
+    else:
+        apply_candidate_patch(workspace, candidate)
+        assert (tmp_path / filepath).exists()
+
+
+def test_existing_python_call_problem_does_not_block_an_unrelated_edit(tmp_path):
+    (tmp_path / "backend.py").write_text("def search(query): pass\n")
+    body = "from backend import search\nsearch('book', author='Writer')\n"
+    (tmp_path / "web.py").write_text(body)
+    change = ProposedChange(path="web.py", action="MODIFY", intent="Add a comment.")
+    candidate = CandidatePatch(
+        base_sha=BASE,
+        plan_sha256=PLAN,
+        edits=[{"path": "web.py", "action": "MODIFY", "content": "# Existing route\n" + body}],
+    )
+    workspace = ApprovedWorkspace(tmp_path, BASE, 1, PLAN, 2, (change,))
+    assert b"+# Existing route" in apply_candidate_patch(workspace, candidate)

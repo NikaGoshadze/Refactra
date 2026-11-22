@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from refactra.python_calls import new_python_call_issue
 from refactra.refactoring_plan import PlanPath, approved_file_operation, plan_edit_kind
 
 if TYPE_CHECKING:
@@ -160,6 +161,14 @@ def apply_candidate_patch(workspace: "ApprovedWorkspace", candidate: CandidatePa
 
     if not writes:
         raise CandidatePatchError("The approved candidate made no changes.")
+
+    python_edits = {
+        PurePosixPath(destination.relative_to(root).as_posix()): data
+        for destination, _, data in writes
+        if destination.suffix == ".py"
+    }
+    if python_edits and (issue := new_python_call_issue(root, python_edits)):
+        raise CandidatePatchError(issue)
 
     for destination, action, data in writes:
         if data is None:
