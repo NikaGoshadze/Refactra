@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from refactra.analysis_context import FORMAT, PreparedAnalysisContext
 from refactra.candidate_patch import MAX_EDIT_FILE_BYTES, CandidatePatch
 from refactra.models import Run
-from refactra.refactoring_plan import load_approved_plan
+from refactra.refactoring_plan import is_env_path, load_approved_plan
 
 if TYPE_CHECKING:
     from refactra.repository_workspace import ApprovedWorkspace
@@ -22,8 +22,8 @@ CANDIDATE_INSTRUCTIONS = (
     "Return one edit per approved path with its exact action, full replacement text for "
     "CREATE and MODIFY, or null content for DELETE. Copy the pinned base SHA from the "
     "approved repository and the supplied plan checksum. Do not execute tools, invent "
-    "validation results, include credentials, or publish changes. For an approved new "
-    ".env.example, use the variable names in the plan with a blank value after each equals "
+    "validation results, include credentials, or publish changes. For each approved new "
+    "environment template, use the variable names in the plan with a blank value after each equals "
     "sign, one assignment per line, without comments."
 )
 CANDIDATE_TEXT_CONFIG = {
@@ -60,7 +60,7 @@ def prepare_candidate_context(
         raise ValueError("The workspace does not match the approved plan.")
     source = {}
     for change in workspace.changes:
-        if change.action != "CREATE" and change.path != ".env":
+        if change.action != "CREATE" and not is_env_path(change.path):
             with (workspace.root / change.path).open("rb") as file:
                 raw = file.read(MAX_EDIT_FILE_BYTES + 1)
             if len(raw) > MAX_EDIT_FILE_BYTES or b"\0" in raw:
@@ -81,7 +81,7 @@ def check_candidate_context(session: Session, run_id: UUID, context_json: str) -
         != {
             change["path"]
             for change in expected["approved_plan"]["changes"]
-            if change["action"] != "CREATE" and change["path"] != ".env"
+            if change["action"] != "CREATE" and not is_env_path(change["path"])
         }
     ):
         raise ValueError("Candidate input must match the saved approval.")
