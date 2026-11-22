@@ -206,8 +206,16 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
         result = response()
         retrying = prompt.get("retry_after_rejection", False)
         edits = {edit["path"]: edit["content"] for edit in patch["edits"]}
-        if scenario == "outside_scope" or (scenario == "repair" and not retrying):
+        if scenario == "outside_scope":
             edits["src/unrelated.py"] = edits.pop("src/cart.py")
+        if scenario == "repair":
+            if retrying:
+                assert "unexpected keyword argument 'author'" in prompt["repair_detail"]
+                assert "src/cart.py" in prompt["repair_detail"]
+            else:
+                edits["tests/test_cart.py"] = (
+                    "from src.cart import cart\n\ndef test_cart():\n    cart(author='Writer')\n"
+                )
         if scenario == "manual_retry" and not retrying:
             result.update(status="incomplete", incomplete_details={"reason": "max_output_tokens"})
         result["output"][0]["content"][0]["text"] = json.dumps({"edits": edits})

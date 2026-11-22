@@ -114,7 +114,13 @@ def queue_candidate_retry(session, run_id: UUID) -> UUID:
 
 
 def generate_candidate(
-    session_factory, run_id: UUID, provider, *, check_admission=None, mode: AttemptMode = "initial"
+    session_factory,
+    run_id: UUID,
+    provider,
+    *,
+    check_admission=None,
+    mode: AttemptMode = "initial",
+    repair_detail: str | None = None,
 ) -> CandidatePatch:
     with prepare_approved_workspace(session_factory, run_id) as workspace:
         if approved_file_operation(workspace.changes, workspace.validation_checks):
@@ -128,7 +134,9 @@ def generate_candidate(
                 return CandidatePatch.model_validate_json(saved.document)
             if session.get(ModelReservation, attempt_id) is not None:
                 raise CandidatePatchError("A candidate attempt is already recorded for this plan.")
-            context = prepare_candidate_context(session, run_id, workspace, retry=mode != "initial")
+            context = prepare_candidate_context(
+                session, run_id, workspace, retry=mode != "initial", repair_detail=repair_detail
+            )
             output_limit = _output_limit(session, run_id, mode)
         patch = None
         rejected = None
@@ -244,7 +252,7 @@ def process_repository_candidate(
                 generate_candidate(
                     session_factory, run_id, provider, check_admission=check_admission, mode=mode
                 )
-            except CandidateReplyRejected:
+            except CandidateReplyRejected as error:
                 if mode != "initial":
                     raise
                 workflow_log("candidate_retry_started", run_id=run_id, command_id=command_id)
@@ -254,6 +262,7 @@ def process_repository_candidate(
                     provider,
                     check_admission=check_admission,
                     mode="repair",
+                    repair_detail=str(error),
                 )
     except BudgetExceeded as error:
         error_code = "candidate_budget_exceeded"
