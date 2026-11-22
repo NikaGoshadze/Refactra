@@ -33,6 +33,8 @@ PLAN_INSTRUCTIONS = (
     "Credential files, binary files and protected directories are outside the editing scope. "
     "Use repository.patch on all proposed edit paths for scope and supported format checks. "
     "Add python.pytest only for relevant test_*.py or *_test.py files. "
+    "Use typescript.tsc for TypeScript projects with one retained tsconfig file and "
+    "dependencies available to the validator (TypeScript and React types). "
     "Use check identifiers, not shell commands or executable arguments. Do not edit files, "
     "execute tooling, publish changes, or claim validation ran. Keep the proposal concise. "
     "For plans with changes, include consistent criterion IDs and a required validation check."

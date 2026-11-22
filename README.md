@@ -295,7 +295,7 @@ Rerunning the command returns a saved plan or stops if a structured attempt was 
 
 `GET /api/v1/runs/{run_id}/plan` on the backend returns the latest saved plan. Add `?revision=1` to read a specific revision. The API verifies run ownership and current GitHub access before returning the plan or a `plan_not_found` error. The response includes the proposal and artifact metadata. The SHA-256 identifies the exact saved document bytes.
 
-The planner and plan read API also report the number of blocking questions, unregistered validation IDs, and whether a registered check is required. The initial Python profile recognizes `python.pytest` during plan review. Earlier drafts with IDs like `VC1` stay reviewable and need revision. These checks inspect plan metadata only. Running tests and approving a plan are later steps.
+The planner and plan read API report readiness and approval blockers. The check catalog includes `repository.patch` for approved paths and JSON/TOML syntax, `python.pytest` for selected Python tests, and `typescript.tsc` for one retained TypeScript configuration. The TypeScript runner uses the compiler and React declarations bundled with the validator. Projects with other dependencies can use the generic patch check for scope and syntax review.
 
 The browser loads the plan automatically. To return to an earlier run, verify repository access, choose **Open a saved run**, and enter its run ID. The plan view shows the latest saved revision.
 
@@ -315,7 +315,7 @@ To generate that JSON from a verified plan, run `uv run python -m refactra.repos
 
 The `--repository-candidate` worker verifies queued approvals and saves generated patches in PostgreSQL with model settlement. After migration `0014_candidate_validation`, run it on the Docker host with `--candidate-source <local-clone> --candidate-artifacts <existing-artifact-directory>` to process validation jobs too. It runs isolated pytest, saves passing evidence, and prepares the commit and publication target. A reclaimed job reuses saved validation evidence. Each artifact directory is named `<run-id>-r<result-revision>`. Use the approved repository's clone and a directory under an ignored location such as `.runtime`.
 
-Add `--validate` with `--candidate` to run the approved pytest files and report exit codes, bounded output, durations, and the runner image ID alongside the diff. Run this command on the Docker host with the locally built `refactra-backend:local` image. The runner uses a fixed pytest command with repository configuration and plugin autoload disabled. It inspects the container's offline, non-root, read-only setup and resource limits before starting. A required check that fails or exceeds a limit produces a nonzero command exit. This first runner covers the candidate tests for the curated Python fixture.
+Add `--validate` with `--candidate` to run approved checks and report their results alongside the diff. Build `refactra-backend:local` before running pytest or TypeScript checks on the Docker host. The runner uses fixed commands and verifies the container's offline, non-root, read-only setup and resource limits before starting. A required check that fails or exceeds a limit blocks publication.
 
 Add `--save-result` to the same command to store a successful candidate, its diff, and its validation evidence in PostgreSQL. This requires migration `0011_candidate_results`. The command returns a result ID, revision, and checksum. Saving the same candidate and diff again returns the original result. A different passing candidate gets a new revision.
 
