@@ -18,7 +18,7 @@ from refactra.analysis_request import (
     ModelPricing,
     prepare_analysis_request,
 )
-from refactra.candidate_request import CANDIDATE_INSTRUCTIONS, CANDIDATE_TEXT_CONFIG
+from refactra.candidate_request import CANDIDATE_INSTRUCTIONS, candidate_text_config
 from refactra.diagnostics import diagnostic_id, workflow_log
 from refactra.model_reservations import reserve_analysis_request, settle_model_usage
 from refactra.planning_request import PLAN_INSTRUCTIONS, PLAN_TEXT_CONFIG, load_planning_context
@@ -75,7 +75,7 @@ class OpenAIAnalysisProvider:
         if request.instructions == PLAN_INSTRUCTIONS:
             body["text"] = PLAN_TEXT_CONFIG
         elif request.instructions == CANDIDATE_INSTRUCTIONS:
-            body["text"] = CANDIDATE_TEXT_CONFIG
+            body["text"] = candidate_text_config(request.context_json)
         return body
 
     def _post(self, path: str, body: dict) -> dict:
