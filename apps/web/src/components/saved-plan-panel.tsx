@@ -5,7 +5,7 @@ import { ApiError, request } from "@/lib/api";
 import { CandidateResultPanel } from "./candidate-result-panel";
 
 type ApprovalReceipt = { revision: number };
-type PlanWrite = "revision" | "approval" | "feedback";
+type PlanWrite = "approval" | "feedback";
 
 type SavedPlan = {
   artifact: { id: string; revision: number; sha256: string };
@@ -42,7 +42,6 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
   const [state, setState] = useState<PlanState>({ status: "idle" });
   const [writing, setWriting] = useState<PlanWrite | null>(null);
   const [writeError, setWriteError] = useState<{ kind: PlanWrite; message: string } | null>(null);
-  const [draftEdited, setDraftEdited] = useState(false);
   const pending = useRef<AbortController | null>(null);
   useEffect(() => () => pending.current?.abort(), []);
   const plan = state.status === "loaded" ? state.plan : null;
@@ -55,7 +54,7 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
     ...(plan.readiness.unsupported_check_ids.length ? ["Replace unsupported validation checks."] : []),
     ...(plan.readiness.scope_errors ?? []),
   ] : [];
-  const canApprove = plan?.approval === null && !draftEdited && !revising && blockers.length === 0;
+  const canApprove = plan?.approval === null && !revising && blockers.length === 0;
 
   const loadPlan = useCallback(async (background = false) => {
     if (pending.current) return;
@@ -63,7 +62,6 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
     pending.current = controller;
     if (!background) setState({ status: "loading" });
     setWriteError(null);
-    setDraftEdited(false);
     try {
       const plan = await request<SavedPlan>(`runs/${runId}/plan`, {
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(65000)]),
@@ -111,12 +109,11 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
         : await request<SavedPlan>(path, options);
       if (!controller.signal.aborted) {
         setState({ status: "loaded", plan: saved });
-        setDraftEdited(false);
       }
     } catch (error) {
       if (controller.signal.aborted) return;
       const message = error instanceof ApiError && error.code === "invalid_request"
-        ? "Check the plan fields and try again."
+        ? "The plan request was invalid. Try again."
         : error instanceof Error ? error.message : "Could not record the plan change.";
       setWriteError({ kind, message });
     } finally {
@@ -125,34 +122,9 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
     }
   }
 
-  function saveRevision(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!plan || plan.approval || pending.current || revising) return;
-    const { content } = plan;
-    const fields = new FormData(event.currentTarget);
-    const value = (name: string) => String(fields.get(name) ?? "").trim();
-    const proposal = {
-      summary: value("summary"),
-      changes: content.changes.map((_, i) => ({
-        path: value(`path-${i}`), action: value(`action-${i}`), intent: value(`intent-${i}`),
-      })),
-      acceptance_criteria: content.acceptance_criteria.map((item, i) => ({
-        ...item, description: value(`criterion-${i}`),
-      })),
-      validation_checks: content.validation_checks.map((check, i) => ({
-        ...check, check_id: value(`check-${i}`),
-        paths: String(fields.get(`targets-${i}`) ?? "").split(/\r?\n/).filter(Boolean),
-      })),
-      assumptions: content.assumptions,
-      preserve_behavior: content.preserve_behavior,
-      blocking_questions: content.blocking_questions,
-    };
-    void writePlan("revision", plan, { expected_revision: plan.artifact.revision, proposal });
-  }
-
   function sendFeedback(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!plan || plan.approval || draftEdited || pending.current || revising) return;
+    if (!plan || plan.approval || pending.current || revising) return;
     const fields = new FormData(event.currentTarget);
     const notes = String(fields.get("notes") ?? "").trim();
     const answers = plan.content.blocking_questions.map((_, i) => String(fields.get(`answer-${i}`) ?? "").trim());
@@ -180,48 +152,14 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
       {state.status === "error" && <p className="error-box" role="alert">{state.message}</p>}
       {plan && <>
         <PlanReview plan={plan} />
-        {plan.approval && <>
-          <PlanNotes title="Blocking questions" entries={plan.content.blocking_questions} />
+        {plan.approval &&
           <p role="status">Approval recorded for revision {plan.approval.revision}.</p>
-        </>}
-        {!plan.approval && <details className="saved-run" key={plan.artifact.sha256}>
-          <summary>Edit plan</summary>
-          <form onSubmit={saveRevision} onChange={() => setDraftEdited(true)} onReset={() => setDraftEdited(false)}>
-            <fieldset disabled={writing !== null || revising}>
-              <label htmlFor="edit-summary">Summary</label>
-              <textarea id="edit-summary" name="summary" defaultValue={plan.content.summary} required />
-              {plan.content.changes.map((edit, i) => <fieldset key={edit.path}>
-                <legend>Change {i + 1}</legend>
-                <label>File path<input name={`path-${i}`} defaultValue={edit.path} required /></label>
-                <label>Action<select name={`action-${i}`} defaultValue={edit.action}>
-                  <option>CREATE</option><option>MODIFY</option><option>DELETE</option>
-                </select></label>
-                <label htmlFor={`edit-intent-${i}`}>Intent</label>
-                <textarea id={`edit-intent-${i}`} name={`intent-${i}`} defaultValue={edit.intent} required />
-              </fieldset>)}
-              {plan.content.acceptance_criteria.map((item, i) => <label key={item.id}>
-                Criterion {item.id}<input name={`criterion-${i}`} defaultValue={item.description} required />
-              </label>)}
-              {plan.content.validation_checks.map((check, i) => <fieldset key={i}>
-                <legend>Check {i + 1}</legend>
-                <label>Check ID<input name={`check-${i}`} defaultValue={check.check_id} required /></label>
-                <label htmlFor={`edit-targets-${i}`}>Test files, one per line</label>
-                <textarea id={`edit-targets-${i}`} name={`targets-${i}`} defaultValue={check.paths.join("\n")} />
-              </fieldset>)}
-              <button className="repository-check" type="reset">Discard edits</button>
-            </fieldset>
-            {writeError?.kind === "revision" && <p className="error-box" role="alert">{writeError.message}</p>}
-            <button className="repository-check" type="submit" disabled={writing !== null || revising || !draftEdited}>
-              {writing === "revision" ? "Saving revision…" : "Save plan revision"}
-            </button>
-          </form>
-        </details>}
+        }
         {plan.approval === null && <div className="saved-run">
           <form key={plan.artifact.id} onSubmit={sendFeedback}>
-            <fieldset disabled={writing !== null || revising || draftEdited}>
+            <fieldset disabled={writing !== null || revising}>
               <legend>Request changes</legend>
-              <h4>Blocking questions</h4>
-              {!plan.content.blocking_questions.length && <p>None recorded.</p>}
+              {plan.content.blocking_questions.length > 0 && <h4>Blocking questions</h4>}
               {plan.content.blocking_questions.map((question, i) => <label key={i}>
                 {question}<textarea name={`answer-${i}`} rows={2} maxLength={1000} />
               </label>)}
@@ -230,14 +168,13 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
             </fieldset>
           </form>
           {revising && <p role="status">Updating plan…</p>}
-          {plan.feedback_status === "failed" && <p role="alert">The worker could not update the plan. Revise your feedback or edit the draft.</p>}
+          {plan.feedback_status === "failed" && <p role="alert">The worker could not update the plan. Revise your feedback and try again.</p>}
           {plan.feedback_status === "unchanged" && <p role="status">The worker returned the same plan.</p>}
           {writeError?.kind === "feedback" && <p role="alert">{writeError.message}</p>}
           <div id="plan-approval-hint">
-            {draftEdited && <p>Save your edits before approving.</p>}
-            {blockers.length > 0
+            {revising ? <p>Wait for the updated plan before approving.</p> : blockers.length > 0
               ? <ul>{blockers.map((reason) => <li key={reason}>{reason}</li>)}</ul>
-              : !draftEdited && <p>Approval locks this saved revision.</p>}
+              : <p>Approval locks this saved revision.</p>}
           </div>
           {writeError?.kind === "approval" && <p className="error-box" role="alert">{writeError.message}</p>}
           <button className="repository-check" type="button" onClick={approvePlan}

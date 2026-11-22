@@ -139,6 +139,17 @@ def is_typescript_config(path: str) -> bool:
     return bool(re.fullmatch(r"tsconfig(?:\.[\w-]+)*\.json", PurePosixPath(path).name))
 
 
+def is_env_cleanup(changes: Sequence[ProposedChange], checks: Sequence[ValidationCheck]) -> bool:
+    actions = {(change.path, change.action) for change in changes}
+    return (
+        actions in ({(".env", "DELETE")}, {(".env", "DELETE"), (".env.example", "CREATE")})
+        and len(checks) == 1
+        and checks[0].check_id == PATCH_CHECK
+        and checks[0].required
+        and set(checks[0].paths) == {path for path, _ in actions}
+    )
+
+
 def approved_file_operation(
     changes: Sequence[ProposedChange], checks: Sequence[ValidationCheck]
 ) -> Literal["env_delete", "asset_replace"] | None:
@@ -147,7 +158,7 @@ def approved_file_operation(
     edit, check = changes[0], checks[0]
     if not check.required or check.paths != [edit.path]:
         return None
-    if (edit.path, edit.action, check.check_id) == (".env", "DELETE", PATCH_CHECK):
+    if is_env_cleanup(changes, checks):
         return "env_delete"
     path = PurePosixPath(edit.path)
     if (
@@ -166,12 +177,13 @@ def validation_command_key(run_id: UUID, revision: int) -> str:
 
 
 def evaluate_plan_readiness(proposal: PlanProposal) -> PlanReadiness:
-    """Check proposal metadata against the initial Python validation catalog."""
+    """Check proposal metadata against the supported edit and validation scopes."""
     operation = approved_file_operation(proposal.changes, proposal.validation_checks)
+    env_cleanup = is_env_cleanup(proposal.changes, proposal.validation_checks)
     scope_errors = [
         f"{edit.path} is outside the editable text scope."
         for edit in proposal.changes
-        if operation != "env_delete" and not is_editable_plan_path(PurePosixPath(edit.path))
+        if not env_cleanup and not is_editable_plan_path(PurePosixPath(edit.path))
     ]
     deleted = {edit.path for edit in proposal.changes if edit.action == "DELETE"}
     changed_paths = {edit.path for edit in proposal.changes}
@@ -312,12 +324,18 @@ def save_refactoring_plan(
         or context is None
     ):
         raise PlanRevisionConflict("A repository run with completed analysis is required.")
-    if approved_file_operation(parsed.changes, parsed.validation_checks):
-        path = parsed.changes[0].path
+    env_cleanup = is_env_cleanup(parsed.changes, parsed.validation_checks)
+    if env_cleanup or approved_file_operation(parsed.changes, parsed.validation_checks):
+        path = ".env" if env_cleanup else parsed.changes[0].path
         tracked = json.loads(context.document)["inventory"]["file_paths"]
+        unavailable = None
         if path not in tracked:
+            unavailable = f"{path} is absent from the pinned commit."
+        elif env_cleanup and len(parsed.changes) == 2 and ".env.example" in tracked:
+            unavailable = ".env.example already exists in the pinned commit."
+        if unavailable:
             payload.update(
-                summary=f"{path} is absent from the pinned commit.",
+                summary=unavailable,
                 changes=[],
                 validation_checks=[],
                 blocking_questions=[],
