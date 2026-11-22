@@ -87,6 +87,9 @@ def test_worker_validates_generated_patch_and_recovers_commit_preparation(
     proposal["changes"].append(
         {"path": "tests/test_cart.py", "action": "CREATE", "intent": "Cover cart calculation."}
     )
+    proposal["changes"].append(
+        {"path": "unchanged.md", "action": "MODIFY", "intent": "Update instructions if needed."}
+    )
     with session_factory.begin() as session:
         plan = save_refactoring_plan(session, run.id, proposal, expected_revision=0)
         approve_refactoring_plan(
@@ -99,7 +102,14 @@ def test_worker_validates_generated_patch_and_recovers_commit_preparation(
         )
     approval = claim_command(session_factory, "worker", workflow=WORKFLOW, kind=APPLY_PLAN_APPROVAL)
     assert process_repository_plan_approval(session_factory, approval, "worker")
-    snapshot = SourceSnapshot(42, base, (SourceFile("src/cart.py", b"def cart(): return 1\n"),))
+    snapshot = SourceSnapshot(
+        42,
+        base,
+        (
+            SourceFile("src/cart.py", b"def cart(): return 1\n"),
+            SourceFile("unchanged.md", b"Preserve this\n"),
+        ),
+    )
     monkeypatch.setattr(workspace, "authorize_plan", lambda _: (None, None))
     monkeypatch.setattr(workspace, "fetch_source_snapshot", lambda *_, **__: snapshot)
     patch = CandidatePatch(
@@ -112,10 +122,13 @@ def test_worker_validates_generated_patch_and_recovers_commit_preparation(
                 "action": "CREATE",
                 "content": "def test_cart(): pass\n",
             },
+            {"path": "unchanged.md", "action": "MODIFY", "content": "Preserve this\n"},
         ],
     )
     payload = response()
-    payload["output"][0]["content"][0]["text"] = patch.model_dump_json()
+    payload["output"][0]["content"][0]["text"] = json.dumps(
+        {"edits": {edit.path: edit.content for edit in patch.edits}}
+    )
 
     def provider_response(request):
         if request.url.path.endswith("/input_tokens"):
@@ -192,6 +205,8 @@ def test_worker_validates_generated_patch_and_recovers_commit_preparation(
             artifact = tmp_path / f"{run.id}-r1" / "repository.git"
             parent = git(artifact, "show", "-s", "--format=%P", receipt["commit_sha"])
             assert parent.strip().decode() == base
+            assert "unchanged.md" not in json.loads(result.document)["diff"]
+            assert not git(artifact, "diff", base, receipt["commit_sha"], "--", "unchanged.md")
         else:
             assert result is None
             assert session.scalar(select(RunPublicationTarget)) is None
@@ -334,7 +349,9 @@ def test_approved_file_operations_prepare_exact_commit(
                     200, json={"object": "response.input_tokens", "input_tokens": 100}
                 )
             payload = response()
-            payload["output"][0]["content"][0]["text"] = patch.model_dump_json()
+            payload["output"][0]["content"][0]["text"] = json.dumps(
+                {"edits": {edit.path: edit.content for edit in patch.edits}}
+            )
             return httpx.Response(200, json=payload)
 
         provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(provider_response))
@@ -456,11 +473,7 @@ def test_typescript_feature_discovery_through_review_and_draft(
     changed = "export const Cart = () => <h1>Order summary</h1>;\n"
     if not passes:
         changed += "export const count: number = 'three';\n"
-    response_text = CandidatePatch(
-        base_sha=base,
-        plan_sha256=plan.sha256,
-        edits=[{"path": path, "action": "MODIFY", "content": changed}],
-    ).model_dump_json()
+    response_text = json.dumps({"edits": {path: changed}})
     generate_candidate(session_factory, run.id, provider)
     job = claim_command(session_factory, "worker", workflow=WORKFLOW, kind=VALIDATE_CANDIDATE)
     assert validation_worker.process_candidate_validation(

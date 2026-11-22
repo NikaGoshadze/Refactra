@@ -151,12 +151,15 @@ def apply_candidate_patch(workspace: "ApprovedWorkspace", candidate: CandidatePa
                     "Environment templates must contain names with empty values."
                 )
         if before == after:
-            raise CandidatePatchError("An approved modify must change the file contents.")
+            continue
         for line in _diff_lines(edit.path, before, after):
             if len(diff) + len(line) > MAX_DIFF_BYTES:
                 raise CandidatePatchError("The review diff exceeds the 200 KiB limit.")
             diff.extend(line)
         writes.append((destination, edit.action, after))
+
+    if not writes:
+        raise CandidatePatchError("The approved candidate made no changes.")
 
     for destination, action, data in writes:
         if data is None:
