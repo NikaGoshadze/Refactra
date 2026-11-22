@@ -16,9 +16,13 @@ from refactra.openai_analysis import (
 from refactra.refactoring_plan import (
     APPLY_PLAN_APPROVAL,
     GENERATE_PLAN,
+    VALIDATE_CANDIDATE,
+    PlanContent,
     PlanRevisionConflict,
     approval_command_key,
+    approved_file_operation,
     load_approved_plan,
+    validation_command_key,
 )
 
 WORKFLOW = "repository-v0.1"
@@ -184,11 +188,15 @@ def process_repository_plan_approval(session_factory, command_id: UUID, worker_i
             command.status = "DONE"
             event_type = "PLAN_APPROVAL_VERIFIED"
             payload = {"plan_id": str(plan.id), "revision": plan.revision, "sha256": plan.sha256}
+            content = PlanContent.model_validate_json(plan.document)
+            operation = approved_file_operation(content.changes, content.validation_checks)
             session.add(
                 RunCommand(
                     run_id=run.id,
-                    kind=GENERATE_CANDIDATE,
-                    dedupe_key=candidate_command_key(run.id, plan.revision),
+                    kind=VALIDATE_CANDIDATE if operation else GENERATE_CANDIDATE,
+                    dedupe_key=validation_command_key(run.id, plan.revision)
+                    if operation
+                    else candidate_command_key(run.id, plan.revision),
                 )
             )
         command.completed_at = now

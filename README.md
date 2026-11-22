@@ -295,7 +295,11 @@ Rerunning the command returns a saved plan or stops if a structured attempt was 
 
 `GET /api/v1/runs/{run_id}/plan` on the backend returns the latest saved plan. Add `?revision=1` to read a specific revision. The API verifies run ownership and current GitHub access before returning the plan or a `plan_not_found` error. The response includes the proposal and artifact metadata. The SHA-256 identifies the exact saved document bytes.
 
-The planner and plan read API report readiness and approval blockers. The check catalog includes `repository.patch` for approved paths and JSON/TOML syntax, `python.pytest` for selected Python tests, and `typescript.tsc` for one retained TypeScript configuration. The TypeScript runner uses the compiler and React declarations bundled with the validator. Projects with other dependencies can use the generic patch check for scope and syntax review.
+The planner and plan read API report readiness and approval blockers. The check catalog includes `repository.patch` for approved paths and JSON/TOML syntax, `python.pytest` for selected Python tests, `typescript.tsc` for one retained TypeScript configuration, and `repository.asset` for a supplied binary replacement. The TypeScript runner uses the compiler and React declarations bundled with the validator. Projects with other dependencies can use the generic patch check for scope and syntax review.
+
+To remove a tracked root `.env`, approve a plan containing that single deletion. Refactra shows the filename in its review and prepares the exact deletion commit. Rotate any exposed credentials before publication because Git history and the GitHub diff can still show the earlier values.
+
+To replace a tracked image or font with a supplied file, request that single replacement and stage the new file at `<worker-artifacts>/<run-id>.asset` before approving the plan. The worker accepts up to 64 KiB and shows the before and after file hashes for review. Both operations use the existing publication approval.
 
 The browser loads the plan automatically. To return to an earlier run, verify repository access, choose **Open a saved run**, and enter its run ID. The plan view shows the latest saved revision.
 

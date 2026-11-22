@@ -21,7 +21,13 @@ from refactra.auth_sessions import GitHubIdentity
 from refactra.candidate_commit import CandidateCommitError, prepare_candidate_commit
 from refactra.candidate_patch import CandidatePatch
 from refactra.candidate_results import save_validated_candidate
-from refactra.models import RunCandidateResult, RunCommand, RunEvent, RunPublicationTarget
+from refactra.models import (
+    RunCandidateResult,
+    RunCommand,
+    RunEvent,
+    RunGeneratedCandidate,
+    RunPublicationTarget,
+)
 from refactra.openai_analysis import OpenAIAnalysisProvider
 from refactra.publication_target import (
     PUBLISH_CANDIDATE,
@@ -31,11 +37,14 @@ from refactra.publication_target import (
 )
 from refactra.refactoring_plan import (
     APPLY_PLAN_APPROVAL,
+    ASSET_CHECK,
+    PATCH_CHECK,
     TYPESCRIPT_CHECK,
     approve_refactoring_plan,
     save_refactoring_plan,
 )
 from refactra.repository_analysis_worker import (
+    GENERATE_CANDIDATE,
     WORKFLOW,
     enqueue_repository_analysis,
     process_repository_plan_approval,
@@ -197,6 +206,94 @@ def pinned_source(tmp_path):
     )
     base = git(source, "rev-parse", "HEAD").strip().decode()
     return source, base
+
+
+@pytest.mark.parametrize("replace_asset", [False, True])
+def test_approved_file_operations_skip_model_and_prepare_exact_commit(
+    pinned_source, tmp_path, session_factory, proposal, monkeypatch, replace_asset
+):
+    source, _ = pinned_source
+    path = "logo.png" if replace_asset else ".env"
+    data = b"\x89PNG\r\n\x1a\noriginal" if replace_asset else b"KEY=synthetic-secret-marker"
+    replacement = b"\x89PNG\r\n\x1a\nreplacement"
+    (source / path).write_bytes(data)
+    git(source, "add", "--force", "--", path)
+    git(
+        source,
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@localhost",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        "Add file operation fixture",
+    )
+    base = git(source, "rev-parse", "HEAD").decode().strip()
+    snapshot = SourceSnapshot(42, base, (SourceFile(path, data),))
+    with session_factory.begin() as session:
+        run = create_repository_run(
+            session,
+            identity=GitHubIdentity(123, "fixture"),
+            installation_id=77,
+            revision=RepositoryRevision(42, "fixture/repo", "main", "main", base),
+            task_text=f"{'Replace' if replace_asset else 'Delete'} {path}",
+        )
+        context = prepare_analysis_context(run, snapshot)
+        assert data not in context.document
+        save_analysis_context(session, context)
+        enqueue_repository_analysis(session, run.id)
+    analyze_fixture_run(session_factory)
+    action = "MODIFY" if replace_asset else "DELETE"
+    check_id = ASSET_CHECK if replace_asset else PATCH_CHECK
+    proposal["changes"] = [{"path": path, "action": action, "intent": "Exact file operation."}]
+    proposal["validation_checks"] = [
+        dict(proposal["validation_checks"][0], check_id=check_id, paths=[path])
+    ]
+    with session_factory.begin() as session:
+        plan = save_refactoring_plan(session, run.id, proposal, expected_revision=0)
+        approve_refactoring_plan(
+            session,
+            run.id,
+            plan_id=plan.id,
+            revision=1,
+            sha256=plan.sha256,
+            actor_id=run.requested_by,
+        )
+    if replace_asset:
+        (tmp_path / f"{run.id}.asset").write_bytes(replacement)
+    approval = claim_command(session_factory, "worker", workflow=WORKFLOW, kind=APPLY_PLAN_APPROVAL)
+    assert process_repository_plan_approval(session_factory, approval, "worker")
+    assert (
+        claim_command(session_factory, "worker", workflow=WORKFLOW, kind=GENERATE_CANDIDATE) is None
+    )
+    monkeypatch.setattr(workspace, "authorize_plan", lambda _: (None, None))
+    monkeypatch.setattr(workspace, "fetch_source_snapshot", lambda *_, **__: snapshot)
+    job = claim_command(session_factory, "worker", workflow=WORKFLOW, kind=VALIDATE_CANDIDATE)
+    assert validation_worker.process_candidate_validation(
+        session_factory, job, "worker", source=source, artifacts=tmp_path
+    )
+    with session_factory() as session:
+        assert session.get(RunCommand, job).status == "DONE"
+        assert session.get(RunGeneratedCandidate, run.id) is None
+        result = session.scalar(
+            select(RunCandidateResult).where(RunCandidateResult.run_id == run.id)
+        )
+        assert data not in result.document
+        report = json.loads(result.document)
+        assert path in report["diff"] and report["validation"][0]["status"] == "PASSED"
+
+    artifact = tmp_path / f"{run.id}-r1"
+    receipt = json.loads((artifact / "receipt.json").read_bytes())
+    repository, commit = artifact / "repository.git", receipt["commit_sha"]
+    assert git(repository, "diff-tree", "-r", "--name-only", base, commit).strip() == path.encode()
+    if replace_asset:
+        assert git(repository, "show", f"{commit}:{path}") == replacement
+        assert sha256(replacement).hexdigest() in report["diff"]
+    else:
+        assert git(repository, "ls-tree", commit, path) == b""
+        assert "Rotate affected credentials" in report["validation"][0]["output"]
 
 
 @pytest.mark.skipif(

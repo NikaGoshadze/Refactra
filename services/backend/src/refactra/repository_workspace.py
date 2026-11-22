@@ -33,6 +33,7 @@ from refactra.refactoring_plan import (
     ProposedChange,
     ValidationCheck,
     approval_command_key,
+    approved_file_operation,
     is_editable_plan_path,
     load_approved_plan,
 )
@@ -86,16 +87,19 @@ def _workspace_files(snapshot: SourceSnapshot, content: PlanContent) -> dict[Pur
         for path, file in zip(paths, snapshot.files, strict=True)
         if not is_excluded_source_path(path)
     }
+    operation = approved_file_operation(content.changes, content.validation_checks)
+    if operation == "env_delete" and PurePosixPath(".env") in paths:
+        files[PurePosixPath(".env")] = b""
     expected_paths = set(files)
     for change in content.changes:
         path = _workspace_path(change.path)
-        if not is_editable_plan_path(path):
+        if operation != "env_delete" and not is_editable_plan_path(path):
             raise WorkspacePreparationError("Approved changes must target editable text files.")
         if (change.action == "CREATE") == (path in files):
             raise WorkspacePreparationError(
                 "An approved file action does not match the pinned source."
             )
-        if path in files:
+        if path in files and operation != "asset_replace":
             data = files[path]
             try:
                 if len(data) > MAX_EDIT_FILE_BYTES or b"\0" in data:
