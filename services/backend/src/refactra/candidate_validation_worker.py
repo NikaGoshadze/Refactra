@@ -16,6 +16,7 @@ from refactra.candidate_patch import (
     apply_candidate_patch,
 )
 from refactra.candidate_results import load_validated_candidate, save_validated_candidate
+from refactra.diagnostics import diagnostic_id, workflow_log
 from refactra.github_app import GitHubAppError
 from refactra.models import Run, RunCandidateResult, RunEvent, RunGeneratedCandidate
 from refactra.refactoring_plan import PlanContent, approved_file_operation, load_approved_plan
@@ -87,6 +88,20 @@ def process_candidate_validation(
             with prepare_approved_workspace(session_factory, run_id) as workspace:
                 diff = apply_candidate_patch(workspace, candidate)
                 checks = validate_candidate(workspace)
+            workflow_log(
+                "candidate_checks_finished",
+                run_id=run_id,
+                command_id=command_id,
+                checks=[
+                    {
+                        "check_id": diagnostic_id(check.check_id),
+                        "status": check.status,
+                        "exit_code": check.exit_code,
+                        "duration_ms": check.duration_ms,
+                    }
+                    for check in checks
+                ],
+            )
             if blocks_candidate(checks):
                 code = "candidate_checks_failed"
             with session_factory.begin() as session:
@@ -104,9 +119,15 @@ def process_candidate_validation(
             artifacts / f"{run_id}-r{result.revision}",
             save_target=True,
         )
-    except (GitHubAppError, HTTPException, KeyError, OSError, ValueError):
-        # Record a stage code without storing untrusted test output or settings.
-        pass
+    except (GitHubAppError, HTTPException, KeyError, OSError, ValueError) as error:
+        workflow_log(
+            "candidate_validation_stopped",
+            warning=True,
+            run_id=run_id,
+            command_id=command_id,
+            code=code,
+            error_type=type(error).__name__,
+        )
 
     with session_factory.begin() as session:
         command = _claimed_command(session, command_id, worker_id)

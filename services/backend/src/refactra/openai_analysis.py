@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from decimal import Decimal
+from time import monotonic
 from typing import ClassVar
 from uuid import UUID
 
@@ -18,6 +19,7 @@ from refactra.analysis_request import (
     prepare_analysis_request,
 )
 from refactra.candidate_request import CANDIDATE_INSTRUCTIONS, CANDIDATE_TEXT_CONFIG
+from refactra.diagnostics import diagnostic_id, workflow_log
 from refactra.model_reservations import reserve_analysis_request, settle_model_usage
 from refactra.planning_request import PLAN_INSTRUCTIONS, PLAN_TEXT_CONFIG, load_planning_context
 
@@ -26,8 +28,16 @@ PRICING = ModelPricing("gpt-5.4-mini-2026-03-17", 400_000, Decimal("0.75"), Deci
 
 
 class AnalysisProviderError(RuntimeError):
-    def __init__(self, usage: tuple[int, int] | None = None):
+    def __init__(
+        self,
+        usage: tuple[int, int] | None = None,
+        *,
+        reason: str = "invalid_response",
+        http_status: int | None = None,
+    ):
         self.usage = usage
+        self.reason = reason
+        self.http_status = http_status
         super().__init__("Read-only model analysis failed; no automatic retry was attempted.")
 
 
@@ -89,7 +99,15 @@ class OpenAIAnalysisProvider:
                     if not isinstance(payload, dict):
                         raise ValueError
                     return payload
-        except (httpx.HTTPError, ValueError, RecursionError):
+        except httpx.HTTPStatusError as error:
+            raise AnalysisProviderError(
+                reason="http_error", http_status=error.response.status_code
+            ) from None
+        except httpx.TimeoutException:
+            raise AnalysisProviderError(reason="timeout") from None
+        except httpx.HTTPError:
+            raise AnalysisProviderError(reason="transport_error") from None
+        except (ValueError, RecursionError):
             raise AnalysisProviderError from None
 
     def count_input_tokens(self, request: AnalysisModelInput) -> int:
@@ -100,7 +118,7 @@ class OpenAIAnalysisProvider:
             or type(tokens) is not int
             or tokens <= 0
         ):
-            raise AnalysisProviderError
+            raise AnalysisProviderError(reason="invalid_token_count")
         return tokens
 
     def _generation_options(self, request: AnalysisModelInput) -> dict:
@@ -123,7 +141,7 @@ class OpenAIAnalysisProvider:
         payload = self._post("", self._input(request) | self._generation_options(request))
         # Only metadata for this provider's model/profile can release the saved hold.
         if not self._response_matches_profile(payload):
-            raise AnalysisProviderError
+            raise AnalysisProviderError(reason="unexpected_model_profile")
         usage = payload.get("usage")
         counts = None
         if isinstance(usage, dict):
@@ -131,6 +149,15 @@ class OpenAIAnalysisProvider:
             if all(type(value) is int and value >= 0 for value in values):
                 if values[0] + values[1] == values[2]:
                     counts = (values[0], values[1])
+        if payload.get("status") == "incomplete":
+            detail = payload.get("incomplete_details")
+            reason = detail.get("reason") if isinstance(detail, dict) else None
+            raise AnalysisProviderError(
+                counts,
+                reason=reason
+                if reason in ("max_output_tokens", "content_filter")
+                else "incomplete_response",
+            )
         try:
             if counts is None or payload["status"] != "completed" or payload.get("error"):
                 raise ValueError
@@ -149,6 +176,8 @@ class OpenAIAnalysisProvider:
                 ):
                     raise ValueError
                 for content in item["content"]:
+                    if content["type"] == "refusal":
+                        raise AnalysisProviderError(counts, reason="model_refusal")
                     if content["type"] != "output_text" or not isinstance(content["text"], str):
                         raise ValueError
                     texts.append(content["text"])
@@ -217,15 +246,35 @@ def execute_model_request(
     save_response=None,
 ):
     """Count and reserve one model call using a trusted context and instruction set."""
-    request = prepare_analysis_request(
-        context,
-        provider.pricing,
-        BudgetUsage(),
-        monthly_committed_usd=Decimal("0"),
-        count_input_tokens=provider.count_input_tokens,
-        max_output_tokens=max_output_tokens,
-        instructions=instructions,
+    stage = (
+        "candidate"
+        if instructions == CANDIDATE_INSTRUCTIONS
+        else "plan"
+        if instructions == PLAN_INSTRUCTIONS
+        else "analysis"
     )
+    trace = {"run_id": context.run_id, "attempt_id": attempt_id, "stage": stage}
+    start = monotonic()
+    try:
+        request = prepare_analysis_request(
+            context,
+            provider.pricing,
+            BudgetUsage(),
+            monthly_committed_usd=Decimal("0"),
+            count_input_tokens=provider.count_input_tokens,
+            max_output_tokens=max_output_tokens,
+            instructions=instructions,
+        )
+    except AnalysisProviderError as error:
+        workflow_log(
+            "model_token_count_failed",
+            warning=True,
+            **trace,
+            reason=error.reason,
+            http_status=error.http_status,
+            duration_ms=round((monotonic() - start) * 1000),
+        )
+        raise
     # Durable admission recalculates real balances; preflight snapshots are not authority.
     with session_factory.begin() as session:
         if check_admission is not None:
@@ -236,14 +285,33 @@ def execute_model_request(
     if not receipt.created:
         raise ValueError("This attempt already has a receipt; resending is forbidden.")
     try:
+        start = monotonic()
         result = provider._generate(request.model_input)
     except AnalysisProviderError as error:
+        workflow_log(
+            "model_request_failed",
+            warning=True,
+            **trace,
+            reason=error.reason,
+            http_status=error.http_status,
+            usage=error.usage,
+            duration_ms=round((monotonic() - start) * 1000),
+        )
         if error.usage is not None:
             with session_factory.begin() as session:
                 settle_model_usage(
                     session, attempt_id, input_tokens=error.usage[0], output_tokens=error.usage[1]
                 )
         raise
+    workflow_log(
+        "model_response_received",
+        **trace,
+        response_id=diagnostic_id(result.response_id),
+        input_tokens=result.usage[0],
+        output_tokens=result.usage[1],
+        output_limit=max_output_tokens,
+        duration_ms=round((monotonic() - start) * 1000),
+    )
     with session_factory.begin() as session:
         settle_model_usage(
             session, attempt_id, input_tokens=result.usage[0], output_tokens=result.usage[1]

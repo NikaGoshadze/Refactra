@@ -15,6 +15,7 @@ from refactra.candidate_patch import CandidatePatch, CandidatePatchError, apply_
 from refactra.candidate_request import CANDIDATE_INSTRUCTIONS, prepare_candidate_context
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
+from refactra.diagnostics import workflow_log
 from refactra.github_app import GitHubAppError
 from refactra.models import ModelReservation, Run, RunCommand, RunEvent, RunGeneratedCandidate
 from refactra.openai_analysis import (
@@ -64,12 +65,35 @@ def generate_candidate(
             try:
                 candidate = CandidatePatch.model_validate_json(result.text)
                 apply_candidate_patch(workspace, candidate)
-            except ValidationError:
+            except ValidationError as error:
                 rejected = "The generated candidate did not match the patch format."
+                workflow_log(
+                    "candidate_patch_rejected",
+                    warning=True,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    reason="invalid_patch_schema",
+                    error_count=error.error_count(),
+                )
             except CandidatePatchError as error:
                 rejected = str(error)
+                workflow_log(
+                    "candidate_patch_rejected",
+                    warning=True,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    reason="patch_preflight_failed",
+                    detail=rejected,
+                )
             except OSError:
                 rejected = "The candidate could not be checked in the disposable workspace."
+                workflow_log(
+                    "candidate_patch_rejected",
+                    warning=True,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    reason="workspace_io",
+                )
             else:
                 patch = candidate
                 session.add(
@@ -129,10 +153,31 @@ def process_repository_candidate(
                 raise CandidatePatchError("The saved candidate does not match this plan.")
         if saved is None:
             generate_candidate(session_factory, run_id, provider, check_admission=check_admission)
-    except BudgetExceeded:
+    except BudgetExceeded as error:
         error_code = "candidate_budget_exceeded"
-    except (AnalysisProviderError, GitHubAppError, HTTPException, KeyError, OSError, ValueError):
+        workflow_log(
+            "candidate_budget_rejected",
+            warning=True,
+            run_id=run_id,
+            command_id=command_id,
+            reason=error.code,
+        )
+    except (
+        AnalysisProviderError,
+        GitHubAppError,
+        HTTPException,
+        KeyError,
+        OSError,
+        ValueError,
+    ) as error:
         error_code = "candidate_generation_failed"
+        workflow_log(
+            "candidate_generation_failed",
+            warning=True,
+            run_id=run_id,
+            command_id=command_id,
+            error_type=type(error).__name__,
+        )
 
     with session_factory.begin() as session:
         command = _claimed_command(session, command_id, worker_id)
