@@ -101,8 +101,6 @@ class PlanProposal(_PlanModel):
             raise ValueError("Acceptance criterion IDs must be unique.")
         if any(not criteria.issuperset(check.criteria_ids) for check in self.validation_checks):
             raise ValueError("Validation checks must reference criteria in the same plan.")
-        if not any(check.required for check in self.validation_checks):
-            raise ValueError("At least one validation check must be required.")
         return self
 
 
@@ -181,33 +179,11 @@ def validation_command_key(run_id: UUID, revision: int) -> str:
 
 def evaluate_plan_readiness(proposal: PlanProposal) -> PlanReadiness:
     """Check proposal metadata against the supported edit and validation scopes."""
-    operation = approved_file_operation(proposal.changes, proposal.validation_checks)
     scope_errors = [
         f"{edit.action} is unsupported for {edit.path}."
         for edit in proposal.changes
         if plan_edit_kind(edit.path, edit.action) is None
     ]
-    deleted = {edit.path for edit in proposal.changes if edit.action == "DELETE"}
-    changed_paths = {edit.path for edit in proposal.changes}
-    for check in proposal.validation_checks:
-        if check.check_id == ASSET_CHECK and operation != "asset_replace":
-            scope_errors.append("Asset replacement needs one approved image or font path.")
-        if check.check_id == PATCH_CHECK and set(check.paths) != changed_paths:
-            scope_errors.append("The repository.patch check must cover exactly the proposed files.")
-        if check.check_id == TYPESCRIPT_CHECK and (
-            len(check.paths) != 1
-            or check.paths[0] in deleted
-            or not is_typescript_config(check.paths[0])
-        ):
-            scope_errors.append("TypeScript validation needs one retained tsconfig file.")
-        if check.check_id != "python.pytest":
-            continue
-        if not check.paths:
-            scope_errors.append("Select at least one pytest test file.")
-        for path in check.paths:
-            name = PurePosixPath(path).name
-            if path in deleted or not re.fullmatch(r"(?:test_.*|.*_test)\.py", name):
-                scope_errors.append(f"{path} must be a pytest test file retained by the plan.")
     unsupported_checks = sorted(
         {
             check.check_id
@@ -215,21 +191,17 @@ def evaluate_plan_readiness(proposal: PlanProposal) -> PlanReadiness:
             if check.check_id not in SUPPORTED_PLAN_CHECK_IDS
         }
     )
-    required_check = any(
-        check.required and check.check_id in SUPPORTED_PLAN_CHECK_IDS
-        for check in proposal.validation_checks
-    )
     outcome = "ready"
     if proposal.blocking_questions:
         outcome = "needs_clarification"
-    elif not proposal.changes or scope_errors or unsupported_checks or not required_check:
+    elif not proposal.changes or scope_errors:
         outcome = "unsupported"
     return PlanReadiness(
         outcome=outcome,
         scope_errors=list(dict.fromkeys(scope_errors)),
         blocking_question_count=len(proposal.blocking_questions),
         unsupported_check_ids=unsupported_checks,
-        has_required_supported_check=required_check,
+        has_required_supported_check=bool(proposal.changes),
     )
 
 
@@ -396,14 +368,10 @@ def _require_reviewable_plan(run: Run, plan: RunPlan) -> PlanReadiness:
     ):
         raise PlanRevisionConflict("Saved plan does not match the pinned repository revision.")
     readiness = evaluate_plan_readiness(content)
-    if (
-        readiness.blocking_question_count
-        or readiness.unsupported_check_ids
-        or not readiness.has_required_supported_check
-    ):
-        raise PlanRevisionConflict(
-            "Resolve blocking questions and validation checks before approving."
-        )
+    if readiness.blocking_question_count:
+        raise PlanRevisionConflict("Resolve blocking questions before approving.")
+    if not content.changes:
+        raise PlanRevisionConflict("Approval requires a plan with proposed changes.")
     return readiness
 
 

@@ -263,7 +263,7 @@ def test_untrusted_plan_validation_rejects_invalid_paths_and_references(proposal
         PlanProposal.model_validate(proposal)
 
 
-def test_plan_readiness_requires_a_registered_required_check(proposal):
+def test_plan_readiness_reports_unknown_checks_without_blocking_approval(proposal):
     check = proposal["validation_checks"][0]
     proposal["validation_checks"] = [
         dict(check, check_id="VC2"),
@@ -273,7 +273,8 @@ def test_plan_readiness_requires_a_registered_required_check(proposal):
     ]
     readiness = evaluate_plan_readiness(PlanProposal.model_validate(proposal))
     assert readiness.unsupported_check_ids == ["VC1", "VC2"]
-    assert readiness.has_required_supported_check is False
+    assert readiness.has_required_supported_check is True
+    assert readiness.outcome == "ready"
     assert readiness.blocking_question_count == 0
 
 

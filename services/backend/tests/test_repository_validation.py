@@ -11,8 +11,10 @@ def test_validation_preflights_explicit_paths_before_docker(tmp_path, monkeypatc
     )
     workspace = ApprovedWorkspace(tmp_path, "a" * 40, 1, "b" * 64, 0, (), (check,))
     monkeypatch.setattr(validation, "_docker", lambda *args: pytest.fail("Docker was called"))
-    with pytest.raises(validation.RepositoryValidationError, match="staged Python files"):
-        validation.validate_candidate(workspace)
+    unavailable, baseline = validation.validate_candidate(workspace)
+    assert unavailable.status == "UNAVAILABLE" and "staged Python files" in unavailable.reason
+    assert baseline.status == "PASSED" and baseline.check_id == "repository.patch"
+    assert not validation.blocks_candidate([unavailable, baseline])
     (tmp_path / "--collect-only.py").touch()
     assert validation._targets(workspace, check) == ["./--collect-only.py"]
 

@@ -18,6 +18,12 @@ from .test_refactoring_plan import analyze_fixture_run
 from .test_refactoring_plan import proposal as proposal
 
 
+def passing_patch(*paths):
+    return ValidationResult(
+        "repository.patch", list(paths), True, "PASSED", 0, 0, "Patch verified.", None, "builtin"
+    )
+
+
 def test_candidate_results_bind_passing_checks_to_immutable_revisions(session_factory, proposal):
     run, _, context = prepare(session_factory)
     with session_factory.begin() as session:
@@ -43,6 +49,7 @@ def test_candidate_results_bind_passing_checks_to_immutable_revisions(session_fa
     check = ValidationResult(
         "python.pytest", ["tests/test_cart.py"], True, "PASSED", 0, 50, "1 passed", None, "fixture"
     )
+    patch_check = passing_patch("src/cart.py")
     diff = (
         b"--- a/src/cart.py\n+++ b/src/cart.py\n@@ -1 +1 @@\n"
         b"-def cart(): return 1\n+def cart(): return 2\n"
@@ -53,25 +60,27 @@ def test_candidate_results_bind_passing_checks_to_immutable_revisions(session_fa
             save_validated_candidate(session, run.id, stale, diff, [check])
         for invalid in (
             [],
-            [replace(check, exit_code=1)],
-            [replace(check, paths=["test_other.py"])],
+            [check],
+            [replace(check, exit_code=1), patch_check],
+            [replace(check, paths=["test_other.py"]), patch_check],
+            [check, replace(patch_check, status="UNAVAILABLE", exit_code=None, reason="Missing")],
         ):
             with pytest.raises(CandidateResultError, match="required checks"):
                 save_validated_candidate(session, run.id, candidate, diff, invalid)
         assert session.scalar(select(func.count()).select_from(RunCandidateResult)) == 0
-        first = save_validated_candidate(session, run.id, candidate, diff, [check])
+        first = save_validated_candidate(session, run.id, candidate, diff, [check, patch_check])
 
     with session_factory.begin() as session:
         retry = save_validated_candidate(
-            session, run.id, candidate, diff, [replace(check, duration_ms=99)]
+            session, run.id, candidate, diff, [replace(check, duration_ms=99), patch_check]
         )
         assert retry.id == first.id and retry.document == first.document
         with pytest.raises(CandidateResultError, match="different diff"):
-            save_validated_candidate(session, run.id, candidate, diff + b"\n", [check])
+            save_validated_candidate(session, run.id, candidate, diff + b"\n", [check, patch_check])
         edit = candidate.edits[0].model_copy(update={"content": "def cart(): return 3\n"})
         updated = candidate.model_copy(update={"edits": [edit]})
         second = save_validated_candidate(
-            session, run.id, updated, diff.replace(b"2\n", b"3\n"), [check]
+            session, run.id, updated, diff.replace(b"2\n", b"3\n"), [check, patch_check]
         )
 
     with session_factory() as session:

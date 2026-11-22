@@ -38,7 +38,7 @@ test("verified repository submits a selected branch and shows the saved read-onl
   }));
   await page.route(`**${PLAN_PATH}`, (route) => route.fulfill({
     json: { ...PLAN, content: { ...PLAN.content, blocking_questions: [] },
-      readiness: { has_required_supported_check: true, unsupported_check_ids: [], scope_errors: [] },
+      readiness: { has_required_supported_check: true, unsupported_check_ids: ["VC1"], scope_errors: [] },
     },
   }));
   await panel.getByRole("button", { name: "Start analysis" }).click();
@@ -46,6 +46,7 @@ test("verified repository submits a selected branch and shows the saved read-onl
   await expect(panel.getByText(receipt.base_sha, { exact: true })).toBeVisible();
   await expect(panel.locator("p").filter({ hasText: PLAN.content.summary })).toBeVisible({ timeout: 10000 });
   await expect(panel.getByRole("button", { name: "Approve plan revision 1" })).toBeEnabled();
+  await expect(panel.getByText("No runner available for VC1")).toBeVisible();
   await expect(panel.getByText(analysis, { exact: true })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
@@ -92,7 +93,7 @@ test("opens, revises, and approves a saved plan", async ({ page, authProxy }) =>
   await expect(plan.locator("p").filter({ hasText: PLAN.content.summary })).toBeVisible();
   await expect(plan.getByText(PLAN.artifact.sha256, { exact: true })).toBeVisible();
   await expect(plan.getByText("src/cart.py", { exact: true })).toBeVisible();
-  await expect(plan.getByText("Unsupported checks VC1")).toBeVisible();
+  await expect(plan.getByText("No runner available for VC1")).toBeVisible();
   await expect(plan.getByText("Resolve the blocking questions.")).toBeVisible();
   const answer = plan.getByLabel(PLAN.content.blocking_questions[0], { exact: true });
   await expect(answer).toBeVisible();
@@ -142,7 +143,7 @@ test("opens, revises, and approves a saved plan", async ({ page, authProxy }) =>
   await expect(plan.getByRole("button", { name: "Approve plan revision 1" })).toBeDisabled();
   await expect(plan.getByText("Round half to even.", { exact: true })).toBeVisible();
   await expect(plan.getByText(REVISED_ARTIFACT.sha256, { exact: true })).toBeVisible();
-  await expect(plan.getByText("Unsupported checks VC1")).toHaveCount(0);
+  await expect(plan.getByText("No runner available for VC1")).toHaveCount(0);
 
   const approve = plan.getByRole("button", { name: "Approve plan revision 2" });
   await expect(approve).toBeEnabled();
@@ -174,7 +175,7 @@ test("opens, revises, and approves a saved plan", async ({ page, authProxy }) =>
 
   await expect(result.getByRole("status")).toHaveText("Running validation checks.");
   phase = "preparing";
-  await expect(result.getByRole("status")).toHaveText("Tests passed. Preparing the commit for review.", { timeout: 10000 });
+  await expect(result.getByRole("status")).toHaveText("Preparing the commit for review.", { timeout: 10000 });
   await expect(result.getByRole("button", { name: "Approve publication" })).toHaveCount(0);
   phase = "review";
   await expect(result.getByText(RESULT.sha256, { exact: true })).toBeVisible();

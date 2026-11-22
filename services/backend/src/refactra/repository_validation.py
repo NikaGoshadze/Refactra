@@ -3,6 +3,7 @@
 import json
 import subprocess
 import tomllib
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -13,6 +14,7 @@ from refactra.refactoring_plan import (
     ASSET_CHECK,
     PATCH_CHECK,
     TYPESCRIPT_CHECK,
+    ProposedChange,
     ValidationCheck,
     approved_file_operation,
     is_typescript_config,
@@ -41,17 +43,52 @@ class RepositoryValidationError(ValueError):
     """Safe message about unavailable or invalid validation setup."""
 
 
+class ValidationCleanupError(RepositoryValidationError):
+    """The isolated runner could not be removed after use."""
+
+
 @dataclass(frozen=True)
-class ValidationResult:
+class CandidateCheck:
     check_id: str
     paths: list[str]
     required: bool
+
+
+@dataclass(frozen=True)
+class ValidationResult(CandidateCheck):
     status: str
     exit_code: int | None
     duration_ms: int
     output: str
     reason: str | None
     image_id: str
+
+
+def candidate_checks(
+    changes: Sequence[ProposedChange], checks: Sequence[ValidationCheck]
+) -> list[CandidateCheck]:
+    if approved_file_operation(changes, checks) == "asset_replace":
+        return [CandidateCheck(ASSET_CHECK, [changes[0].path], True)]
+    return [
+        CandidateCheck(check.check_id, check.paths, check.required)
+        for check in checks
+        if check.check_id != PATCH_CHECK
+    ] + [CandidateCheck(PATCH_CHECK, [edit.path for edit in changes], True)]
+
+
+def blocks_candidate(checks: list[ValidationResult]) -> bool:
+    # candidate_checks always puts the built-in verification last.
+    if not checks or checks[-1].status != "PASSED":
+        return True
+    return any(
+        check.required
+        and (
+            (check.exit_code is not None or not check.reason)
+            if check.status == "UNAVAILABLE"
+            else (check.status != "PASSED" or check.exit_code != 0 or check.reason is not None)
+        )
+        for check in checks
+    )
 
 
 def _docker(*args: str) -> str:
@@ -70,14 +107,17 @@ def _docker(*args: str) -> str:
         ) from None
 
 
-def _targets(workspace: "ApprovedWorkspace", check: ValidationCheck) -> list[str]:
+def _targets(workspace: "ApprovedWorkspace", check: CandidateCheck) -> list[str]:
     if check.check_id == TYPESCRIPT_CHECK:
         if len(check.paths) != 1 or not is_typescript_config(check.paths[0]):
             raise RepositoryValidationError("TypeScript validation needs one tsconfig file.")
-    elif check.check_id != "python.pytest" or not check.paths:
-        raise RepositoryValidationError(
-            "Validation requires an approved pytest check with explicit files."
-        )
+    elif check.check_id == "python.pytest":
+        if not check.paths:
+            raise RepositoryValidationError("Pytest needs at least one explicit test file.")
+    elif check.check_id == ASSET_CHECK:
+        raise RepositoryValidationError("Asset validation needs one approved binary replacement.")
+    else:
+        raise RepositoryValidationError("Refactra has no runner for this check.")
     root = workspace.root.resolve(strict=True)
     for path in check.paths:
         target = root.joinpath(*PurePosixPath(path).parts)
@@ -149,7 +189,7 @@ def _capture(container: str) -> tuple[bytes, str | None]:
 
 
 def _validate_check(
-    workspace: "ApprovedWorkspace", check: ValidationCheck, targets: list[str], image_id: str
+    workspace: "ApprovedWorkspace", check: CandidateCheck, targets: list[str], image_id: str
 ) -> ValidationResult:
     entrypoint = "/app/.venv/bin/python"
     arguments = [
@@ -242,28 +282,52 @@ def _validate_check(
             image_id,
         )
     finally:
-        _docker("rm", "-f", container)
+        try:
+            _docker("rm", "-f", container)
+        except RepositoryValidationError as error:
+            raise ValidationCleanupError(str(error)) from error
 
 
 def validate_candidate(workspace: "ApprovedWorkspace") -> list[ValidationResult]:
-    if not workspace.validation_checks:
-        raise RepositoryValidationError("The approved plan has no validation checks.")
-    targets = [
-        [] if check.check_id in {PATCH_CHECK, ASSET_CHECK} else _targets(workspace, check)
-        for check in workspace.validation_checks
-    ]
-    image_id = _docker("image", "inspect", "--format", "{{.Id}}", IMAGE) if any(targets) else ""
-    return [
-        _validate_check(workspace, check, files, image_id)
-        if files
-        else _validate_text_patch(workspace, check)
-        for check, files in zip(workspace.validation_checks, targets, strict=True)
-    ]
+    operation = approved_file_operation(workspace.changes, workspace.validation_checks)
+    results = []
+    image_id = ""
+    image_error = None
+    for check in candidate_checks(workspace.changes, workspace.validation_checks):
+        if check.check_id == PATCH_CHECK or operation == "asset_replace":
+            results.append(_validate_text_patch(workspace, check))
+            continue
+        try:
+            targets = _targets(workspace, check)
+            if image_error:
+                raise RepositoryValidationError(image_error)
+            if not image_id:
+                try:
+                    image_id = _docker("image", "inspect", "--format", "{{.Id}}", IMAGE)
+                except RepositoryValidationError:
+                    image_error = "The offline Docker validation image is unavailable."
+                    raise RepositoryValidationError(image_error) from None
+            results.append(_validate_check(workspace, check, targets, image_id))
+        except ValidationCleanupError:
+            raise
+        except RepositoryValidationError as error:
+            results.append(
+                ValidationResult(
+                    check.check_id,
+                    check.paths,
+                    check.required,
+                    "UNAVAILABLE",
+                    None,
+                    0,
+                    "",
+                    str(error),
+                    "",
+                )
+            )
+    return results
 
 
-def _validate_text_patch(
-    workspace: "ApprovedWorkspace", check: ValidationCheck
-) -> ValidationResult:
+def _validate_text_patch(workspace: "ApprovedWorkspace", check: CandidateCheck) -> ValidationResult:
     started = monotonic()
     expected = {edit.path: edit.action for edit in workspace.changes}
     operation = approved_file_operation(workspace.changes, workspace.validation_checks)

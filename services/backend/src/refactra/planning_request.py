@@ -48,7 +48,8 @@ PLAN_INSTRUCTIONS = (
     "dependencies available to the validator (TypeScript and React types). "
     "Use check identifiers, not shell commands or executable arguments. Do not edit files, "
     "execute tooling, publish changes, or claim validation ran. Keep the proposal concise. "
-    "For plans with changes, include consistent criterion IDs and a required validation check."
+    "For plans with changes, include consistent criterion IDs. Propose project checks only "
+    "when relevant. Refactra always runs a built-in check against the approved file changes."
 )
 
 PLAN_TEXT_CONFIG = {
