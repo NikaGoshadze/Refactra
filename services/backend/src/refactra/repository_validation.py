@@ -9,7 +9,12 @@ from pathlib import PurePosixPath
 from time import monotonic
 from typing import TYPE_CHECKING
 
-from refactra.refactoring_plan import PATCH_CHECK, ValidationCheck
+from refactra.refactoring_plan import (
+    PATCH_CHECK,
+    TYPESCRIPT_CHECK,
+    ValidationCheck,
+    is_typescript_config,
+)
 
 if TYPE_CHECKING:
     from refactra.repository_workspace import ApprovedWorkspace
@@ -63,7 +68,10 @@ def _docker(*args: str) -> str:
 
 
 def _targets(workspace: "ApprovedWorkspace", check: ValidationCheck) -> list[str]:
-    if check.check_id != "python.pytest" or not check.paths:
+    if check.check_id == TYPESCRIPT_CHECK:
+        if len(check.paths) != 1 or not is_typescript_config(check.paths[0]):
+            raise RepositoryValidationError("TypeScript validation needs one tsconfig file.")
+    elif check.check_id != "python.pytest" or not check.paths:
         raise RepositoryValidationError(
             "Validation requires an approved pytest check with explicit files."
         )
@@ -71,13 +79,13 @@ def _targets(workspace: "ApprovedWorkspace", check: ValidationCheck) -> list[str
     for path in check.paths:
         target = root.joinpath(*PurePosixPath(path).parts)
         if (
-            target.suffix != ".py"
+            (check.check_id == "python.pytest" and target.suffix != ".py")
             or not target.is_relative_to(root)
             or target.resolve() != target
             or not target.is_file()
         ):
             raise RepositoryValidationError(
-                "The approved pytest check must target staged Python files."
+                "The approved check must target staged Python files or a staged tsconfig."
             )
     return [f"./{path}" for path in dict.fromkeys(check.paths)]
 
@@ -140,6 +148,34 @@ def _capture(container: str) -> tuple[bytes, str | None]:
 def _validate_check(
     workspace: "ApprovedWorkspace", check: ValidationCheck, targets: list[str], image_id: str
 ) -> ValidationResult:
+    entrypoint = "/app/.venv/bin/python"
+    arguments = [
+        "-I",
+        "-B",
+        "-c",
+        PYTEST_ENTRY,
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "-c",
+        "/dev/null",
+        "--noconftest",
+        "--basetemp=/tmp/pytest",
+        "--",
+        *targets,
+    ]
+    if check.check_id == TYPESCRIPT_CHECK:
+        entrypoint = "/usr/local/bin/node"
+        arguments = [
+            "/node_modules/typescript/bin/tsc",
+            "--noEmit",
+            "--pretty",
+            "false",
+            "--incremental",
+            "false",
+            "--project",
+            targets[0],
+        ]
     container = _docker(
         "create",
         "--pull",
@@ -176,21 +212,9 @@ def _validate_check(
         "--env",
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
         "--entrypoint",
-        "/app/.venv/bin/python",
+        entrypoint,
         image_id,
-        "-I",
-        "-B",
-        "-c",
-        PYTEST_ENTRY,
-        "-q",
-        "-p",
-        "no:cacheprovider",
-        "-c",
-        "/dev/null",
-        "--noconftest",
-        "--basetemp=/tmp/pytest",
-        "--",
-        *targets,
+        *arguments,
     )
     try:
         _verify_isolation(_inspect(container))

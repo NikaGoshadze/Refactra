@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 from datetime import UTC, datetime, timedelta
@@ -13,8 +14,10 @@ from sqlalchemy import select
 import refactra.candidate_validation_worker as validation_worker
 import refactra.publication_branch as publication
 import refactra.publication_pr as draft
+import refactra.repository_plan_worker as planning
 import refactra.repository_workspace as workspace
-from refactra.analysis_context import save_analysis_context
+from refactra.analysis_context import prepare_analysis_context, save_analysis_context
+from refactra.auth_sessions import GitHubIdentity
 from refactra.candidate_commit import CandidateCommitError, prepare_candidate_commit
 from refactra.candidate_patch import CandidatePatch
 from refactra.candidate_results import save_validated_candidate
@@ -28,6 +31,7 @@ from refactra.publication_target import (
 )
 from refactra.refactoring_plan import (
     APPLY_PLAN_APPROVAL,
+    TYPESCRIPT_CHECK,
     approve_refactoring_plan,
     save_refactoring_plan,
 )
@@ -37,6 +41,8 @@ from refactra.repository_analysis_worker import (
     process_repository_plan_approval,
 )
 from refactra.repository_candidate import VALIDATE_CANDIDATE, generate_candidate
+from refactra.repository_revision import RepositoryRevision
+from refactra.repository_runs import create_repository_run
 from refactra.repository_snapshot import SourceFile, SourceSnapshot
 from refactra.repository_validation import ValidationResult
 from refactra.worker import claim_command
@@ -191,6 +197,115 @@ def pinned_source(tmp_path):
     )
     base = git(source, "rev-parse", "HEAD").strip().decode()
     return source, base
+
+
+@pytest.mark.skipif(
+    os.getenv("REFACTRA_TEST_TYPESCRIPT_DOCKER") != "1",
+    reason="Requires a rebuilt local backend image and Docker.",
+)
+@pytest.mark.parametrize("passes", [True, False])
+def test_typescript_feature_discovery_through_review_and_draft(
+    pinned_source, tmp_path, session_factory, proposal, monkeypatch, passes
+):
+    source, _ = pinned_source
+    path, config = "web/cart.tsx", "web/tsconfig.json"
+    files = {
+        path: b"export const Cart = () => <h1>Shopping cart</h1>;\n",
+        config: (
+            b'{"compilerOptions":{"jsx":"react-jsx","strict":true,"target":"ES2022",'
+            b'"module":"NodeNext"},"include":["cart.tsx"]}'
+        ),
+    }
+    (source / "web").mkdir()
+    for name, data in files.items():
+        (source / name).write_bytes(data)
+    git(source, "add", "web")
+    git(
+        source,
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@localhost",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        "Add frontend fixture",
+    )
+    base = git(source, "rev-parse", "HEAD").decode().strip()
+    snapshot = SourceSnapshot(42, base, tuple(SourceFile(*item) for item in files.items()))
+    with session_factory.begin() as session:
+        run = create_repository_run(
+            session,
+            identity=GitHubIdentity(123, "fixture"),
+            installation_id=77,
+            revision=RepositoryRevision(42, "fixture/repo", "main", "main", base),
+            task_text="Update the shopping cart heading to show the order summary.",
+        )
+        context = prepare_analysis_context(run, snapshot)
+        assert path in {item["path"] for item in json.loads(context.document)["selection"]["files"]}
+        save_analysis_context(session, context)
+        enqueue_repository_analysis(session, run.id)
+    analyze_fixture_run(session_factory)
+    check = dict(proposal["validation_checks"][0], check_id=TYPESCRIPT_CHECK, paths=[config])
+    proposal["changes"] = [{"path": path, "action": "MODIFY", "intent": "Update the heading."}]
+    proposal["validation_checks"] = [check]
+    response_text = json.dumps(proposal)
+
+    def model(request):
+        if request.url.path.endswith("/input_tokens"):
+            return httpx.Response(
+                200, json={"object": "response.input_tokens", "input_tokens": 100}
+            )
+        payload = response()
+        payload["output"][0]["content"][0]["text"] = response_text
+        return httpx.Response(200, json=payload)
+
+    provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(model))
+    monkeypatch.setattr(planning, "authorize_plan", lambda _: (None, None))
+    monkeypatch.setattr(workspace, "authorize_plan", lambda _: (None, None))
+    monkeypatch.setattr(workspace, "fetch_source_snapshot", lambda *_, **__: snapshot)
+    plan = planning.generate_initial_plan(session_factory, run.id, provider)
+    with session_factory.begin() as session:
+        approve_refactoring_plan(
+            session,
+            run.id,
+            plan_id=plan.id,
+            revision=1,
+            sha256=plan.sha256,
+            actor_id=run.requested_by,
+        )
+    approval = claim_command(session_factory, "worker", workflow=WORKFLOW, kind=APPLY_PLAN_APPROVAL)
+    assert process_repository_plan_approval(session_factory, approval, "worker")
+    changed = "export const Cart = () => <h1>Order summary</h1>;\n"
+    if not passes:
+        changed += "export const count: number = 'three';\n"
+    response_text = CandidatePatch(
+        base_sha=base,
+        plan_sha256=plan.sha256,
+        edits=[{"path": path, "action": "MODIFY", "content": changed}],
+    ).model_dump_json()
+    generate_candidate(session_factory, run.id, provider)
+    job = claim_command(session_factory, "worker", workflow=WORKFLOW, kind=VALIDATE_CANDIDATE)
+    assert validation_worker.process_candidate_validation(
+        session_factory, job, "worker", source=source, artifacts=tmp_path
+    )
+    with session_factory() as session:
+        result = session.scalar(
+            select(RunCandidateResult).where(RunCandidateResult.run_id == run.id)
+        )
+        if not passes:
+            assert result is None and session.get(RunCommand, job).status == "FAILED"
+            return
+        assert result is not None
+        report = json.loads(result.document)
+        assert report["validation"][0]["status"] == "PASSED"
+        assert "Order summary" in report["diff"]
+    artifact = tmp_path / f"{run.id}-r1"
+    receipt = prepare_candidate_commit(
+        session_factory, run.id, 1, source, artifact, save_target=True
+    )
+    check_branch_publication(session_factory, run, source, artifact, receipt, monkeypatch, False)
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="Requires local Git.")
