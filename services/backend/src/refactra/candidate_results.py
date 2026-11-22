@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from refactra.candidate_patch import MAX_DIFF_BYTES, CandidatePatch
 from refactra.models import Run, RunCandidateResult, RunEvent
 from refactra.refactoring_plan import PlanContent, load_approved_plan
-from refactra.repository_validation import ValidationResult
+from refactra.repository_validation import ValidationResult, blocks_candidate, candidate_checks
 
 MAX_RESULT_BYTES = 2 * 1024 * 1024
 
@@ -63,13 +63,12 @@ def save_validated_candidate(
     ):
         raise CandidateResultError("The candidate does not match the approved file scope.")
     if [(check.check_id, check.paths, check.required) for check in checks] != [
-        (check.check_id, check.paths, check.required) for check in content.validation_checks
-    ] or any(
-        check.required
-        and (check.status != "PASSED" or check.exit_code != 0 or check.reason is not None)
-        for check in checks
-    ):
-        raise CandidateResultError("All required checks from the approved plan must pass.")
+        (check.check_id, check.paths, check.required)
+        for check in candidate_checks(content.changes, content.validation_checks)
+    ] or blocks_candidate(checks):
+        raise CandidateResultError(
+            "The result needs a passing built-in check and valid evidence for required checks."
+        )
     if not diff or len(diff) > MAX_DIFF_BYTES:
         raise CandidateResultError("The validation result needs a bounded review diff.")
 

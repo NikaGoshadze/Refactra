@@ -11,7 +11,7 @@ type SavedPlan = {
   artifact: { id: string; revision: number; sha256: string };
   approval: ApprovalReceipt | null;
   feedback_status?: "pending" | "failed" | "unchanged" | null;
-  readiness: { unsupported_check_ids: string[]; has_required_supported_check: boolean; scope_errors: string[];
+  readiness: { unsupported_check_ids: string[]; scope_errors: string[];
     outcome?: "ready" | "needs_clarification" | "unsupported" };
   content: {
     summary: string;
@@ -48,10 +48,7 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
   const revising = plan?.feedback_status === "pending";
   const blockers = plan ? [
     ...(plan.content.blocking_questions.length ? ["Resolve the blocking questions."] : []),
-    ...(!plan.content.changes.length
-      ? ["Approval requires a plan with proposed changes."]
-      : !plan.readiness.has_required_supported_check ? ["Add a required supported validation check."] : []),
-    ...(plan.readiness.unsupported_check_ids.length ? ["Replace unsupported validation checks."] : []),
+    ...(!plan.content.changes.length ? ["Approval requires a plan with proposed changes."] : []),
     ...(plan.readiness.scope_errors ?? []),
   ] : [];
   const canApprove = plan?.approval === null && !revising && blockers.length === 0;
@@ -216,7 +213,7 @@ function PlanReview({ plan: { artifact, content, readiness } }: { plan: SavedPla
       <div>
         <h4>Proposed validation checks</h4>
         {readiness.unsupported_check_ids.length > 0 &&
-          <p>Unsupported checks {readiness.unsupported_check_ids.join(", ")}</p>}
+          <p>No runner available for {readiness.unsupported_check_ids.join(", ")}</p>}
         <ul>{content.validation_checks.map((check, index) => (
           <li key={index}>
             <code>{check.check_id}</code> · {check.required ? "Required" : "Optional"}

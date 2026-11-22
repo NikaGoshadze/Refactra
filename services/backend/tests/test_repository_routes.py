@@ -31,6 +31,7 @@ from refactra.repository_candidate import VALIDATE_CANDIDATE
 from refactra.repository_validation import ValidationResult
 from refactra.worker import claim_command
 
+from .test_candidate_results import passing_patch
 from .test_openai_analysis import response as model_response
 from .test_refactoring_plan import analyze_fixture_run
 from .test_refactoring_plan import proposal as proposal
@@ -330,7 +331,7 @@ def test_read_saved_plan_revisions(browser, session_factory, proposal):
             "outcome": "needs_clarification" if plan.revision == 1 else "ready",
             "blocking_question_count": 1 if plan.revision == 1 else 0,
             "unsupported_check_ids": ["VC1"] if plan.revision == 1 else [],
-            "has_required_supported_check": plan.revision == 2,
+            "has_required_supported_check": True,
             "scope_errors": [],
         }
     assert client.get(f"{url}?revision=3").status_code == 404
@@ -460,7 +461,7 @@ def test_plan_feedback_is_queued_once_and_revises_the_saved_plan(
     assert client.get(f"{url}?revision=1").json()["content"]["blocking_questions"] == [question]
 
 
-@pytest.mark.parametrize("blocker", ["question", "check_id", "file", "test_target"])
+@pytest.mark.parametrize("blocker", ["question", "check_id", "file", "test_target", "no_checks"])
 def test_approval_binds_the_latest_ready_revision_and_locks_edits(
     browser, session_factory, proposal, blocker
 ):
@@ -477,6 +478,8 @@ def test_approval_binds_the_latest_ready_revision_and_locks_edits(
         draft["validation_checks"] = [dict(proposal["validation_checks"][0], check_id="VC1")]
     elif blocker == "file":
         draft["changes"] = [{"path": ".env", "action": "MODIFY", "intent": "Update values"}]
+    elif blocker == "no_checks":
+        draft["validation_checks"] = []
     else:
         draft["validation_checks"] = [dict(proposal["validation_checks"][0], paths=["src/main.py"])]
     with session_factory.begin() as session:
@@ -487,8 +490,12 @@ def test_approval_binds_the_latest_ready_revision_and_locks_edits(
     rejected = client.post(f"{url}/approve", json=old)
     assert rejected.status_code == 403 and calls == []
     blocked = client.post(f"{url}/approve", json=old, headers=headers)
+    if blocker in {"check_id", "test_target", "no_checks"}:
+        assert blocked.status_code == 200 and blocked.json()["revision"] == 1
+        assert client.get(url).json()["readiness"]["outcome"] == "ready"
+        return
     assert blocked.status_code == 409 and "Resolve" in blocked.text
-    if blocker in {"file", "test_target"}:
+    if blocker == "file":
         assert client.get(url).json()["readiness"]["scope_errors"]
 
     revised = client.post(url, json={"expected_revision": 1, "proposal": proposal}, headers=headers)
@@ -574,7 +581,12 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
                 f"-def cart(): return 1\n+{content}"
             )
             fixtures.append(
-                (save_validated_candidate(session, run_id, patch, diff.encode(), [check]), diff)
+                (
+                    save_validated_candidate(
+                        session, run_id, patch, diff.encode(), [check, passing_patch("src/cart.py")]
+                    ),
+                    diff,
+                )
             )
 
     for path, (saved, diff) in [(url, fixtures[1]), (f"{url}?revision=1", fixtures[0])]:
@@ -597,7 +609,7 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
         session.get(RunCommand, job.id).status = "FAILED"
     stopped = client.get(live_url).json()
     assert stopped["status"] == "failed"
-    assert stopped["message"] == "Tests passed, but the worker could not prepare the commit."
+    assert stopped["message"] == "The worker could not prepare the reviewed commit."
     assert stopped["result"]["diff"] == fixtures[1][1]
 
     latest, _ = fixtures[1]

@@ -21,7 +21,7 @@ from refactra.models import Run, RunCandidateResult, RunEvent, RunGeneratedCandi
 from refactra.refactoring_plan import PlanContent, approved_file_operation, load_approved_plan
 from refactra.repository_analysis_worker import _claimed_command
 from refactra.repository_candidate import VALIDATE_CANDIDATE, _attempt_id, validation_command_key
-from refactra.repository_validation import validate_candidate
+from refactra.repository_validation import blocks_candidate, validate_candidate
 from refactra.repository_workspace import prepare_approved_workspace
 
 
@@ -87,7 +87,7 @@ def process_candidate_validation(
             with prepare_approved_workspace(session_factory, run_id) as workspace:
                 diff = apply_candidate_patch(workspace, candidate)
                 checks = validate_candidate(workspace)
-            if any(check.required and check.status != "PASSED" for check in checks):
+            if blocks_candidate(checks):
                 code = "candidate_checks_failed"
             with session_factory.begin() as session:
                 command = _claimed_command(session, command_id, worker_id)
