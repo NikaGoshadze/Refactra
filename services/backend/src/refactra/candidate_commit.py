@@ -169,6 +169,7 @@ def prepare_candidate_commit(
             tuple(content.validation_checks),
         )
         modes = {}
+        base_objects = {}
         source_files = []
         for edit in candidate.edits:
             entry = git("ls-tree", "-z", base, "--", edit.path)
@@ -182,6 +183,7 @@ def prepare_candidate_commit(
             if not redact and int(git("cat-file", "-s", oid.decode())) > MAX_EDIT_FILE_BYTES:
                 raise CandidateCommitError("A candidate path exceeds the source file size limit.")
             modes[edit.path] = mode
+            base_objects[edit.path] = oid
             data = b"" if redact else git("cat-file", "blob", oid.decode())
             source_files.append(SourceFile(edit.path, data))
         snapshot = SourceSnapshot(content.repository.repository_id, base, tuple(source_files))
@@ -199,6 +201,7 @@ def prepare_candidate_commit(
 
         git("read-tree", base)
         records = []
+        changed_paths = set()
         for edit in candidate.edits:
             if edit.action == "DELETE":
                 mode, oid = b"0", b"0" * 40
@@ -208,11 +211,14 @@ def prepare_candidate_commit(
                     "hash-object", "-w", "--stdin", data=(workspace.root / edit.path).read_bytes()
                 )
                 oid = oid.strip()
+                if oid == base_objects.get(edit.path):
+                    continue
+            changed_paths.add(edit.path.encode())
             records.append(mode + b" " + oid + b"\t" + edit.path.encode() + b"\0")
         git("update-index", "-z", "--index-info", data=b"".join(records))
         tree = git("write-tree").strip().decode()
         paths = git("diff-tree", "-r", "--no-renames", "--name-only", "-z", base, tree)
-        if set(paths.split(b"\0")[:-1]) != {edit.path.encode() for edit in candidate.edits}:
+        if set(paths.split(b"\0")[:-1]) != changed_paths:
             raise CandidateCommitError(
                 "Staging changed files outside the validated candidate scope."
             )

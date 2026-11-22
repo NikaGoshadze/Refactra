@@ -22,7 +22,7 @@ from refactra.analysis_request import (
 )
 from refactra.candidate_request import (
     CANDIDATE_INSTRUCTIONS,
-    CANDIDATE_TEXT_CONFIG,
+    candidate_text_config,
     check_candidate_context,
 )
 from refactra.models import ModelReservation, RunEvent
@@ -89,7 +89,7 @@ def reserve_analysis_request(
     if request.model_input.instructions == PLAN_INSTRUCTIONS:
         model_input["text"] = PLAN_TEXT_CONFIG
     elif request.model_input.instructions == CANDIDATE_INSTRUCTIONS:
-        model_input["text"] = CANDIDATE_TEXT_CONFIG
+        model_input["text"] = candidate_text_config(request.model_input.context_json)
     fingerprint = sha256(
         json.dumps(
             {

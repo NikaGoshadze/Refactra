@@ -21,7 +21,11 @@ from refactra.github_app import GitHubAppError
 from refactra.models import Run, RunCandidateResult, RunEvent, RunGeneratedCandidate
 from refactra.refactoring_plan import PlanContent, approved_file_operation, load_approved_plan
 from refactra.repository_analysis_worker import _claimed_command
-from refactra.repository_candidate import VALIDATE_CANDIDATE, _attempt_id, validation_command_key
+from refactra.repository_candidate import (
+    VALIDATE_CANDIDATE,
+    candidate_attempt_ids,
+    validation_command_key,
+)
 from refactra.repository_validation import blocks_candidate, validate_candidate
 from refactra.repository_workspace import prepare_approved_workspace
 
@@ -78,7 +82,7 @@ def process_candidate_validation(
                 )
             else:
                 generated = session.get(RunGeneratedCandidate, run_id)
-                if generated is None or generated.reservation_id != _attempt_id(
+                if generated is None or generated.reservation_id not in candidate_attempt_ids(
                     run_id, plan.sha256
                 ):
                     raise CandidatePatchError("A matching generated candidate is required.")
