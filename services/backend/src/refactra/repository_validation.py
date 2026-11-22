@@ -10,6 +10,11 @@ from pathlib import PurePosixPath
 from time import monotonic
 from typing import TYPE_CHECKING
 
+from refactra.python_test_support import (
+    PYTEST_ENTRY,
+    declared_test_imports,
+    python_unavailable_reason,
+)
 from refactra.refactoring_plan import (
     ASSET_CHECK,
     PATCH_CHECK,
@@ -31,12 +36,6 @@ IMAGE = "refactra-backend:local"
 USER = "10001:10001"
 TMPFS = "rw,noexec,nosuid,nodev,size=64m"
 SECURITY_OPTIONS = ["no-new-privileges", "seccomp=builtin"]
-PYTEST_ENTRY = (
-    "import sys\n"
-    "import pytest\n"
-    "sys.path.insert(0, '/workspace')\n"
-    "raise SystemExit(pytest.main(sys.argv[1:]))\n"
-)
 
 
 class RepositoryValidationError(ValueError):
@@ -192,11 +191,17 @@ def _validate_check(
     workspace: "ApprovedWorkspace", check: CandidateCheck, targets: list[str], image_id: str
 ) -> ValidationResult:
     entrypoint = "/app/.venv/bin/python"
+    declared = (
+        declared_test_imports(workspace.root, check.paths)
+        if check.check_id == "python.pytest"
+        else {}
+    )
     arguments = [
         "-I",
         "-B",
         "-c",
         PYTEST_ENTRY,
+        json.dumps(declared),
         "-q",
         "-p",
         "no:cacheprovider",
@@ -270,6 +275,21 @@ def _validate_check(
             if state["Status"] != "exited" or state["Error"]:
                 raise RepositoryValidationError("The validation container did not finish normally.")
             exit_code = state["ExitCode"]
+        text = output.decode("utf-8", errors="replace")
+        if check.check_id == "python.pytest" and (
+            unavailable := python_unavailable_reason(exit_code, text, declared)
+        ):
+            return ValidationResult(
+                check.check_id,
+                check.paths,
+                check.required,
+                "UNAVAILABLE",
+                None,
+                duration_ms,
+                text,
+                unavailable,
+                image_id,
+            )
         return ValidationResult(
             check.check_id,
             check.paths,
@@ -277,7 +297,7 @@ def _validate_check(
             "PASSED" if exit_code == 0 else "FAILED",
             exit_code,
             duration_ms,
-            output.decode("utf-8", errors="replace"),
+            text,
             reason,
             image_id,
         )

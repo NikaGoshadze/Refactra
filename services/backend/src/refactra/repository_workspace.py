@@ -40,7 +40,11 @@ from refactra.refactoring_plan import (
 from refactra.repository_plan_worker import authorize_plan
 from refactra.repository_selection import is_excluded_source_path
 from refactra.repository_snapshot import SourceSnapshot, fetch_source_snapshot
-from refactra.repository_validation import RepositoryValidationError, validate_candidate
+from refactra.repository_validation import (
+    RepositoryValidationError,
+    blocks_candidate,
+    validate_candidate,
+)
 
 
 class WorkspacePreparationError(ValueError):
@@ -210,9 +214,7 @@ def main() -> None:
                     checks = validate_candidate(workspace)
                     report.update(
                         validation=[asdict(check) for check in checks],
-                        validation_passed=all(
-                            check.status == "PASSED" for check in checks if check.required
-                        ),
+                        validation_passed=not blocks_candidate(checks),
                     )
         if args.save_result and report["validation_passed"]:
             with session_factory.begin() as session:

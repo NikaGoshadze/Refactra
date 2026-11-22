@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
+from refactra.diagnostics import diagnostic_id
 from refactra.github_app import GitHubAppError
 from refactra.models import Run, RunEvent
 from refactra.publication_branch import load_approved_target, push_approved_branch
@@ -56,7 +57,12 @@ def _draft_number(pr: dict, run: Run, head: str, commit: str) -> int:
 
 
 def _open_or_find_draft(
-    client: httpx.Client, repository: str, run: Run, head: str, commit: str
+    client: httpx.Client,
+    repository: str,
+    run: Run,
+    head: str,
+    commit: str,
+    validation_warnings: str,
 ) -> int:
     path = f"/repos/{repository}/pulls"
     params = {"state": "all", "head": f"{repository.split('/')[0]}:{head}", "per_page": 2}
@@ -79,7 +85,8 @@ def _open_or_find_draft(
                 "head": head,
                 "base": run.base_branch,
                 "draft": True,
-                "body": f"Approved commit `{commit}`\n\nPinned base `{run.base_sha}`",
+                "body": f"Approved commit `{commit}`\n\nPinned base `{run.base_sha}`"
+                + validation_warnings,
             },
         )
         if response.status_code == 201:
@@ -95,8 +102,17 @@ def _open_or_find_draft(
 
 def open_approved_draft(session_factory, run_id: UUID) -> dict:
     with session_factory() as session:
-        run, target_sha, commit, head = load_approved_target(session, run_id)
+        run, target_sha, commit, head, result = load_approved_target(session, run_id)
         branch = _publication_event(session, run_id, PUBLICATION_BRANCH_PUSHED)
+        warnings = [
+            f"- `{check_id}` · {check['status']}"
+            for check in json.loads(result.document)["validation"]
+            if check["status"] in {"UNAVAILABLE", "FAILED"}
+            and (check_id := diagnostic_id(check.get("check_id")))
+        ]
+        validation_warnings = (
+            "\n\n### Validation warnings\n\n" + "\n".join(warnings) if warnings else ""
+        )
     if branch is None or (branch["target_sha256"], branch["commit_sha"], branch["head_branch"]) != (
         target_sha,
         commit,
@@ -139,7 +155,9 @@ def open_approved_draft(session_factory, run_id: UUID) -> dict:
                 "X-GitHub-Api-Version": "2026-03-10",
             },
         ) as client:
-            number = _open_or_find_draft(client, base.full_name, run, head, commit)
+            number = _open_or_find_draft(
+                client, base.full_name, run, head, commit, validation_warnings
+            )
         receipt = {
             **branch,
             "pull_request_number": number,

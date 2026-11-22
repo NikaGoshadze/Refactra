@@ -27,7 +27,9 @@ CANDIDATE_INSTRUCTIONS = (
     "Do not execute tools, invent "
     "validation results, include credentials, or publish changes. For each approved new "
     "environment template, use the variable names in the plan with a blank value after each equals "
-    "sign, one assignment per line, without comments."
+    "sign, one assignment per line, without comments. When writing tests, exercise the real "
+    "edited code with fake dependencies. Stub services before importing modules that "
+    "initialize them and avoid live network requests or credentials."
 )
 
 
