@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session, undefer
 
 from refactra.analysis_context import load_analysis_context
 from refactra.models import Run, RunAnalysisResult, RunCommand, RunEvent, RunPlan, RunPlanApproval
-from refactra.repository_selection import is_excluded_source_path
+from refactra.repository_selection import BLOCKED_PARTS, is_excluded_source_path
 
 MAX_PLAN_BYTES = 64 * 1024
 PATCH_CHECK = "repository.patch"
@@ -126,28 +126,30 @@ class PlanReadiness(BaseModel):
     scope_errors: list[str]
 
 
-def is_editable_plan_path(path: PurePosixPath) -> bool:
-    return (
-        path.name.casefold() not in PROTECTED_PYTHON_FILES
-        and not any(part.startswith(".") for part in path.parts[:-1])
-        and (not path.name.startswith(".") or path.name in {".gitignore", ".editorconfig"})
-        and not is_excluded_source_path(path)
-    )
+def is_env_path(value: str) -> bool:
+    name = PurePosixPath(value).name.casefold()
+    return bool(re.fullmatch(r"\.env(?:[._-][a-z0-9]+)*", name))
+
+
+def plan_edit_kind(value: str, action: str) -> Literal["text", "env_delete", "env_template"] | None:
+    path = PurePosixPath(value)
+    if any(part.startswith(".") or part.casefold() in BLOCKED_PARTS for part in path.parts[:-1]):
+        return None
+    if is_env_path(value):
+        if action == "DELETE":
+            return "env_delete"
+        if action == "CREATE" and re.search(
+            r"[._-](example|sample|template|dist)$", path.name.casefold()
+        ):
+            return "env_template"
+        return None
+    if path.name.casefold() in PROTECTED_PYTHON_FILES or is_excluded_source_path(path):
+        return None
+    return "text"
 
 
 def is_typescript_config(path: str) -> bool:
     return bool(re.fullmatch(r"tsconfig(?:\.[\w-]+)*\.json", PurePosixPath(path).name))
-
-
-def is_env_cleanup(changes: Sequence[ProposedChange], checks: Sequence[ValidationCheck]) -> bool:
-    actions = {(change.path, change.action) for change in changes}
-    return (
-        actions in ({(".env", "DELETE")}, {(".env", "DELETE"), (".env.example", "CREATE")})
-        and len(checks) == 1
-        and checks[0].check_id == PATCH_CHECK
-        and checks[0].required
-        and set(checks[0].paths) == {path for path, _ in actions}
-    )
 
 
 def approved_file_operation(
@@ -158,13 +160,14 @@ def approved_file_operation(
     edit, check = changes[0], checks[0]
     if not check.required or check.paths != [edit.path]:
         return None
-    if is_env_cleanup(changes, checks):
+    kind = plan_edit_kind(edit.path, edit.action)
+    if check.check_id == PATCH_CHECK and kind == "env_delete":
         return "env_delete"
     path = PurePosixPath(edit.path)
     if (
         edit.action == "MODIFY"
         and check.check_id == ASSET_CHECK
-        and is_editable_plan_path(path)
+        and kind == "text"
         and path.suffix.lower()
         in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".woff", ".woff2"}
     ):
@@ -179,11 +182,10 @@ def validation_command_key(run_id: UUID, revision: int) -> str:
 def evaluate_plan_readiness(proposal: PlanProposal) -> PlanReadiness:
     """Check proposal metadata against the supported edit and validation scopes."""
     operation = approved_file_operation(proposal.changes, proposal.validation_checks)
-    env_cleanup = is_env_cleanup(proposal.changes, proposal.validation_checks)
     scope_errors = [
-        f"{edit.path} is outside the editable text scope."
+        f"{edit.action} is unsupported for {edit.path}."
         for edit in proposal.changes
-        if not env_cleanup and not is_editable_plan_path(PurePosixPath(edit.path))
+        if plan_edit_kind(edit.path, edit.action) is None
     ]
     deleted = {edit.path for edit in proposal.changes if edit.action == "DELETE"}
     changed_paths = {edit.path for edit in proposal.changes}
@@ -324,22 +326,27 @@ def save_refactoring_plan(
         or context is None
     ):
         raise PlanRevisionConflict("A repository run with completed analysis is required.")
-    env_cleanup = is_env_cleanup(parsed.changes, parsed.validation_checks)
-    if env_cleanup or approved_file_operation(parsed.changes, parsed.validation_checks):
-        path = ".env" if env_cleanup else parsed.changes[0].path
+    special_edits = [
+        edit
+        for edit in parsed.changes
+        if plan_edit_kind(edit.path, edit.action) in {"env_delete", "env_template"}
+    ]
+    if approved_file_operation(parsed.changes, parsed.validation_checks) == "asset_replace":
+        special_edits = parsed.changes
+    if special_edits:
         tracked = json.loads(context.document)["inventory"]["file_paths"]
-        unavailable = None
-        if path not in tracked:
-            unavailable = f"{path} is absent from the pinned commit."
-        elif env_cleanup and len(parsed.changes) == 2 and ".env.example" in tracked:
-            unavailable = ".env.example already exists in the pinned commit."
-        if unavailable:
+        for edit in special_edits:
+            exists = edit.path in tracked
+            if exists != (edit.action == "CREATE"):
+                continue
+            reason = "already exists in" if exists else "is absent from"
             payload.update(
-                summary=unavailable,
+                summary=f"{edit.path} {reason} the pinned commit.",
                 changes=[],
                 validation_checks=[],
                 blocking_questions=[],
             )
+            break
     payload.update(
         schema_version="1",
         run_id=str(run_id),

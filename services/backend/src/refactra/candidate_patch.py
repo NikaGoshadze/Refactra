@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from refactra.refactoring_plan import PlanPath, approved_file_operation, is_env_cleanup
+from refactra.refactoring_plan import PlanPath, approved_file_operation, plan_edit_kind
 
 if TYPE_CHECKING:
     from refactra.repository_workspace import ApprovedWorkspace
@@ -83,10 +83,10 @@ def apply_candidate_patch(workspace: "ApprovedWorkspace", candidate: CandidatePa
 
     root = workspace.root.resolve(strict=True)
     operation = approved_file_operation(workspace.changes, workspace.validation_checks)
-    env_cleanup = is_env_cleanup(workspace.changes, workspace.validation_checks)
     writes: list[tuple[Path, str, bytes | None]] = []
     diff = bytearray()
     for edit in sorted(candidate.edits, key=lambda item: item.path):
+        kind = plan_edit_kind(edit.path, edit.action)
         destination = root.joinpath(*PurePosixPath(edit.path).parts)
         if (
             not destination.is_relative_to(root)
@@ -108,7 +108,7 @@ def apply_candidate_patch(workspace: "ApprovedWorkspace", candidate: CandidatePa
                 raise CandidatePatchError(
                     "An approved edit targets a missing, linked, or non-regular file."
                 )
-            if env_cleanup and edit.path == ".env":
+            if kind == "env_delete":
                 before = b""
             else:
                 with destination.open("rb") as source:
@@ -142,13 +142,13 @@ def apply_candidate_patch(workspace: "ApprovedWorkspace", candidate: CandidatePa
                     content.decode("utf-8")
         except UnicodeError:
             raise CandidatePatchError("Edited files must use UTF-8.") from None
-        if env_cleanup and edit.path == ".env.example":
+        if kind == "env_template":
             entries = [line for line in (after or b"").splitlines() if line.strip()]
             if not entries or any(
                 not re.fullmatch(rb"[A-Za-z_][A-Za-z0-9_]*=", line) for line in entries
             ):
                 raise CandidatePatchError(
-                    "The .env.example template must contain names with empty values."
+                    "Environment templates must contain names with empty values."
                 )
         if before == after:
             raise CandidatePatchError("An approved modify must change the file contents.")

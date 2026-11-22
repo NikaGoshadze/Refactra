@@ -407,7 +407,14 @@ def test_plan_feedback_is_queued_once_and_revises_the_saved_plan(
     analyze_fixture_run(session_factory)
     question = "How should empty carts behave?"
     with session_factory.begin() as session:
-        previous = dict(proposal, blocking_questions=[question])
+        previous = dict(
+            proposal,
+            blocking_questions=[question],
+            changes=[
+                *proposal["changes"],
+                {"path": ".env", "action": "MODIFY", "intent": "Change settings."},
+            ],
+        )
         plan = save_refactoring_plan(session, run_id, previous, expected_revision=0)
 
     headers = {"Origin": "https://refactra.example", "X-Refactra-CSRF": "1"}
@@ -428,6 +435,9 @@ def test_plan_feedback_is_queued_once_and_revises_the_saved_plan(
     def model(request):
         context = json.loads(json.loads(request.content)["input"])
         assert context["previous_plan"]["blocking_questions"] == [question]
+        assert context["previous_plan_readiness"]["scope_errors"] == [
+            "MODIFY is unsupported for .env."
+        ]
         assert context["reviewer_feedback"]["questions_and_answers"] == [
             {"question": question, "answer": "Return zero."}
         ]
@@ -466,7 +476,7 @@ def test_approval_binds_the_latest_ready_revision_and_locks_edits(
     elif blocker == "check_id":
         draft["validation_checks"] = [dict(proposal["validation_checks"][0], check_id="VC1")]
     elif blocker == "file":
-        draft["changes"] = [{"path": ".env", "action": "DELETE", "intent": "Remove tracked file"}]
+        draft["changes"] = [{"path": ".env", "action": "MODIFY", "intent": "Update values"}]
     else:
         draft["validation_checks"] = [dict(proposal["validation_checks"][0], paths=["src/main.py"])]
     with session_factory.begin() as session:
