@@ -127,6 +127,7 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
             ("root/src/cart.py", b"pinned"),
             ("root/.env", b"secret"),
             ("root/src/unrelated.py", b"not approved"),
+            ("root/requirements.lock", b"pinned lock metadata"),
         ]
     )
     calls = []
@@ -164,6 +165,8 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
         root = prepared.root
         assert prepared.base_sha == run.base_sha and prepared.sha256 == plan.sha256
         assert prepared.file_count == 2 and (root / "src/cart.py").read_bytes() == b"pinned"
+        assert prepared.python_lock == b"pinned lock metadata"
+        assert not (root / "requirements.lock").exists()
         assert not (root / ".env").exists()
         assert not (root / "tests/test_cart.py").exists()
         assert [(change.path, change.action) for change in prepared.changes] == [

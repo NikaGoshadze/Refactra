@@ -1,15 +1,20 @@
 """Check approved text edits and run pytest in a restricted Docker container."""
 
 import json
+import re
 import subprocess
 import tomllib
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from hashlib import sha256
+from pathlib import Path, PurePosixPath
+from tempfile import TemporaryDirectory
 from time import monotonic
 from typing import TYPE_CHECKING
 
+from refactra.diagnostics import workflow_log
+from refactra.python_dependency_cache import PythonLockError, pinned_python_requirements
 from refactra.python_test_support import (
     PYTEST_ENTRY,
     declared_test_imports,
@@ -33,6 +38,8 @@ if TYPE_CHECKING:
 CHECK_TIMEOUT = 180
 MAX_OUTPUT_BYTES = 256 * 1024
 IMAGE = "refactra-backend:local"
+_IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
+_CACHE_LABEL = "org.refactra.python-lock-cache"
 USER = "10001:10001"
 TMPFS = "rw,noexec,nosuid,nodev,size=64m"
 SECURITY_OPTIONS = ["no-new-privileges", "seccomp=builtin"]
@@ -90,13 +97,13 @@ def blocks_candidate(checks: list[ValidationResult]) -> bool:
     )
 
 
-def _docker(*args: str) -> str:
+def _docker(*args: str, timeout: int = 30) -> str:
     try:
         return subprocess.run(
             ["docker", *args],
             capture_output=True,
             check=True,
-            timeout=30,
+            timeout=timeout,
             text=True,
             encoding="utf-8",
         ).stdout.strip()
@@ -104,6 +111,52 @@ def _docker(*args: str) -> str:
         raise RepositoryValidationError(
             f"Docker {args[0]} failed during validation setup or cleanup."
         ) from None
+
+
+def _locked_python_image(lock: bytes, base_id: str) -> str:
+    requirements = pinned_python_requirements(lock)
+    if not _IMAGE_ID.fullmatch(base_id):
+        raise RepositoryValidationError("The offline runner has an invalid image identity.")
+    key = sha256(b"refactra-python-v1\0" + base_id.encode() + b"\0" + requirements).hexdigest()
+    tag = f"refactra-python-validation:{key}"
+    template = '{{ index .Config.Labels "' + _CACHE_LABEL + '" }} {{ .Id }}'
+
+    def cached_image() -> str | None:
+        try:
+            identity = _docker("image", "inspect", "--format", template, tag)
+        except RepositoryValidationError:
+            return None
+        digest, _, image = identity.partition(" ")
+        return image if digest == key and _IMAGE_ID.fullmatch(image) else None
+
+    if cached := cached_image():
+        workflow_log("python_dependency_cache", status="hit", cache_key=key, image_id=cached)
+        return cached
+
+    base_tag = f"refactra-python-base:{base_id.removeprefix('sha256:')}"
+    try:
+        _docker("tag", base_id, base_tag)
+        with TemporaryDirectory(prefix="refactra-python-cache-") as directory:
+            context = Path(directory)
+            (context / "requirements.lock").write_bytes(requirements)
+            (context / "Dockerfile").write_text(
+                f"FROM {base_tag}\n"
+                f"LABEL {_CACHE_LABEL}={key}\n"
+                "USER root\n"
+                "COPY requirements.lock /tmp/refactra-requirements.lock\n"
+                "RUN uv --no-config pip install --python /app/.venv/bin/python "
+                "--target /locked-deps --no-deps --only-binary :all: --require-hashes "
+                "--default-index https://pypi.org/simple -r /tmp/refactra-requirements.lock\n"
+                f"USER {USER}\n",
+                encoding="ascii",
+            )
+            _docker("build", "--pull=false", "--tag", tag, str(context), timeout=120)
+    except (RepositoryValidationError, OSError):
+        raise RepositoryValidationError("Could not prepare the locked Python wheels.") from None
+    if image := cached_image():
+        workflow_log("python_dependency_cache", status="prepared", cache_key=key, image_id=image)
+        return image
+    raise RepositoryValidationError("The prepared Python image could not be verified.")
 
 
 def _targets(workspace: "ApprovedWorkspace", check: CandidateCheck) -> list[str]:
@@ -313,6 +366,8 @@ def validate_candidate(workspace: "ApprovedWorkspace") -> list[ValidationResult]
     results = []
     image_id = ""
     image_error = None
+    python_image = ""
+    python_image_error = None
     for check in candidate_checks(workspace.changes, workspace.validation_checks):
         if check.check_id == PATCH_CHECK or operation == "asset_replace":
             results.append(_validate_text_patch(workspace, check))
@@ -327,7 +382,18 @@ def validate_candidate(workspace: "ApprovedWorkspace") -> list[ValidationResult]
                 except RepositoryValidationError:
                     image_error = "The offline Docker validation image is unavailable."
                     raise RepositoryValidationError(image_error) from None
-            results.append(_validate_check(workspace, check, targets, image_id))
+            runner = image_id
+            if check.check_id == "python.pytest" and workspace.python_lock is not None:
+                if python_image_error:
+                    raise RepositoryValidationError(python_image_error)
+                if not python_image:
+                    try:
+                        python_image = _locked_python_image(workspace.python_lock, image_id)
+                    except (PythonLockError, RepositoryValidationError) as error:
+                        python_image_error = str(error)
+                        raise RepositoryValidationError(python_image_error) from None
+                runner = python_image
+            results.append(_validate_check(workspace, check, targets, runner))
         except ValidationCleanupError:
             raise
         except RepositoryValidationError as error:
