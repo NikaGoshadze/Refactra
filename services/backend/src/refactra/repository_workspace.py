@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from refactra.candidate_patch import (
+    MAX_EDIT_FILE_BYTES,
     CandidatePatchError,
     apply_candidate_patch,
     read_candidate_patch,
@@ -89,13 +90,21 @@ def _workspace_files(snapshot: SourceSnapshot, content: PlanContent) -> dict[Pur
     for change in content.changes:
         path = _workspace_path(change.path)
         if not is_editable_plan_path(path):
-            raise WorkspacePreparationError(
-                "Approved changes must target editable Python source or tests."
-            )
+            raise WorkspacePreparationError("Approved changes must target editable text files.")
         if (change.action == "CREATE") == (path in files):
             raise WorkspacePreparationError(
                 "An approved file action does not match the pinned source."
             )
+        if path in files:
+            data = files[path]
+            try:
+                if len(data) > MAX_EDIT_FILE_BYTES or b"\0" in data:
+                    raise ValueError
+                data.decode("utf-8")
+            except ValueError:
+                raise WorkspacePreparationError(
+                    "Approved changes must target bounded UTF-8 text."
+                ) from None
         expected_paths.add(path)
 
     names: dict[str, PurePosixPath] = {}

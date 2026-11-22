@@ -63,7 +63,7 @@ def test_line_ranges_handle_physical_newlines_and_utf8_bom(text, lines):
     [
         ("src/secrets.py", b"hidden", "ineligible_path"),
         (".github/task.py", b"pass", "ineligible_path"),
-        ("data.json", b"{}", "ineligible_path"),
+        ("dist/data.json", b"{}", "ineligible_path"),
         ("src/cart.py", b"\xff", "unsupported_text"),
         ("src/cart.py", b"text\x00", "unsupported_text"),
         ("src/cart.py", b"", "empty_file"),

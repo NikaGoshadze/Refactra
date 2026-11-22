@@ -1,14 +1,15 @@
-"""Run approved pytest targets in a restricted local Docker container."""
+"""Check approved text edits and run pytest in a restricted Docker container."""
 
 import json
 import subprocess
+import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from time import monotonic
 from typing import TYPE_CHECKING
 
-from refactra.refactoring_plan import ValidationCheck
+from refactra.refactoring_plan import PATCH_CHECK, ValidationCheck
 
 if TYPE_CHECKING:
     from refactra.repository_workspace import ApprovedWorkspace
@@ -220,9 +221,52 @@ def _validate_check(
 def validate_candidate(workspace: "ApprovedWorkspace") -> list[ValidationResult]:
     if not workspace.validation_checks:
         raise RepositoryValidationError("The approved plan has no validation checks.")
-    targets = [_targets(workspace, check) for check in workspace.validation_checks]
-    image_id = _docker("image", "inspect", "--format", "{{.Id}}", IMAGE)
+    targets = [
+        [] if check.check_id == PATCH_CHECK else _targets(workspace, check)
+        for check in workspace.validation_checks
+    ]
+    image_id = _docker("image", "inspect", "--format", "{{.Id}}", IMAGE) if any(targets) else ""
     return [
         _validate_check(workspace, check, files, image_id)
+        if files
+        else _validate_text_patch(workspace, check)
         for check, files in zip(workspace.validation_checks, targets, strict=True)
     ]
+
+
+def _validate_text_patch(
+    workspace: "ApprovedWorkspace", check: ValidationCheck
+) -> ValidationResult:
+    started = monotonic()
+    expected = {edit.path: edit.action for edit in workspace.changes}
+    if set(check.paths) != set(expected):
+        raise RepositoryValidationError("Patch validation must cover the approved paths.")
+    error = None
+    for path in check.paths:
+        target = workspace.root.joinpath(*PurePosixPath(path).parts)
+        try:
+            if expected[path] == "DELETE":
+                if target.exists() or target.is_symlink():
+                    raise ValueError
+                continue
+            if target.is_symlink() or not target.is_file():
+                raise ValueError
+            text = target.read_text(encoding="utf-8")
+            if target.suffix == ".json":
+                json.loads(text)
+            elif target.suffix == ".toml":
+                tomllib.loads(text)
+        except (ValueError, OSError):
+            error = f"Could not verify the approved change to {path}."
+            break
+    return ValidationResult(
+        check.check_id,
+        check.paths,
+        check.required,
+        "FAILED" if error else "PASSED",
+        1 if error else 0,
+        int((monotonic() - started) * 1000),
+        error or "Approved paths and applicable JSON/TOML syntax verified.",
+        error,
+        "builtin",
+    )
