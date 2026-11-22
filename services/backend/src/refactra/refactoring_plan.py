@@ -74,15 +74,21 @@ class ValidationCheck(_PlanModel):
 
 class PlanProposal(_PlanModel):
     summary: PlanText
-    changes: Annotated[list[ProposedChange], Field(min_length=1, max_length=10)]
-    acceptance_criteria: Annotated[list[AcceptanceCriterion], Field(min_length=1, max_length=16)]
-    validation_checks: Annotated[list[ValidationCheck], Field(min_length=1, max_length=12)]
-    preserve_behavior: Annotated[list[PlanText], Field(min_length=1, max_length=16)]
+    changes: Annotated[list[ProposedChange], Field(max_length=10)]
+    acceptance_criteria: Annotated[list[AcceptanceCriterion], Field(max_length=16)]
+    validation_checks: Annotated[list[ValidationCheck], Field(max_length=12)]
+    preserve_behavior: Annotated[list[PlanText], Field(max_length=16)]
     assumptions: Annotated[list[PlanText], Field(max_length=16)]
     blocking_questions: Annotated[list[PlanText], Field(max_length=16)]
 
     @model_validator(mode="after")
     def check_references(self):
+        if not self.changes:
+            if self.validation_checks:
+                raise ValueError("A plan without changes cannot require validation.")
+            return self
+        if not self.acceptance_criteria or not self.preserve_behavior:
+            raise ValueError("Describe the acceptance criteria and behavior to preserve.")
         if len({change.path for change in self.changes}) != len(self.changes):
             raise ValueError("Each path must have one proposed action.")
         criteria = {item.id for item in self.acceptance_criteria}
@@ -108,6 +114,7 @@ class PlanContent(PlanProposal):
 
 
 class PlanReadiness(BaseModel):
+    outcome: Literal["ready", "needs_clarification", "unsupported"]
     blocking_question_count: int
     unsupported_check_ids: list[str]
     has_required_supported_check: bool
@@ -140,20 +147,28 @@ def evaluate_plan_readiness(proposal: PlanProposal) -> PlanReadiness:
             name = PurePosixPath(path).name
             if path in deleted or not re.fullmatch(r"(?:test_.*|.*_test)\.py", name):
                 scope_errors.append(f"{path} must be a pytest test file retained by the plan.")
+    unsupported_checks = sorted(
+        {
+            check.check_id
+            for check in proposal.validation_checks
+            if check.check_id not in SUPPORTED_PLAN_CHECK_IDS
+        }
+    )
+    required_check = any(
+        check.required and check.check_id in SUPPORTED_PLAN_CHECK_IDS
+        for check in proposal.validation_checks
+    )
+    outcome = "ready"
+    if proposal.blocking_questions:
+        outcome = "needs_clarification"
+    elif not proposal.changes or scope_errors or unsupported_checks or not required_check:
+        outcome = "unsupported"
     return PlanReadiness(
+        outcome=outcome,
         scope_errors=list(dict.fromkeys(scope_errors)),
         blocking_question_count=len(proposal.blocking_questions),
-        unsupported_check_ids=sorted(
-            {
-                check.check_id
-                for check in proposal.validation_checks
-                if check.check_id not in SUPPORTED_PLAN_CHECK_IDS
-            }
-        ),
-        has_required_supported_check=any(
-            check.required and check.check_id in SUPPORTED_PLAN_CHECK_IDS
-            for check in proposal.validation_checks
-        ),
+        unsupported_check_ids=unsupported_checks,
+        has_required_supported_check=required_check,
     )
 
 

@@ -327,6 +327,7 @@ def test_read_saved_plan_revisions(browser, session_factory, proposal):
             "repository": {"repository_id": 42, "base_branch": "feature/cart", "base_sha": PIN},
         }
         assert payload["readiness"] == {
+            "outcome": "needs_clarification" if plan.revision == 1 else "ready",
             "blocking_question_count": 1 if plan.revision == 1 else 0,
             "unsupported_check_ids": ["VC1"] if plan.revision == 1 else [],
             "has_required_supported_check": plan.revision == 2,
@@ -334,6 +335,30 @@ def test_read_saved_plan_revisions(browser, session_factory, proposal):
         }
     assert client.get(f"{url}?revision=3").status_code == 404
     assert client.get(f"{url}?revision=0").status_code == 422
+
+
+@pytest.mark.parametrize(
+    "questions, outcome", [([], "unsupported"), (["Which endpoint?"], "needs_clarification")]
+)
+def test_no_change_outcome_can_be_reviewed_but_cannot_be_approved(
+    browser, session_factory, proposal, questions, outcome
+):
+    client, _, _, _ = browser
+    receipt = submit(client)
+    url = f"{receipt.headers['Location']}/plan"
+    run_id = UUID(receipt.json()["run_id"])
+    analyze_fixture_run(session_factory)
+    with session_factory.begin() as session:
+        plan = save_refactoring_plan(
+            session,
+            run_id,
+            dict(proposal, changes=[], validation_checks=[], blocking_questions=questions),
+            expected_revision=0,
+        )
+    assert client.get(url).json()["readiness"]["outcome"] == outcome
+    headers = {"Origin": "https://refactra.example", "X-Refactra-CSRF": "1"}
+    approval = {"plan_id": str(plan.id), "revision": 1, "sha256": plan.sha256}
+    assert client.post(f"{url}/approve", json=approval, headers=headers).status_code == 409
 
 
 def test_revising_a_plan_appends_once_and_preserves_previous_revision(
