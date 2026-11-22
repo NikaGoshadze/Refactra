@@ -62,12 +62,12 @@ def load_approved_target(session, run_id: UUID):
         or not re.fullmatch(r"[0-9a-f]{40}", commit)
     ):
         raise PublicationTargetError("The prepared commit does not match the approved destination.")
-    return run, target.sha256, commit, head
+    return run, target.sha256, commit, head, result
 
 
 def push_approved_branch(session_factory, run_id: UUID, artifact: Path) -> dict:
     with session_factory() as session:
-        run, target_sha, commit, head = load_approved_target(session, run_id)
+        run, target_sha, commit, head, _ = load_approved_target(session, run_id)
     app, reader = authorize_run_repository(run)
     source = (artifact / "repository.git").resolve(strict=True)
     with TemporaryDirectory(prefix="refactra-push-") as directory:

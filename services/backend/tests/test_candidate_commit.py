@@ -498,7 +498,16 @@ def test_typescript_feature_discovery_through_review_and_draft(
     receipt = prepare_candidate_commit(
         session_factory, run.id, 1, source, artifact, save_target=True
     )
-    check_branch_publication(session_factory, run, source, artifact, receipt, monkeypatch, False)
+    check_branch_publication(
+        session_factory,
+        run,
+        source,
+        artifact,
+        receipt,
+        monkeypatch,
+        False,
+        expected_warning="`node.vitest` · UNAVAILABLE",
+    )
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="Requires local Git.")
@@ -627,7 +636,15 @@ def test_prepares_the_saved_diff_as_one_pinned_commit(
 
 
 def check_branch_publication(
-    session_factory, run, source, artifact, registered, monkeypatch, lost_response
+    session_factory,
+    run,
+    source,
+    artifact,
+    registered,
+    monkeypatch,
+    lost_response,
+    *,
+    expected_warning=None,
 ):
     push = publication.push_approved_branch
     with pytest.raises(PublicationTargetError, match="owner must approve"):
@@ -691,7 +708,13 @@ def check_branch_publication(
         assert [event.payload for event in events] == [pushed]
     monkeypatch.setattr(draft, "resolve_revision", resolve)
     check_draft_publication(
-        session_factory, run, pushed, monkeypatch, lost_response, artifacts=artifact.parent
+        session_factory,
+        run,
+        pushed,
+        monkeypatch,
+        lost_response,
+        artifacts=artifact.parent,
+        expected_warning=expected_warning,
     )
     assert len(requested_scope) == (2 if lost_response else 3)
     ref = f"refs/heads/{pushed['head_branch']}"
@@ -701,7 +724,9 @@ def check_branch_publication(
     assert git(upstream, "rev-parse", ref).decode().strip() == run.base_sha
 
 
-def check_draft_publication(session_factory, run, pushed, monkeypatch, lost_response, *, artifacts):
+def check_draft_publication(
+    session_factory, run, pushed, monkeypatch, lost_response, *, artifacts, expected_warning
+):
     head = pushed["head_branch"]
     commit = pushed["commit_sha"]
     pr = {
@@ -730,6 +755,8 @@ def check_draft_publication(session_factory, run, pushed, monkeypatch, lost_resp
         assert request.method == "POST"
         body = json.loads(request.content)
         assert (body["head"], body["base"], body["draft"]) == (head, "main", True)
+        if expected_warning:
+            assert "Validation warnings" in body["body"] and expected_warning in body["body"]
         methods.append("POST")
         if lost_response:
             raise httpx.ReadTimeout("Fixture lost the creation response", request=request)

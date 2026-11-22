@@ -14,8 +14,8 @@ COPY --from=typescript-tools /tools/node_modules/csstype /node_modules/csstype
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY services/backend/pyproject.toml services/backend/uv.lock ./
-RUN uv sync --frozen --no-install-project
+RUN uv sync --frozen --group validation --no-install-project
 COPY services/backend/ ./
-RUN uv sync --frozen && useradd --no-log-init --create-home --uid 10001 refactra && chown refactra:refactra /app
+RUN uv sync --frozen --group validation && useradd --no-log-init --create-home --uid 10001 refactra && chown refactra:refactra /app
 USER refactra
 CMD ["uv", "run", "--no-sync", "uvicorn", "refactra.api:app", "--host", "0.0.0.0", "--port", "8000"]

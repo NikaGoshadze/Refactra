@@ -102,6 +102,7 @@ def process_candidate_validation(
                         "status": check.status,
                         "exit_code": check.exit_code,
                         "duration_ms": check.duration_ms,
+                        "reason": check.reason if check.status == "UNAVAILABLE" else None,
                     }
                     for check in checks
                 ],
