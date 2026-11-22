@@ -15,6 +15,7 @@ import refactra.candidate_validation_worker as validation_worker
 import refactra.publication_branch as publication
 import refactra.publication_pr as draft
 import refactra.repository_plan_worker as planning
+import refactra.repository_validation as validation
 import refactra.repository_workspace as workspace
 from refactra.analysis_context import prepare_analysis_context, save_analysis_context
 from refactra.auth_sessions import GitHubIdentity
@@ -61,6 +62,7 @@ from refactra.repository_validation import ValidationResult
 from refactra.worker import claim_command
 
 from .test_analysis_context import prepare
+from .test_candidate_results import passing_patch
 from .test_openai_analysis import response
 from .test_refactoring_plan import analyze_fixture_run
 from .test_refactoring_plan import proposal as proposal
@@ -71,10 +73,11 @@ def git(directory, *args):
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="Requires local Git.")
-@pytest.mark.parametrize("passes", [True, False])
+@pytest.mark.parametrize("status", ["PASSED", "FAILED", "UNAVAILABLE"])
 def test_worker_validates_generated_patch_and_recovers_commit_preparation(
-    pinned_source, tmp_path, session_factory, proposal, monkeypatch, passes
+    pinned_source, tmp_path, session_factory, proposal, monkeypatch, status
 ):
+    can_review = status != "FAILED"
     source, base = pinned_source
     run, _, context = prepare(session_factory, base_sha=base)
     with session_factory.begin() as session:
@@ -125,31 +128,34 @@ def test_worker_validates_generated_patch_and_recovers_commit_preparation(
     assert generate_candidate(session_factory, run.id, provider) == patch
     calls = []
 
-    def validate(staged):
+    def docker(*_):
+        if status == "UNAVAILABLE":
+            raise validation.RepositoryValidationError("Offline image missing.")
+        return "fixture"
+
+    def validate(staged, check, targets, image_id):
         assert (staged.root / "src/cart.py").read_text().strip() == "def cart(): return 2"
         calls.append(staged.base_sha)
-        status, exit_code = ("PASSED", 0) if passes else ("FAILED", 1)
-        return [
-            ValidationResult(
-                "python.pytest",
-                ["tests/test_cart.py"],
-                True,
-                status,
-                exit_code,
-                10,
-                "",
-                None,
-                "fixture",
-            )
-        ]
+        return ValidationResult(
+            check.check_id,
+            check.paths,
+            check.required,
+            status,
+            0 if can_review else 1,
+            10,
+            "",
+            None,
+            image_id,
+        )
 
-    monkeypatch.setattr(validation_worker, "validate_candidate", validate)
+    monkeypatch.setattr(validation, "_docker", docker)
+    monkeypatch.setattr(validation, "_validate_check", validate)
     job = claim_command(session_factory, "worker", workflow=WORKFLOW, kind=VALIDATE_CANDIDATE)
     assert job is not None
     process = validation_worker.process_candidate_validation
     options = {"source": source, "artifacts": tmp_path}
     worker = "worker"
-    if passes:
+    if can_review:
 
         def interrupt(*_, **__):
             raise KeyboardInterrupt
@@ -167,13 +173,20 @@ def test_worker_validates_generated_patch_and_recovers_commit_preparation(
         assert not process(session_factory, job, worker, **options)
         worker = "restart"
     assert process(session_factory, job, worker, **options)
-    assert calls == [base]
+    assert calls == ([] if status == "UNAVAILABLE" else [base])
     with session_factory() as session:
         result = session.scalar(
             select(RunCandidateResult).where(RunCandidateResult.run_id == run.id)
         )
-        assert session.get(RunCommand, job).status == ("DONE" if passes else "FAILED")
-        if passes:
+        assert session.get(RunCommand, job).status == ("DONE" if can_review else "FAILED")
+        if can_review:
+            checks = json.loads(result.document)["validation"]
+            assert [(check["check_id"], check["status"]) for check in checks] == [
+                ("python.pytest", status),
+                ("repository.patch", "PASSED"),
+            ]
+            if status == "UNAVAILABLE":
+                assert "offline Docker" in checks[0]["reason"]
             target = session.get(RunPublicationTarget, result.id)
             receipt = json.loads(target.document)
             artifact = tmp_path / f"{run.id}-r1" / "repository.git"
@@ -412,7 +425,7 @@ def test_typescript_feature_discovery_through_review_and_draft(
     analyze_fixture_run(session_factory)
     check = dict(proposal["validation_checks"][0], check_id=TYPESCRIPT_CHECK, paths=[config])
     proposal["changes"] = [{"path": path, "action": "MODIFY", "intent": "Update the heading."}]
-    proposal["validation_checks"] = [check]
+    proposal["validation_checks"] = [check, dict(check, check_id="node.vitest", paths=[])]
     response_text = json.dumps(proposal)
 
     def model(request):
@@ -462,7 +475,11 @@ def test_typescript_feature_discovery_through_review_and_draft(
             return
         assert result is not None
         report = json.loads(result.document)
-        assert report["validation"][0]["status"] == "PASSED"
+        assert [(item["check_id"], item["status"]) for item in report["validation"]] == [
+            (TYPESCRIPT_CHECK, "PASSED"),
+            ("node.vitest", "UNAVAILABLE"),
+            (PATCH_CHECK, "PASSED"),
+        ]
         assert "Order summary" in report["diff"]
     artifact = tmp_path / f"{run.id}-r1"
     receipt = prepare_candidate_commit(
@@ -525,7 +542,8 @@ def test_prepares_the_saved_diff_as_one_pinned_commit(
             None,
             "fixture",
         )
-        saved = save_validated_candidate(session, run.id, candidate, diff, [check])
+        patch_check = passing_patch(*(item.path for item in candidate.edits))
+        saved = save_validated_candidate(session, run.id, candidate, diff, [check, patch_check])
 
     output = tmp_path / f"{run.id}-r1"
     receipt = prepare_candidate_commit(session_factory, run.id, 1, source, output)
@@ -588,7 +606,7 @@ def test_prepares_the_saved_diff_as_one_pinned_commit(
     edit = candidate.edits[0].model_copy(update={"content": "def cart(): return 3\n"})
     mismatch = candidate.model_copy(update={"edits": [edit, *candidate.edits[1:]]})
     with session_factory.begin() as session:
-        save_validated_candidate(session, run.id, mismatch, diff, [check])
+        save_validated_candidate(session, run.id, mismatch, diff, [check, patch_check])
     invalid_output = tmp_path / "invalid"
     with pytest.raises(CandidateCommitError, match="reviewed diff"):
         prepare_candidate_commit(session_factory, run.id, 2, source, invalid_output)

@@ -33,7 +33,7 @@ const activeMessages = {
   queued: "Waiting for the worker to verify the plan approval.",
   generating: "Generating the candidate patch.",
   validating: "Running validation checks.",
-  preparing: "Tests passed. Preparing the commit for review.",
+  preparing: "Preparing the commit for review.",
   publishing: "Publishing the draft PR.",
 };
 

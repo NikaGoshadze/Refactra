@@ -173,7 +173,7 @@ def _candidate_progress(
         return CandidateProgressRead(status="idle", result=result)
     stage, failure = CANDIDATE_STAGES[kind]
     if kind == VALIDATE_CANDIDATE and result:
-        stage, failure = "preparing", "Tests passed, but the worker could not prepare the commit."
+        stage, failure = "preparing", "The worker could not prepare the reviewed commit."
     if status == "FAILED":
         return CandidateProgressRead(status="failed", message=failure, result=result)
     return CandidateProgressRead(status=stage, result=result)
