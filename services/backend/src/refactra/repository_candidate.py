@@ -22,19 +22,18 @@ from refactra.openai_analysis import (
     OpenAIAnalysisProvider,
     execute_model_request,
 )
-from refactra.refactoring_plan import load_approved_plan
+from refactra.refactoring_plan import (
+    VALIDATE_CANDIDATE,
+    approved_file_operation,
+    load_approved_plan,
+    validation_command_key,
+)
 from refactra.repository_analysis_worker import (
     GENERATE_CANDIDATE,
     _claimed_command,
     candidate_command_key,
 )
 from refactra.repository_workspace import WorkspacePreparationError, prepare_approved_workspace
-
-VALIDATE_CANDIDATE = "VALIDATE_CANDIDATE"
-
-
-def validation_command_key(run_id: UUID, revision: int) -> str:
-    return f"repository:candidate-validation:{run_id}:{revision}"
 
 
 def _attempt_id(run_id: UUID, plan_sha256: str) -> UUID:
@@ -45,6 +44,8 @@ def generate_candidate(
     session_factory, run_id: UUID, provider, *, check_admission=None
 ) -> CandidatePatch:
     with prepare_approved_workspace(session_factory, run_id) as workspace:
+        if approved_file_operation(workspace.changes, workspace.validation_checks):
+            raise CandidatePatchError("Special file operations use the validation worker.")
         attempt_id = _attempt_id(run_id, workspace.sha256)
         with session_factory() as session:
             saved = session.get(RunGeneratedCandidate, run_id)

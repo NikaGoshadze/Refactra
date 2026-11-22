@@ -1,5 +1,7 @@
 """Validate a persisted candidate and prepare the exact commit for review."""
 
+import json
+from base64 import b64encode
 from pathlib import Path
 from uuid import UUID
 
@@ -7,15 +9,47 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from refactra.candidate_commit import prepare_candidate_commit
-from refactra.candidate_patch import CandidatePatch, CandidatePatchError, apply_candidate_patch
+from refactra.candidate_patch import (
+    MAX_EDIT_FILE_BYTES,
+    CandidatePatch,
+    CandidatePatchError,
+    apply_candidate_patch,
+)
 from refactra.candidate_results import load_validated_candidate, save_validated_candidate
 from refactra.github_app import GitHubAppError
-from refactra.models import Run, RunEvent, RunGeneratedCandidate
-from refactra.refactoring_plan import load_approved_plan
+from refactra.models import Run, RunCandidateResult, RunEvent, RunGeneratedCandidate
+from refactra.refactoring_plan import PlanContent, approved_file_operation, load_approved_plan
 from refactra.repository_analysis_worker import _claimed_command
 from refactra.repository_candidate import VALIDATE_CANDIDATE, _attempt_id, validation_command_key
 from refactra.repository_validation import validate_candidate
 from refactra.repository_workspace import prepare_approved_workspace
+
+
+def _file_operation_candidate(session, run_id, plan, content, operation, artifacts):
+    existing = session.scalar(
+        select(RunCandidateResult)
+        .where(RunCandidateResult.run_id == run_id)
+        .order_by(RunCandidateResult.revision.desc())
+        .limit(1)
+    )
+    if existing is not None:
+        return CandidatePatch.model_validate(json.loads(existing.document)["candidate"])
+    edit = content.changes[0]
+    replacement = None
+    if operation == "asset_replace":
+        asset = artifacts / f"{run_id}.asset"
+        if asset.is_symlink() or not asset.is_file() or asset.stat().st_nlink != 1:
+            raise CandidatePatchError("Stage a regular replacement asset in the worker directory.")
+        with asset.open("rb") as stream:
+            data = stream.read(MAX_EDIT_FILE_BYTES + 1)
+        if not data or len(data) > MAX_EDIT_FILE_BYTES:
+            raise CandidatePatchError("Replacement assets must fit within 64 KiB.")
+        replacement = b64encode(data).decode("ascii")
+    return CandidatePatch(
+        base_sha=content.repository.base_sha,
+        plan_sha256=plan.sha256,
+        edits=[{"path": edit.path, "action": edit.action, "content": replacement}],
+    )
 
 
 def process_candidate_validation(
@@ -33,14 +67,21 @@ def process_candidate_validation(
     try:
         with session_factory() as session:
             plan = load_approved_plan(session, session.get(Run, run_id))
-            generated = session.get(RunGeneratedCandidate, run_id)
-            if (
-                generated is None
-                or generated.reservation_id != _attempt_id(run_id, plan.sha256)
-                or key != validation_command_key(run_id, plan.revision)
-            ):
+            if key != validation_command_key(run_id, plan.revision):
                 raise CandidatePatchError("A matching generated candidate is required.")
-            candidate = CandidatePatch.model_validate_json(generated.document)
+            content = PlanContent.model_validate_json(plan.document)
+            operation = approved_file_operation(content.changes, content.validation_checks)
+            if operation:
+                candidate = _file_operation_candidate(
+                    session, run_id, plan, content, operation, artifacts
+                )
+            else:
+                generated = session.get(RunGeneratedCandidate, run_id)
+                if generated is None or generated.reservation_id != _attempt_id(
+                    run_id, plan.sha256
+                ):
+                    raise CandidatePatchError("A matching generated candidate is required.")
+                candidate = CandidatePatch.model_validate_json(generated.document)
             result = load_validated_candidate(session, run_id, candidate)
         if result is None:
             with prepare_approved_workspace(session_factory, run_id) as workspace:

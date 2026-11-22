@@ -2,6 +2,7 @@
 
 import json
 import re
+from collections.abc import Sequence
 from hashlib import sha256
 from pathlib import PurePosixPath
 from typing import Annotated, Literal
@@ -26,9 +27,11 @@ from refactra.repository_selection import is_excluded_source_path
 MAX_PLAN_BYTES = 64 * 1024
 PATCH_CHECK = "repository.patch"
 TYPESCRIPT_CHECK = "typescript.tsc"
-SUPPORTED_PLAN_CHECK_IDS = ("python.pytest", PATCH_CHECK, TYPESCRIPT_CHECK)
+ASSET_CHECK = "repository.asset"
+SUPPORTED_PLAN_CHECK_IDS = ("python.pytest", PATCH_CHECK, TYPESCRIPT_CHECK, ASSET_CHECK)
 APPLY_PLAN_APPROVAL = "APPLY_PLAN_APPROVAL"
 GENERATE_PLAN = "GENERATE_PLAN"
+VALIDATE_CANDIDATE = "VALIDATE_CANDIDATE"
 PLAN_FEEDBACK_REQUESTED = "PLAN_FEEDBACK_REQUESTED"
 PROTECTED_PYTHON_FILES = {"conftest.py", "setup.py", "sitecustomize.py", "usercustomize.py"}
 PlanText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
@@ -136,16 +139,45 @@ def is_typescript_config(path: str) -> bool:
     return bool(re.fullmatch(r"tsconfig(?:\.[\w-]+)*\.json", PurePosixPath(path).name))
 
 
+def approved_file_operation(
+    changes: Sequence[ProposedChange], checks: Sequence[ValidationCheck]
+) -> Literal["env_delete", "asset_replace"] | None:
+    if len(changes) != 1 or len(checks) != 1:
+        return None
+    edit, check = changes[0], checks[0]
+    if not check.required or check.paths != [edit.path]:
+        return None
+    if (edit.path, edit.action, check.check_id) == (".env", "DELETE", PATCH_CHECK):
+        return "env_delete"
+    path = PurePosixPath(edit.path)
+    if (
+        edit.action == "MODIFY"
+        and check.check_id == ASSET_CHECK
+        and is_editable_plan_path(path)
+        and path.suffix.lower()
+        in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".woff", ".woff2"}
+    ):
+        return "asset_replace"
+    return None
+
+
+def validation_command_key(run_id: UUID, revision: int) -> str:
+    return f"repository:candidate-validation:{run_id}:{revision}"
+
+
 def evaluate_plan_readiness(proposal: PlanProposal) -> PlanReadiness:
     """Check proposal metadata against the initial Python validation catalog."""
+    operation = approved_file_operation(proposal.changes, proposal.validation_checks)
     scope_errors = [
         f"{edit.path} is outside the editable text scope."
         for edit in proposal.changes
-        if not is_editable_plan_path(PurePosixPath(edit.path))
+        if operation != "env_delete" and not is_editable_plan_path(PurePosixPath(edit.path))
     ]
     deleted = {edit.path for edit in proposal.changes if edit.action == "DELETE"}
     changed_paths = {edit.path for edit in proposal.changes}
     for check in proposal.validation_checks:
+        if check.check_id == ASSET_CHECK and operation != "asset_replace":
+            scope_errors.append("Asset replacement needs one approved image or font path.")
         if check.check_id == PATCH_CHECK and set(check.paths) != changed_paths:
             scope_errors.append("The repository.patch check must cover exactly the proposed files.")
         if check.check_id == TYPESCRIPT_CHECK and (
@@ -268,16 +300,28 @@ def save_refactoring_plan(
     """Caller authorizes the run and commits. The server supplies repository identity."""
     if type(expected_revision) is not int or expected_revision < 0:
         raise ValueError("An expected plan revision of zero or higher is required.")
-    payload = PlanProposal.model_validate(proposal).model_dump(mode="json")
+    parsed = PlanProposal.model_validate(proposal)
+    payload = parsed.model_dump(mode="json")
     run = session.get(Run, run_id, with_for_update=True, populate_existing=True)
+    context = load_analysis_context(session, run_id) if run is not None else None
     if (
         run is None
         or run.workflow_version != "repository-v0.1"
         or run.status != "NEEDS_HUMAN_REVIEW"
         or session.get(RunAnalysisResult, run_id) is None
-        or load_analysis_context(session, run_id) is None
+        or context is None
     ):
         raise PlanRevisionConflict("A repository run with completed analysis is required.")
+    if approved_file_operation(parsed.changes, parsed.validation_checks):
+        path = parsed.changes[0].path
+        tracked = json.loads(context.document)["inventory"]["file_paths"]
+        if path not in tracked:
+            payload.update(
+                summary=f"{path} is absent from the pinned commit.",
+                changes=[],
+                validation_checks=[],
+                blocking_questions=[],
+            )
     payload.update(
         schema_version="1",
         run_id=str(run_id),

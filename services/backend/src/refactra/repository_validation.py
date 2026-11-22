@@ -10,9 +10,11 @@ from time import monotonic
 from typing import TYPE_CHECKING
 
 from refactra.refactoring_plan import (
+    ASSET_CHECK,
     PATCH_CHECK,
     TYPESCRIPT_CHECK,
     ValidationCheck,
+    approved_file_operation,
     is_typescript_config,
 )
 
@@ -246,7 +248,7 @@ def validate_candidate(workspace: "ApprovedWorkspace") -> list[ValidationResult]
     if not workspace.validation_checks:
         raise RepositoryValidationError("The approved plan has no validation checks.")
     targets = [
-        [] if check.check_id == PATCH_CHECK else _targets(workspace, check)
+        [] if check.check_id in {PATCH_CHECK, ASSET_CHECK} else _targets(workspace, check)
         for check in workspace.validation_checks
     ]
     image_id = _docker("image", "inspect", "--format", "{{.Id}}", IMAGE) if any(targets) else ""
@@ -263,6 +265,9 @@ def _validate_text_patch(
 ) -> ValidationResult:
     started = monotonic()
     expected = {edit.path: edit.action for edit in workspace.changes}
+    operation = approved_file_operation(workspace.changes, workspace.validation_checks)
+    if check.check_id == ASSET_CHECK and operation != "asset_replace":
+        raise RepositoryValidationError("The candidate is outside the approved asset scope.")
     if set(check.paths) != set(expected):
         raise RepositoryValidationError("Patch validation must cover the approved paths.")
     error = None
@@ -275,6 +280,10 @@ def _validate_text_patch(
                 continue
             if target.is_symlink() or not target.is_file():
                 raise ValueError
+            if operation == "asset_replace":
+                if not target.stat().st_size:
+                    raise ValueError
+                continue
             text = target.read_text(encoding="utf-8")
             if target.suffix == ".json":
                 json.loads(text)
@@ -283,6 +292,14 @@ def _validate_text_patch(
         except (ValueError, OSError):
             error = f"Could not verify the approved change to {path}."
             break
+    message = "Approved paths and applicable JSON/TOML syntax verified."
+    if operation == "env_delete":
+        message = (
+            "Verified that .env was removed. Rotate affected credentials before publication. "
+            "GitHub's diff can display deleted lines, and Git history still contains the original."
+        )
+    elif operation == "asset_replace":
+        message = "Verified the approved binary replacement."
     return ValidationResult(
         check.check_id,
         check.paths,
@@ -290,7 +307,7 @@ def _validate_text_patch(
         "FAILED" if error else "PASSED",
         1 if error else 0,
         int((monotonic() - started) * 1000),
-        error or "Approved paths and applicable JSON/TOML syntax verified.",
+        error or message,
         error,
         "builtin",
     )

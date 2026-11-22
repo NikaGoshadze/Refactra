@@ -1,13 +1,15 @@
 """Apply bounded, structured candidate edits to a freshly staged workspace."""
 
+from base64 import b64decode
 from collections.abc import Iterator
 from difflib import diff_bytes, unified_diff
+from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from refactra.refactoring_plan import PlanPath
+from refactra.refactoring_plan import PlanPath, approved_file_operation
 
 if TYPE_CHECKING:
     from refactra.repository_workspace import ApprovedWorkspace
@@ -27,7 +29,7 @@ class CandidateEdit(BaseModel):
 
     path: PlanPath
     action: Literal["CREATE", "MODIFY", "DELETE"]
-    content: Annotated[str, Field(max_length=MAX_EDIT_FILE_BYTES)] | None
+    content: Annotated[str, Field(max_length=((MAX_EDIT_FILE_BYTES + 2) // 3) * 4)] | None
 
 
 class CandidatePatch(BaseModel):
@@ -79,6 +81,7 @@ def apply_candidate_patch(workspace: "ApprovedWorkspace", candidate: CandidatePa
         )
 
     root = workspace.root.resolve(strict=True)
+    operation = approved_file_operation(workspace.changes, workspace.validation_checks)
     writes: list[tuple[Path, str, bytes | None]] = []
     diff = bytearray()
     for edit in sorted(candidate.edits, key=lambda item: item.path):
@@ -103,8 +106,31 @@ def apply_candidate_patch(workspace: "ApprovedWorkspace", candidate: CandidatePa
                 raise CandidatePatchError(
                     "An approved edit targets a missing, linked, or non-regular file."
                 )
-            with destination.open("rb") as source:
-                before = source.read(MAX_EDIT_FILE_BYTES + 1)
+            if operation == "env_delete":
+                before = b""
+            else:
+                with destination.open("rb") as source:
+                    before = source.read(MAX_EDIT_FILE_BYTES + 1)
+        if operation == "asset_replace":
+            try:
+                after = b64decode(edit.content or "", validate=True)
+            except ValueError:
+                raise CandidatePatchError("The replacement asset is invalid.") from None
+            if (
+                not after
+                or len(after) > MAX_EDIT_FILE_BYTES
+                or len(before or b"") > MAX_EDIT_FILE_BYTES
+            ):
+                raise CandidatePatchError("Asset replacements must use bounded file contents.")
+            if before == after:
+                raise CandidatePatchError("The supplied asset must change the file.")
+            diff.extend(
+                f"Replace binary file {edit.path}\n"
+                f"Before SHA-256 {sha256(before or b'').hexdigest()}\n"
+                f"After SHA-256 {sha256(after).hexdigest()}\n".encode()
+            )
+            writes.append((destination, edit.action, after))
+            continue
         try:
             after = edit.content.encode("utf-8") if edit.content is not None else None
             for content in (before, after):
