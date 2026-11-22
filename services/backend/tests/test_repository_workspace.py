@@ -12,6 +12,7 @@ from refactra.models import ModelReservation, RunCommand, RunGeneratedCandidate
 from refactra.openai_analysis import OpenAIAnalysisProvider
 from refactra.refactoring_plan import (
     APPLY_PLAN_APPROVAL,
+    PATCH_CHECK,
     PlanContent,
     approve_refactoring_plan,
     save_refactoring_plan,
@@ -24,6 +25,7 @@ from refactra.repository_analysis_worker import (
 )
 from refactra.repository_candidate import generate_candidate, process_repository_candidate
 from refactra.repository_snapshot import SourceFile, SourceSnapshot
+from refactra.repository_validation import validate_candidate
 from refactra.worker import claim_command
 
 from .test_analysis_context import prepare
@@ -39,9 +41,9 @@ from .test_repository_snapshot import token as token
     [
         ("src/cart.py", "CREATE", ["src/cart.py"], "action does not match"),
         ("src/cart.py", "DELETE", [], "action does not match"),
-        ("pyproject.toml", "MODIFY", ["pyproject.toml"], "editable Python"),
-        ("tests/conftest.py", "CREATE", [], "editable Python"),
-        (".github/handler.py", "CREATE", [], "editable Python"),
+        (".env", "DELETE", [".env"], "editable text"),
+        ("tests/conftest.py", "CREATE", [], "editable text"),
+        (".github/handler.py", "CREATE", [], "editable text"),
         ("src/cart.py", "CREATE", ["src/cart.py/inside.py"], "overlap a directory"),
         ("src/cart.py", "CREATE", ["SRC/other.py"], "paths collide"),
         ("src/cart.py", "CREATE", ["src/../escape.py"], "unsupported filesystem path"),
@@ -59,6 +61,47 @@ def test_workspace_rejects_incompatible_paths(proposal, path, action, sources, e
     snapshot = SourceSnapshot(42, SHA, tuple(SourceFile(name, b"data") for name in sources))
     with pytest.raises(workspace.WorkspacePreparationError, match=error):
         workspace._workspace_files(snapshot, content)
+
+
+@pytest.mark.parametrize("config, expected", [('{"enabled":true}', "PASSED"), ("{", "FAILED")])
+def test_frontend_and_config_patch_uses_builtin_validation(tmp_path, proposal, config, expected):
+    paths = ["apps/web/page.tsx", "settings.json"]
+    original = ["export const title = <h1>Before</h1>;\n", "{}"]
+    changes = [{"path": path, "action": "MODIFY", "intent": "Update setting."} for path in paths]
+    check = dict(proposal["validation_checks"][0], check_id=PATCH_CHECK, paths=paths)
+    plan = PlanContent(
+        **(proposal | {"changes": changes, "validation_checks": [check]}),
+        schema_version="1",
+        run_id=uuid4(),
+        repository={"repository_id": 42, "base_branch": "main", "base_sha": SHA},
+    )
+    snapshot = SourceSnapshot(
+        42,
+        SHA,
+        tuple(SourceFile(p, text.encode()) for p, text in zip(paths, original, strict=True)),
+    )
+    files = workspace._workspace_files(snapshot, plan)
+    for path, content in files.items():
+        destination = tmp_path / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+    approved = workspace.ApprovedWorkspace(
+        tmp_path, SHA, 1, "b" * 64, len(files), tuple(plan.changes), tuple(plan.validation_checks)
+    )
+    patch = CandidatePatch(
+        base_sha=SHA,
+        plan_sha256=approved.sha256,
+        edits=[
+            {"path": path, "action": "MODIFY", "content": text}
+            for path, text in zip(
+                paths, ["export const title = <h1>After</h1>;\n", config], strict=True
+            )
+        ],
+    )
+    diff = workspace.apply_candidate_patch(approved, patch)
+    assert all(path.encode() in diff for path in paths)
+    (result,) = validate_candidate(approved)
+    assert (result.status, result.image_id) == (expected, "builtin")
 
 
 @pytest.mark.parametrize("scenario", ["valid", "recover", "outside_scope"])

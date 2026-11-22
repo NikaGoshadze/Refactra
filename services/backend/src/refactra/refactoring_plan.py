@@ -24,7 +24,8 @@ from refactra.models import Run, RunAnalysisResult, RunCommand, RunEvent, RunPla
 from refactra.repository_selection import is_excluded_source_path
 
 MAX_PLAN_BYTES = 64 * 1024
-SUPPORTED_PLAN_CHECK_IDS = ("python.pytest",)
+PATCH_CHECK = "repository.patch"
+SUPPORTED_PLAN_CHECK_IDS = ("python.pytest", PATCH_CHECK)
 APPLY_PLAN_APPROVAL = "APPLY_PLAN_APPROVAL"
 GENERATE_PLAN = "GENERATE_PLAN"
 PLAN_FEEDBACK_REQUESTED = "PLAN_FEEDBACK_REQUESTED"
@@ -123,9 +124,9 @@ class PlanReadiness(BaseModel):
 
 def is_editable_plan_path(path: PurePosixPath) -> bool:
     return (
-        path.suffix in {".py", ".pyi"}
-        and path.name.casefold() not in PROTECTED_PYTHON_FILES
-        and not any(part.startswith(".") for part in path.parts)
+        path.name.casefold() not in PROTECTED_PYTHON_FILES
+        and not any(part.startswith(".") for part in path.parts[:-1])
+        and (not path.name.startswith(".") or path.name in {".gitignore", ".editorconfig"})
         and not is_excluded_source_path(path)
     )
 
@@ -133,12 +134,15 @@ def is_editable_plan_path(path: PurePosixPath) -> bool:
 def evaluate_plan_readiness(proposal: PlanProposal) -> PlanReadiness:
     """Check proposal metadata against the initial Python validation catalog."""
     scope_errors = [
-        f"{edit.path} is outside the editable Python scope."
+        f"{edit.path} is outside the editable text scope."
         for edit in proposal.changes
         if not is_editable_plan_path(PurePosixPath(edit.path))
     ]
     deleted = {edit.path for edit in proposal.changes if edit.action == "DELETE"}
+    changed_paths = {edit.path for edit in proposal.changes}
     for check in proposal.validation_checks:
+        if check.check_id == PATCH_CHECK and set(check.paths) != changed_paths:
+            scope_errors.append("The repository.patch check must cover exactly the proposed files.")
         if check.check_id != "python.pytest":
             continue
         if not check.paths:

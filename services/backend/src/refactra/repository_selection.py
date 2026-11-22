@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from posixpath import normpath
 
-from refactra.repository_inventory import LANGUAGES, RepositoryInventory
+from refactra.repository_inventory import RepositoryInventory
 from refactra.repository_snapshot import SKIP_DIRECTORIES, SourceSnapshot
 
 MAX_FILES = 8
@@ -72,8 +72,6 @@ def eligible_file_role(path: str, inventory: RepositoryInventory) -> str | None:
         return None
     if path in inventory.manifest_paths or path in inventory.configuration_paths:
         return "metadata"
-    if PurePosixPath(path).suffix not in LANGUAGES:
-        return None
     return "test" if path in inventory.test_candidates else "source"
 
 
