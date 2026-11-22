@@ -1,4 +1,4 @@
-import { PLAN, PLAN_APPROVAL_PATH, PLAN_PATH, PLAN_PROPOSAL, PUBLICATION_APPROVAL_PATH, RESULT, RESULT_PATH, REVISED_ARTIFACT, RUN_ID, RUN_PATH, expect, test } from "../fixtures/auth-proxy";
+import { PLAN, PLAN_APPROVAL_PATH, PLAN_PATH, PUBLICATION_APPROVAL_PATH, RESULT, RESULT_PATH, REVISED_ARTIFACT, RUN_ID, RUN_PATH, expect, test } from "../fixtures/auth-proxy";
 
 const REPOSITORY_ID = 1001132861;
 const receipt = { run_id: RUN_ID, base_branch: "feature/cart", base_sha: "a".repeat(40) };
@@ -104,22 +104,21 @@ test("opens, revises, and approves a saved plan", async ({ page, authProxy }) =>
     ["GET", RUN_PATH], ["GET", PLAN_PATH],
   ]);
 
-  await plan.getByText("Edit plan", { exact: true }).click();
-  const draft = plan.getByLabel("Summary", { exact: true });
-  await draft.fill("Extract cart rounding.");
-  const saveButton = plan.getByRole("button", { name: "Save plan revision" });
+  await expect(plan.getByText("Edit plan", { exact: true })).toHaveCount(0);
+  const feedback = plan.getByLabel("Changes you want");
+  const update = plan.getByRole("button", { name: "Update plan" });
+  await feedback.fill("Keep the Python test.");
   await page.route(`**${PLAN_PATH}`, (route) => {
     expect(route.request().postDataJSON()).toEqual({
-      expected_revision: 1, proposal: { ...PLAN_PROPOSAL, summary: "Extract cart rounding." },
+      expected_revision: 1, notes: "Keep the Python test.", answers: [""],
     });
     return route.fulfill({ status: 502,
       json: { error: { code: "github_unavailable", message: "Repository access could not be verified." } },
     });
   }, { times: 1 });
-  await saveButton.click();
+  await update.click();
   await expect(plan.getByRole("alert")).toContainText("Repository access could not be verified.");
-  await expect(draft).toHaveValue("Extract cart rounding.");
-  await plan.getByRole("button", { name: "Discard edits" }).click();
+  await expect(feedback).toHaveValue("Keep the Python test.");
 
   const revisedContent = { ...PLAN.content, blocking_questions: [],
     preserve_behavior: [...PLAN.content.preserve_behavior, "Round half to even."],
@@ -137,19 +136,18 @@ test("opens, revises, and approves a saved plan", async ({ page, authProxy }) =>
     } });
   });
   await answer.fill("Round half to even.");
-  await plan.getByLabel("Changes you want").fill("Keep the Python test.");
-  await plan.getByRole("button", { name: "Update plan" }).click();
+  await update.click();
   await expect(plan.getByText("Updating plan…")).toBeVisible();
+  await expect(update).toBeDisabled();
+  await expect(plan.getByRole("button", { name: "Approve plan revision 1" })).toBeDisabled();
   await expect(plan.getByText("Round half to even.", { exact: true })).toBeVisible();
   await expect(plan.getByText(REVISED_ARTIFACT.sha256, { exact: true })).toBeVisible();
   await expect(plan.getByText("Unsupported checks VC1")).toHaveCount(0);
 
   const approve = plan.getByRole("button", { name: "Approve plan revision 2" });
   await expect(approve).toBeEnabled();
-  await plan.getByText("Edit plan", { exact: true }).click();
-  await draft.fill("Changed summary.");
-  await expect(approve).toBeDisabled();
-  await plan.getByRole("button", { name: "Discard edits" }).click();
+  await expect(feedback).toHaveValue("");
+  await expect(plan.getByText("Save your edits before approving.")).toHaveCount(0);
   const result = page.getByRole("region", { name: "Candidate result" });
   const link = "https://github.com/fixture/example/pull/7";
   let phase: "validating" | "preparing" | "review" | "draft" = "validating";

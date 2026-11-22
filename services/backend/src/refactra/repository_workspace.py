@@ -35,6 +35,7 @@ from refactra.refactoring_plan import (
     approval_command_key,
     approved_file_operation,
     is_editable_plan_path,
+    is_env_cleanup,
     load_approved_plan,
 )
 from refactra.repository_plan_worker import authorize_plan
@@ -88,14 +89,15 @@ def _workspace_files(snapshot: SourceSnapshot, content: PlanContent) -> dict[Pur
         if not is_excluded_source_path(path)
     }
     operation = approved_file_operation(content.changes, content.validation_checks)
-    if operation == "env_delete" and PurePosixPath(".env") in paths:
+    env_cleanup = is_env_cleanup(content.changes, content.validation_checks)
+    if env_cleanup and PurePosixPath(".env") in paths:
         files[PurePosixPath(".env")] = b""
     expected_paths = set(files)
     for change in content.changes:
         path = _workspace_path(change.path)
-        if operation != "env_delete" and not is_editable_plan_path(path):
+        if not env_cleanup and not is_editable_plan_path(path):
             raise WorkspacePreparationError("Approved changes must target editable text files.")
-        if (change.action == "CREATE") == (path in files):
+        if (change.action == "CREATE") == (path in paths):
             raise WorkspacePreparationError(
                 "An approved file action does not match the pinned source."
             )

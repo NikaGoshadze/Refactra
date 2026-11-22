@@ -15,6 +15,7 @@ from refactra.refactoring_plan import (
     TYPESCRIPT_CHECK,
     ValidationCheck,
     approved_file_operation,
+    is_env_cleanup,
     is_typescript_config,
 )
 
@@ -293,7 +294,7 @@ def _validate_text_patch(
             error = f"Could not verify the approved change to {path}."
             break
     message = "Approved paths and applicable JSON/TOML syntax verified."
-    if operation == "env_delete":
+    if is_env_cleanup(workspace.changes, workspace.validation_checks):
         message = (
             "Verified that .env was removed. Rotate affected credentials before publication. "
             "GitHub's diff can display deleted lines, and Git history still contains the original."

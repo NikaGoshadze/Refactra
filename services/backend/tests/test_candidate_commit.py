@@ -19,7 +19,7 @@ import refactra.repository_workspace as workspace
 from refactra.analysis_context import prepare_analysis_context, save_analysis_context
 from refactra.auth_sessions import GitHubIdentity
 from refactra.candidate_commit import CandidateCommitError, prepare_candidate_commit
-from refactra.candidate_patch import CandidatePatch
+from refactra.candidate_patch import CandidatePatch, CandidatePatchError, apply_candidate_patch
 from refactra.candidate_results import save_validated_candidate
 from refactra.models import (
     RunCandidateResult,
@@ -49,7 +49,11 @@ from refactra.repository_analysis_worker import (
     enqueue_repository_analysis,
     process_repository_plan_approval,
 )
-from refactra.repository_candidate import VALIDATE_CANDIDATE, generate_candidate
+from refactra.repository_candidate import (
+    VALIDATE_CANDIDATE,
+    generate_candidate,
+    process_repository_candidate,
+)
 from refactra.repository_revision import RepositoryRevision
 from refactra.repository_runs import create_repository_run
 from refactra.repository_snapshot import SourceFile, SourceSnapshot
@@ -208,11 +212,13 @@ def pinned_source(tmp_path):
     return source, base
 
 
-@pytest.mark.parametrize("replace_asset", [False, True])
-def test_approved_file_operations_skip_model_and_prepare_exact_commit(
-    pinned_source, tmp_path, session_factory, proposal, monkeypatch, replace_asset
+@pytest.mark.parametrize("operation", ["env", "env_with_template", "asset"])
+def test_approved_file_operations_prepare_exact_commit(
+    pinned_source, tmp_path, session_factory, proposal, monkeypatch, operation
 ):
     source, _ = pinned_source
+    replace_asset = operation == "asset"
+    create_template = operation == "env_with_template"
     path = "logo.png" if replace_asset else ".env"
     data = b"\x89PNG\r\n\x1a\noriginal" if replace_asset else b"KEY=synthetic-secret-marker"
     replacement = b"\x89PNG\r\n\x1a\nreplacement"
@@ -253,11 +259,21 @@ def test_approved_file_operations_skip_model_and_prepare_exact_commit(
     ]
     with session_factory.begin() as session:
         plan = save_refactoring_plan(session, run.id, proposal, expected_revision=0)
+        if create_template:
+            proposal["changes"].append(
+                {
+                    "path": ".env.example",
+                    "action": "CREATE",
+                    "intent": "Add KEY with an empty value.",
+                }
+            )
+            proposal["validation_checks"][0]["paths"].append(".env.example")
+            plan = save_refactoring_plan(session, run.id, proposal, expected_revision=1)
         approve_refactoring_plan(
             session,
             run.id,
             plan_id=plan.id,
-            revision=1,
+            revision=plan.revision,
             sha256=plan.sha256,
             actor_id=run.requested_by,
         )
@@ -265,18 +281,52 @@ def test_approved_file_operations_skip_model_and_prepare_exact_commit(
         (tmp_path / f"{run.id}.asset").write_bytes(replacement)
     approval = claim_command(session_factory, "worker", workflow=WORKFLOW, kind=APPLY_PLAN_APPROVAL)
     assert process_repository_plan_approval(session_factory, approval, "worker")
-    assert (
-        claim_command(session_factory, "worker", workflow=WORKFLOW, kind=GENERATE_CANDIDATE) is None
-    )
     monkeypatch.setattr(workspace, "authorize_plan", lambda _: (None, None))
     monkeypatch.setattr(workspace, "fetch_source_snapshot", lambda *_, **__: snapshot)
+    generation = claim_command(
+        session_factory, "worker", workflow=WORKFLOW, kind=GENERATE_CANDIDATE
+    )
+    if create_template:
+        assert generation is not None
+        template = {"path": ".env.example", "action": "CREATE", "content": "KEY=\n"}
+        patch = CandidatePatch(
+            base_sha=base,
+            plan_sha256=plan.sha256,
+            edits=[{"path": ".env", "action": "DELETE", "content": None}, template],
+        )
+        with workspace.prepare_approved_workspace(session_factory, run.id) as staged:
+            bad_patch = CandidatePatch(
+                base_sha=base,
+                plan_sha256=plan.sha256,
+                edits=[patch.edits[0], {**template, "content": data.decode()}],
+            )
+            with pytest.raises(CandidatePatchError, match="empty values"):
+                apply_candidate_patch(staged, bad_patch)
+            assert (staged.root / ".env").read_bytes() == b""
+            assert not (staged.root / ".env.example").exists()
+
+        def provider_response(request):
+            assert data not in request.content
+            assert json.loads(json.loads(request.content)["input"])["source"] == {}
+            if request.url.path.endswith("/input_tokens"):
+                return httpx.Response(
+                    200, json={"object": "response.input_tokens", "input_tokens": 100}
+                )
+            payload = response()
+            payload["output"][0]["content"][0]["text"] = patch.model_dump_json()
+            return httpx.Response(200, json=payload)
+
+        provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(provider_response))
+        assert process_repository_candidate(session_factory, generation, "worker", provider)
+    else:
+        assert generation is None
     job = claim_command(session_factory, "worker", workflow=WORKFLOW, kind=VALIDATE_CANDIDATE)
     assert validation_worker.process_candidate_validation(
         session_factory, job, "worker", source=source, artifacts=tmp_path
     )
     with session_factory() as session:
         assert session.get(RunCommand, job).status == "DONE"
-        assert session.get(RunGeneratedCandidate, run.id) is None
+        assert (session.get(RunGeneratedCandidate, run.id) is not None) == create_template
         result = session.scalar(
             select(RunCandidateResult).where(RunCandidateResult.run_id == run.id)
         )
@@ -287,13 +337,19 @@ def test_approved_file_operations_skip_model_and_prepare_exact_commit(
     artifact = tmp_path / f"{run.id}-r1"
     receipt = json.loads((artifact / "receipt.json").read_bytes())
     repository, commit = artifact / "repository.git", receipt["commit_sha"]
-    assert git(repository, "diff-tree", "-r", "--name-only", base, commit).strip() == path.encode()
+    expected = {path.encode(), b".env.example"} if create_template else {path.encode()}
+    assert (
+        set(git(repository, "diff-tree", "-r", "--name-only", base, commit).splitlines())
+        == expected
+    )
     if replace_asset:
         assert git(repository, "show", f"{commit}:{path}") == replacement
         assert sha256(replacement).hexdigest() in report["diff"]
     else:
         assert git(repository, "ls-tree", commit, path) == b""
         assert "Rotate affected credentials" in report["validation"][0]["output"]
+        if create_template:
+            assert git(repository, "show", f"{commit}:.env.example") == b"KEY=\n"
 
 
 @pytest.mark.skipif(
