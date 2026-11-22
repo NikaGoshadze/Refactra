@@ -2,10 +2,12 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 from refactra import repository_validation as validation
+from refactra.python_dependency_cache import PythonLockError, pinned_python_requirements
 from refactra.python_test_support import (
     PYTEST_ENTRY,
     declared_test_imports,
@@ -115,3 +117,65 @@ def test_cached_web_dependencies_run_inside_the_offline_container(tmp_path):
     workspace = ApprovedWorkspace(tmp_path, "a" * 40, 1, "b" * 64, 1, (change,), (check,))
     pytest_result, baseline = validation.validate_candidate(workspace)
     assert pytest_result.status == baseline.status == "PASSED", pytest_result.output
+
+
+def lock_for(version: str = "1.0") -> bytes:
+    return f"example-wheel=={version} --hash=sha256:{'a' * 64}\n".encode()
+
+
+@pytest.mark.parametrize(
+    "content", [b"flask>=3\n", b"flask==3.0\n", b"-r other.txt\n", b"thing @ https://example.org"]
+)
+def test_python_lock_rejects_unpinned_or_non_registry_requirements(content):
+    with pytest.raises(PythonLockError):
+        pinned_python_requirements(content)
+
+
+def test_python_lock_accepts_hash_continuations_and_comments():
+    lock = b"# generated lock\n" + lock_for().replace(b" --hash", b" \\\n    --hash")
+    assert pinned_python_requirements(lock) == lock_for()
+
+
+def test_python_cache_reuses_only_identical_lock_and_runner(monkeypatch):
+    images = {}
+    built = []
+    cached_id = "sha256:" + "c" * 64
+
+    def docker(*args, **kwargs):
+        if args[0] == "image":
+            if args[-1] not in images:
+                raise validation.RepositoryValidationError("Image missing.")
+            return images[args[-1]]
+        if args[0] == "build":
+            root = Path(args[-1])
+            assert {path.name for path in root.iterdir()} == {"Dockerfile", "requirements.lock"}
+            assert "--only-binary :all: --require-hashes" in (root / "Dockerfile").read_text()
+            built.append(args)
+            key = args[-2].split(":")[1]
+            images[args[-2]] = f"{key} {cached_id}"
+        return ""
+
+    monkeypatch.setattr(validation, "_docker", docker)
+    base = "sha256:" + "a" * 64
+    assert validation._locked_python_image(lock_for(), base) == cached_id
+    assert validation._locked_python_image(lock_for(), base) == cached_id
+    assert len(built) == 1
+    validation._locked_python_image(lock_for("2.0"), base)
+    validation._locked_python_image(lock_for(), "sha256:" + "b" * 64)
+    assert len(built) == 3
+
+
+def test_failed_lock_preparation_leaves_patch_review_available(tmp_path, monkeypatch):
+    path = "test_app.py"
+    (tmp_path / path).write_text("def test_example(): pass\n")
+    change = ProposedChange(path=path, action="CREATE", intent="Add a test.")
+    check = ValidationCheck(
+        check_id="python.pytest", paths=[path], required=True, criteria_ids=["AC1"]
+    )
+    workspace = ApprovedWorkspace(
+        tmp_path, "a" * 40, 1, "b" * 64, 1, (change,), (check,), b"flask>=3"
+    )
+    monkeypatch.setattr(validation, "_docker", lambda *args: "sha256:" + "a" * 64)
+    checks = validation.validate_candidate(workspace)
+    assert checks[0].status == "UNAVAILABLE" and "exact package versions" in checks[0].reason
+    assert checks[1].status == "PASSED" and not validation.blocks_candidate(checks)

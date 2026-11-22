@@ -5,7 +5,7 @@ import json
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from tempfile import TemporaryDirectory
@@ -26,6 +26,7 @@ from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.github_app import GitHubAppError
 from refactra.models import Run, RunCommand
+from refactra.python_dependency_cache import PYTHON_LOCK_PATH
 from refactra.refactoring_plan import (
     APPLY_PLAN_APPROVAL,
     PlanContent,
@@ -60,6 +61,7 @@ class ApprovedWorkspace:
     file_count: int
     changes: tuple[ProposedChange, ...]
     validation_checks: tuple[ValidationCheck, ...] = ()
+    python_lock: bytes | None = field(default=None, repr=False)
 
 
 def _workspace_path(value: str) -> PurePosixPath:
@@ -154,7 +156,11 @@ def prepare_approved_workspace(session_factory, run_id: UUID) -> Iterator[Approv
         content = PlanContent.model_validate_json(plan.document)
 
     token, transport = authorize_plan(run)
-    files = _workspace_files(fetch_source_snapshot(run, token, transport=transport), content)
+    snapshot = fetch_source_snapshot(run, token, transport=transport)
+    files = _workspace_files(snapshot, content)
+    python_lock = next(
+        (file.content for file in snapshot.files if file.path == PYTHON_LOCK_PATH), None
+    )
     with TemporaryDirectory(prefix="refactra-workspace-") as directory:
         root = Path(directory) / "source"
         root.mkdir()
@@ -172,6 +178,7 @@ def prepare_approved_workspace(session_factory, run_id: UUID) -> Iterator[Approv
             len(files),
             tuple(content.changes),
             tuple(content.validation_checks),
+            python_lock,
         )
 
 

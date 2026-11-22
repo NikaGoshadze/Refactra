@@ -321,6 +321,14 @@ The `--repository-candidate` worker verifies queued approvals and saves generate
 
 Add `--validate` with `--candidate` to run approved checks and report their results alongside the diff. Build `refactra-backend:local` before running pytest or TypeScript checks on the Docker host. The runner uses fixed commands and verifies the container's offline, non-root, read-only setup and resource limits before starting. A required check that fails or exceeds a limit blocks publication.
 
+For project-specific Python dependencies, commit a root `requirements.lock` with
+exact `name==version` pins and `--hash=sha256:…` entries for all required wheels,
+including transitive dependencies. Use a lock for the runner's Python and platform.
+Refactra prepares a separate image using only this lock and public PyPI wheels,
+then reuses it for the same lock and base runner image. Test execution stays offline.
+Without a lock, pytest uses the standard runner. If the locked image cannot be
+prepared, pytest is reported as unavailable and a passing patch can still reach draft review.
+
 Add `--save-result` to the same command to store a successful candidate, its diff, and its validation evidence in PostgreSQL. This requires migration `0011_candidate_results`. The command returns a result ID, revision, and checksum. Saving the same candidate and diff again returns the original result. A different passing candidate gets a new revision.
 
 Open the saved run and load its approved plan to see the candidate status, diff, and validation output. The protected `GET /api/v1/runs/{run_id}/result` endpoint accepts `?progress=true` for the current stage and latest result, or `?revision=1` to retrieve a specific saved result.

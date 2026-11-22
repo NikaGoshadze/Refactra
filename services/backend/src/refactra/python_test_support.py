@@ -16,6 +16,8 @@ PYTEST_ENTRY = f"""
 import importlib.util
 import json
 import sys
+
+sys.path.insert(0, '/locked-deps')
 import pytest
 
 declared = json.loads(sys.argv.pop(1))
