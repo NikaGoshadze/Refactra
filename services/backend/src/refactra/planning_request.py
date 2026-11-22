@@ -9,7 +9,9 @@ from refactra.analysis_context import PreparedAnalysisContext, load_analysis_con
 from refactra.models import RunAnalysisResult
 from refactra.refactoring_plan import (
     SUPPORTED_PLAN_CHECK_IDS,
+    PlanContent,
     PlanProposal,
+    evaluate_plan_readiness,
     load_plan_feedback,
     load_refactoring_plan,
 )
@@ -27,14 +29,15 @@ PLAN_INSTRUCTIONS = (
     "Resolve details from the request and pinned evidence. Record low-risk choices as assumptions. "
     "Ask only when the answer materially changes scope, behavior, or safety. "
     "When reviewer feedback is present, revise the previous plan using the answers and notes. "
+    "Use previous_plan_readiness to resolve file and validation scope errors on revision. "
     "Keep questions open only when the feedback and pinned evidence still leave a material gap. "
     f"Registered check IDs: {', '.join(SUPPORTED_PLAN_CHECK_IDS)}. "
     "Ordinary UTF-8 repository text files can be created, modified or deleted. "
-    "A tracked root .env can be deleted alone or together with creating a new root .env.example "
-    "when requested. Use one required repository.patch check covering both proposed paths "
-    "when creating the template, and list variable names from the available code or request "
-    "in the template's intent. Leave all template values empty. Explain that publication "
-    "follows credential rotation. Never propose reading the original .env values. "
+    "A tracked .env file or variant such as .env.local can be deleted alongside other edits. "
+    "New empty-value templates can use suffixes example, sample, template, or dist, such as "
+    ".env.example or .env-example. Honor the requested filename. List variable names from "
+    "the available code or request in the template's intent. Never propose reading original "
+    "environment values. Explain that publication follows credential rotation for deletions. "
     "For explicit operator-supplied image or font replacements, propose one MODIFY with "
     "repository.asset as the only required check, and explain where to stage the supplied asset "
     "(the worker artifacts directory, named <run ID>.asset). Other binary or credential "
@@ -73,6 +76,9 @@ def load_planning_context(
         if previous is None:
             raise ValueError("The plan for this feedback is unavailable.")
         payload["previous_plan"] = json.loads(previous.document)
+        payload["previous_plan_readiness"] = evaluate_plan_readiness(
+            PlanContent.model_validate_json(previous.document)
+        ).model_dump(mode="json")
         payload["reviewer_feedback"] = {
             "notes": feedback["notes"],
             "questions_and_answers": [

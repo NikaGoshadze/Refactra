@@ -19,7 +19,7 @@ from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.models import Run, RunCandidateResult
 from refactra.publication_target import PublicationTargetError, save_publication_target
-from refactra.refactoring_plan import PlanContent, is_env_cleanup, load_approved_plan
+from refactra.refactoring_plan import PlanContent, load_approved_plan, plan_edit_kind
 from refactra.repository_snapshot import SourceFile, SourceSnapshot
 from refactra.repository_workspace import (
     ApprovedWorkspace,
@@ -168,7 +168,6 @@ def prepare_candidate_commit(
             tuple(content.changes),
             tuple(content.validation_checks),
         )
-        env_cleanup = is_env_cleanup(content.changes, content.validation_checks)
         modes = {}
         source_files = []
         for edit in candidate.edits:
@@ -179,7 +178,7 @@ def prepare_candidate_commit(
             mode, kind, oid = entry.split(b"\t", 1)[0].split()
             if kind != b"blob" or mode not in {b"100644", b"100755"}:
                 raise CandidateCommitError("The pinned Git tree has a non-regular candidate path.")
-            redact = env_cleanup and edit.path == ".env"
+            redact = plan_edit_kind(edit.path, edit.action) == "env_delete"
             if not redact and int(git("cat-file", "-s", oid.decode())) > MAX_EDIT_FILE_BYTES:
                 raise CandidateCommitError("A candidate path exceeds the source file size limit.")
             modes[edit.path] = mode

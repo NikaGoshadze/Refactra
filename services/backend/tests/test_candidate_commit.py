@@ -212,16 +212,24 @@ def pinned_source(tmp_path):
     return source, base
 
 
-@pytest.mark.parametrize("operation", ["env", "env_with_template", "asset"])
+@pytest.mark.parametrize(
+    ("path", "template_path", "extra_path"),
+    [
+        (".env", None, None),
+        (".env", ".env.example", None),
+        (".env", ".env-example", None),
+        ("apps/api/.env.production", "apps/api/.env.sample", ".prettierrc"),
+        ("logo.png", None, None),
+    ],
+)
 def test_approved_file_operations_prepare_exact_commit(
-    pinned_source, tmp_path, session_factory, proposal, monkeypatch, operation
+    pinned_source, tmp_path, session_factory, proposal, monkeypatch, path, template_path, extra_path
 ):
     source, _ = pinned_source
-    replace_asset = operation == "asset"
-    create_template = operation == "env_with_template"
-    path = "logo.png" if replace_asset else ".env"
+    replace_asset = path == "logo.png"
     data = b"\x89PNG\r\n\x1a\noriginal" if replace_asset else b"KEY=synthetic-secret-marker"
     replacement = b"\x89PNG\r\n\x1a\nreplacement"
+    (source / path).parent.mkdir(parents=True, exist_ok=True)
     (source / path).write_bytes(data)
     git(source, "add", "--force", "--", path)
     git(
@@ -259,15 +267,12 @@ def test_approved_file_operations_prepare_exact_commit(
     ]
     with session_factory.begin() as session:
         plan = save_refactoring_plan(session, run.id, proposal, expected_revision=0)
-        if create_template:
-            proposal["changes"].append(
-                {
-                    "path": ".env.example",
-                    "action": "CREATE",
-                    "intent": "Add KEY with an empty value.",
-                }
-            )
-            proposal["validation_checks"][0]["paths"].append(".env.example")
+        if template_path:
+            for new_path in filter(None, (template_path, extra_path)):
+                proposal["changes"].append(
+                    {"path": new_path, "action": "CREATE", "intent": "Add the requested template."}
+                )
+                proposal["validation_checks"][0]["paths"].append(new_path)
             plan = save_refactoring_plan(session, run.id, proposal, expected_revision=1)
         approve_refactoring_plan(
             session,
@@ -286,24 +291,27 @@ def test_approved_file_operations_prepare_exact_commit(
     generation = claim_command(
         session_factory, "worker", workflow=WORKFLOW, kind=GENERATE_CANDIDATE
     )
-    if create_template:
+    if template_path:
         assert generation is not None
-        template = {"path": ".env.example", "action": "CREATE", "content": "KEY=\n"}
+        template = {"path": template_path, "action": "CREATE", "content": "KEY=\n"}
+        edits = [{"path": path, "action": "DELETE", "content": None}, template]
+        if extra_path:
+            edits.append({"path": extra_path, "action": "CREATE", "content": "{}\n"})
         patch = CandidatePatch(
             base_sha=base,
             plan_sha256=plan.sha256,
-            edits=[{"path": ".env", "action": "DELETE", "content": None}, template],
+            edits=edits,
         )
         with workspace.prepare_approved_workspace(session_factory, run.id) as staged:
             bad_patch = CandidatePatch(
                 base_sha=base,
                 plan_sha256=plan.sha256,
-                edits=[patch.edits[0], {**template, "content": data.decode()}],
+                edits=[patch.edits[0], {**template, "content": data.decode()}, *patch.edits[2:]],
             )
             with pytest.raises(CandidatePatchError, match="empty values"):
                 apply_candidate_patch(staged, bad_patch)
-            assert (staged.root / ".env").read_bytes() == b""
-            assert not (staged.root / ".env.example").exists()
+            assert (staged.root / path).read_bytes() == b""
+            assert not (staged.root / template_path).exists()
 
         def provider_response(request):
             assert data not in request.content
@@ -326,7 +334,7 @@ def test_approved_file_operations_prepare_exact_commit(
     )
     with session_factory() as session:
         assert session.get(RunCommand, job).status == "DONE"
-        assert (session.get(RunGeneratedCandidate, run.id) is not None) == create_template
+        assert (session.get(RunGeneratedCandidate, run.id) is not None) == bool(template_path)
         result = session.scalar(
             select(RunCandidateResult).where(RunCandidateResult.run_id == run.id)
         )
@@ -337,7 +345,7 @@ def test_approved_file_operations_prepare_exact_commit(
     artifact = tmp_path / f"{run.id}-r1"
     receipt = json.loads((artifact / "receipt.json").read_bytes())
     repository, commit = artifact / "repository.git", receipt["commit_sha"]
-    expected = {path.encode(), b".env.example"} if create_template else {path.encode()}
+    expected = {value.encode() for value in (path, template_path, extra_path) if value}
     assert (
         set(git(repository, "diff-tree", "-r", "--name-only", base, commit).splitlines())
         == expected
@@ -348,8 +356,10 @@ def test_approved_file_operations_prepare_exact_commit(
     else:
         assert git(repository, "ls-tree", commit, path) == b""
         assert "Rotate affected credentials" in report["validation"][0]["output"]
-        if create_template:
-            assert git(repository, "show", f"{commit}:.env.example") == b"KEY=\n"
+        if template_path:
+            assert git(repository, "show", f"{commit}:{template_path}") == b"KEY=\n"
+        if extra_path:
+            assert git(repository, "show", f"{commit}:{extra_path}") == b"{}\n"
 
 
 @pytest.mark.skipif(
