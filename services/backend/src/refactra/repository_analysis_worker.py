@@ -15,13 +15,13 @@ from refactra.openai_analysis import (
 )
 from refactra.refactoring_plan import (
     APPLY_PLAN_APPROVAL,
+    GENERATE_PLAN,
     PlanRevisionConflict,
     approval_command_key,
     load_approved_plan,
 )
 
 WORKFLOW = "repository-v0.1"
-GENERATE_PLAN = "GENERATE_PLAN"
 GENERATE_CANDIDATE = "GENERATE_CANDIDATE"
 
 

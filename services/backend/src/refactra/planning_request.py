@@ -7,7 +7,12 @@ from sqlalchemy.orm import Session
 
 from refactra.analysis_context import PreparedAnalysisContext, load_analysis_context
 from refactra.models import RunAnalysisResult
-from refactra.refactoring_plan import SUPPORTED_PLAN_CHECK_IDS, PlanProposal
+from refactra.refactoring_plan import (
+    SUPPORTED_PLAN_CHECK_IDS,
+    PlanProposal,
+    load_plan_feedback,
+    load_refactoring_plan,
+)
 
 PLAN_INSTRUCTIONS = (
     "Propose a small refactoring plan for task_text using the pinned source and saved analysis. "
@@ -15,6 +20,8 @@ PLAN_INSTRUCTIONS = (
     "Describe concrete file changes, preserved behavior, and criteria with proposed checks. "
     "Resolve details from the request and pinned evidence. Record low-risk choices as assumptions. "
     "Ask only when the answer materially changes scope, behavior, or safety. "
+    "When reviewer feedback is present, revise the previous plan using the answers and notes. "
+    "Keep questions open only when the feedback and pinned evidence still leave a material gap. "
     f"Registered check IDs for the initial Python profile: {', '.join(SUPPORTED_PLAN_CHECK_IDS)}. "
     "Target test_*.py or *_test.py files for pytest. Keep edits within Python source and tests. "
     "Use check identifiers, not shell commands or executable arguments. Do not edit files, "
@@ -32,13 +39,32 @@ PLAN_TEXT_CONFIG = {
 }
 
 
-def load_planning_context(session: Session, run_id: UUID) -> PreparedAnalysisContext | None:
+def load_planning_context(
+    session: Session, run_id: UUID, attempt_id: UUID | None = None
+) -> PreparedAnalysisContext | None:
     context = load_analysis_context(session, run_id)
     result = session.get(RunAnalysisResult, run_id)
     if context is None or result is None:
         return None
     payload = json.loads(context.document)
     payload["saved_analysis"] = result.analysis_text
+    feedback = load_plan_feedback(session, run_id, attempt_id) if attempt_id is not None else None
+    if feedback:
+        previous = load_refactoring_plan(session, run_id, revision=feedback["expected_revision"])
+        if previous is None:
+            raise ValueError("The plan for this feedback is unavailable.")
+        payload["previous_plan"] = json.loads(previous.document)
+        payload["reviewer_feedback"] = {
+            "notes": feedback["notes"],
+            "questions_and_answers": [
+                {"question": question, "answer": answer}
+                for question, answer in zip(
+                    payload["previous_plan"]["blocking_questions"],
+                    feedback["answers"],
+                    strict=True,
+                )
+            ],
+        }
     return PreparedAnalysisContext(
         run_id, json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
     )

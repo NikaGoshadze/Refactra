@@ -133,7 +133,7 @@ def reserve_analysis_request(
         if instructions == INSTRUCTIONS:
             context = load_analysis_context(session, request.run_id)
         elif instructions == PLAN_INSTRUCTIONS:
-            context = load_planning_context(session, request.run_id)
+            context = load_planning_context(session, request.run_id, reservation_id)
         else:
             raise ValueError("Request must use trusted model instructions.")
         if context is None or context.document != request.model_input.context_json.encode():

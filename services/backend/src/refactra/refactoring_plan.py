@@ -5,7 +5,7 @@ import re
 from hashlib import sha256
 from pathlib import PurePosixPath
 from typing import Annotated, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import (
     AfterValidator,
@@ -26,6 +26,8 @@ from refactra.repository_selection import is_excluded_source_path
 MAX_PLAN_BYTES = 64 * 1024
 SUPPORTED_PLAN_CHECK_IDS = ("python.pytest",)
 APPLY_PLAN_APPROVAL = "APPLY_PLAN_APPROVAL"
+GENERATE_PLAN = "GENERATE_PLAN"
+PLAN_FEEDBACK_REQUESTED = "PLAN_FEEDBACK_REQUESTED"
 PROTECTED_PYTHON_FILES = {"conftest.py", "setup.py", "sitecustomize.py", "usercustomize.py"}
 PlanText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
 Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")]
@@ -164,6 +166,72 @@ def load_refactoring_plan(
     return session.scalar(query.order_by(RunPlan.revision.desc()).limit(1))
 
 
+class PlanFeedback(_PlanModel):
+    expected_revision: int = Field(ge=1, le=2_147_483_647)
+    notes: Annotated[str, StringConstraints(strip_whitespace=True, max_length=2000)]
+    answers: Annotated[
+        list[Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)]],
+        Field(max_length=16),
+    ]
+
+
+def _feedback_prefix(run_id: UUID, revision: int) -> str:
+    return f"repository:plan-feedback:{run_id}:{revision}:"
+
+
+def plan_feedback_status(session: Session, plan: RunPlan) -> str | None:
+    return session.scalar(
+        select(RunCommand.status)
+        .where(RunCommand.dedupe_key.startswith(_feedback_prefix(plan.run_id, plan.revision)))
+        .order_by(RunCommand.created_at.desc(), RunCommand.id.desc())
+        .limit(1)
+    )
+
+
+def load_plan_feedback(session: Session, run_id: UUID, command_id: UUID) -> dict | None:
+    return session.scalar(
+        select(RunEvent.payload).where(
+            RunEvent.run_id == run_id,
+            RunEvent.event_type == PLAN_FEEDBACK_REQUESTED,
+            RunEvent.payload["command_id"].astext == str(command_id),
+        )
+    )
+
+
+def queue_plan_feedback(session: Session, run_id: UUID, feedback: PlanFeedback) -> RunPlan:
+    run = session.get(Run, run_id, with_for_update=True)
+    plan = load_refactoring_plan(session, run_id)
+    if (
+        run is None
+        or run.status != "NEEDS_HUMAN_REVIEW"
+        or plan is None
+        or plan.revision != feedback.expected_revision
+        or session.get(RunPlanApproval, run_id)
+    ):
+        raise PlanRevisionConflict("Reload the latest unapproved plan before sending feedback.")
+    payload = feedback.model_dump()
+    digest = sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:32]
+    key = _feedback_prefix(run_id, plan.revision) + digest
+    if session.scalar(select(RunCommand.id).where(RunCommand.dedupe_key == key)) is not None:
+        return plan
+    if plan_feedback_status(session, plan) in {"PENDING", "CLAIMED"}:
+        raise PlanRevisionConflict("A plan update is already in progress.")
+    questions = PlanContent.model_validate_json(plan.document).blocking_questions
+    if len(feedback.answers) != len(questions) or not (feedback.notes or any(feedback.answers)):
+        raise ValueError("Add feedback or answer a question from this plan.")
+    command_id = uuid4()
+    session.add(RunCommand(id=command_id, run_id=run_id, kind=GENERATE_PLAN, dedupe_key=key))
+    session.add(
+        RunEvent(
+            run_id=run_id,
+            event_type=PLAN_FEEDBACK_REQUESTED,
+            payload={**payload, "command_id": str(command_id)},
+        )
+    )
+    session.flush()
+    return plan
+
+
 def save_refactoring_plan(
     session: Session, run_id: UUID, proposal: dict, *, expected_revision: int
 ) -> RunPlan:
@@ -287,6 +355,8 @@ def approve_refactoring_plan(
             return existing
         raise PlanRevisionConflict("This run already has an approved plan.")
 
+    if plan_feedback_status(session, plan) in {"PENDING", "CLAIMED"}:
+        raise PlanRevisionConflict("Wait for the updated plan before approving.")
     if _require_reviewable_plan(run, plan).scope_errors:
         raise PlanRevisionConflict("Resolve the file and validation scope issues before approving.")
     approval = RunPlanApproval(

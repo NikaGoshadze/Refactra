@@ -185,7 +185,7 @@ def execute_read_only_analysis(
     """
     with session_factory() as session:
         context = (
-            load_planning_context(session, run_id)
+            load_planning_context(session, run_id, attempt_id)
             if planning
             else load_analysis_context(session, run_id)
         )
