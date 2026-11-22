@@ -8,6 +8,7 @@ import signal
 import threading
 from datetime import timedelta
 from pathlib import Path
+from time import monotonic
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, func, or_, select, text
@@ -165,6 +166,7 @@ def main():
                 "Validation requires a candidate or workflow mode and both existing directories."
             )
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = Settings.from_env()
     provider = None
     mode = "mock"
@@ -211,6 +213,7 @@ def main():
                     if command_id is not None:
                         break
                 if command_id:
+                    started = monotonic()
                     if claimed_kind == APPLY_PLAN_APPROVAL:
                         processed = process_repository_plan_approval(
                             session_factory, command_id, worker_id
@@ -254,6 +257,8 @@ def main():
                                 "event": "command_processed" if processed else "command_claim_lost",
                                 "command_id": str(command_id),
                                 "mode": mode,
+                                "stage": claimed_kind,
+                                "duration_ms": round((monotonic() - started) * 1000),
                             }
                         )
                     )
@@ -262,12 +267,13 @@ def main():
                 if command_id is None:
                     stopped.wait(1)
             guard.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": WORKER_LOCK})
-    except (SQLAlchemyError, ValueError):
+    except (SQLAlchemyError, ValueError) as error:
         logger.error(
             json.dumps(
                 {
                     "event": "worker_stopped",
                     "reason": "database_or_state_error",
+                    "error_type": type(error).__name__,
                     "message": "Inspect the database and restart the worker.",
                 }
             )
