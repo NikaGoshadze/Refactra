@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
@@ -11,13 +12,14 @@ from sqlalchemy import select
 
 import refactra.repository_plan_worker as planner
 import refactra.worker as worker
-from refactra.analysis_context import save_analysis_context
+from refactra.analysis_context import prepare_analysis_context, save_analysis_context
 from refactra.model_reservations import settle_model_usage
 from refactra.models import ModelReservation, RunCommand, RunEvent, RunPlanApproval
 from refactra.openai_analysis import OpenAIAnalysisProvider
 from refactra.planning_request import PLAN_INSTRUCTIONS
 from refactra.refactoring_plan import (
     APPLY_PLAN_APPROVAL,
+    PlanContent,
     PlanProposal,
     PlanRevisionConflict,
     approve_refactoring_plan,
@@ -32,6 +34,7 @@ from refactra.repository_analysis_worker import (
     process_repository_analysis,
     process_repository_plan_approval,
 )
+from refactra.repository_snapshot import SourceFile
 from refactra.worker import claim_command
 
 from .conftest import migration_config
@@ -113,6 +116,41 @@ def analyze_fixture_run(session_factory, *, queue_plan=False):
     assert process_repository_analysis(
         session_factory, command, "fixture", provider, queue_plan=queue_plan
     )
+
+
+def test_tracked_template_requirement_blocks_an_omission(session_factory, proposal):
+    run, snapshot, _ = prepare(
+        session_factory,
+        task_text="Change the cart behavior and update the example environment file if one exists.",
+    )
+    snapshot = replace(snapshot, files=(*snapshot.files, SourceFile(".env-example", b"KEY=\n")))
+    with session_factory.begin() as session:
+        save_analysis_context(session, prepare_analysis_context(run, snapshot))
+        enqueue_repository_analysis(session, run.id)
+    analyze_fixture_run(session_factory)
+    with session_factory.begin() as session:
+        first = save_refactoring_plan(session, run.id, proposal, expected_revision=0)
+        readiness = evaluate_plan_readiness(PlanContent.model_validate_json(first.document))
+        assert readiness.scope_errors == [
+            "The request calls for MODIFY .env-example, but the plan does not include that action."
+        ]
+        with pytest.raises(PlanRevisionConflict, match="scope issues"):
+            approve_refactoring_plan(
+                session,
+                run.id,
+                plan_id=first.id,
+                revision=1,
+                sha256=first.sha256,
+                actor_id=run.requested_by,
+            )
+        proposal["changes"].append(
+            {"path": ".env-example", "action": "MODIFY", "intent": "Add a default."}
+        )
+        revised = save_refactoring_plan(session, run.id, proposal, expected_revision=1)
+        assert (
+            evaluate_plan_readiness(PlanContent.model_validate_json(revised.document)).outcome
+            == "ready"
+        )
 
 
 @pytest.mark.parametrize(

@@ -326,6 +326,8 @@ def test_read_saved_plan_revisions(browser, session_factory, proposal):
             "schema_version": "1",
             "run_id": str(run_id),
             "repository": {"repository_id": 42, "base_branch": "feature/cart", "base_sha": PIN},
+            "requested_files": {},
+            "inventory_errors": [],
         }
         assert payload["readiness"] == {
             "outcome": "needs_clarification" if plan.revision == 1 else "ready",

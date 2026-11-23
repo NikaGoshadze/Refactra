@@ -17,6 +17,7 @@ type SavedPlan = {
     summary: string;
     changes: { path: string; action: string; intent: string }[];
     acceptance_criteria: { id: string; description: string }[];
+    requested_files?: Record<string, string>;
     validation_checks: { check_id: string; required: boolean; paths: string[]; criteria_ids: string[] }[];
     preserve_behavior: string[];
     assumptions: string[];
@@ -199,6 +200,12 @@ function PlanReview({ plan: { artifact, content, readiness } }: { plan: SavedPla
       {readiness.outcome && (readiness.outcome !== "unsupported" || content.changes.length > 0) &&
         <p>{outcome[readiness.outcome]}</p>}
       <p>{content.summary}</p>
+      {content.requested_files && Object.keys(content.requested_files).length > 0 &&
+        <div><h4>Explicit file requirements</h4>
+          <ul>{Object.entries(content.requested_files).map(([path, action]) => (
+            <li key={path}><strong>{action}</strong> <code>{path}</code></li>
+          ))}</ul>
+        </div>}
       <div>
         <h4>Proposed changes</h4>
         {!content.changes.length && <p>No changes proposed.</p>}
