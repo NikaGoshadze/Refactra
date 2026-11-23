@@ -1,6 +1,9 @@
+import json
 import os
+from dataclasses import replace
 
 import pytest
+from pydantic import ValidationError
 
 import refactra.candidate_patch as patching
 from refactra.candidate_patch import (
@@ -9,6 +12,7 @@ from refactra.candidate_patch import (
     apply_candidate_patch,
     read_candidate_patch,
 )
+from refactra.candidate_request import patch_from_contents
 from refactra.refactoring_plan import ProposedChange
 from refactra.repository_workspace import ApprovedWorkspace
 
@@ -48,6 +52,43 @@ def test_candidate_applies_exact_scope_and_reports_the_actual_diff(tmp_path, pat
     assert b"--- /dev/null\n+++ b/tests/test_cart.py\n" in diff
     assert b"--- a/old.py\n+++ /dev/null\n" in diff
     assert b"unrelated.py" not in diff
+
+
+@pytest.mark.parametrize(
+    ("template_edit", "error", "message"),
+    [
+        ("EXISTING=\nBOOK_SEARCH_LIMIT=3\n", CandidatePatchError, "structured list"),
+        ([{"name": "EXISTING", "value": ""}], CandidatePatchError, "preserve existing"),
+        (
+            [{"name": "BOOK_SEARCH_LIMIT", "value": "3"}] * 2,
+            CandidatePatchError,
+            "preserve existing",
+        ),
+        ([{"name": "BOOK_SEARCH_LIMIT", "value": "3\nINJECTED=1"}], ValidationError, "pattern"),
+        ([], ValidationError, "at least 1 item"),
+    ],
+)
+def test_invalid_template_response_leaves_all_files_untouched(
+    patch_fixture, template_edit, error, message
+):
+    workspace, edits = patch_fixture
+    path = ".env-example"
+    source = b"EXISTING=\n"
+    (workspace.root / path).write_bytes(source)
+    change = ProposedChange(path=path, action="MODIFY", intent="Add a search limit.")
+    workspace = replace(workspace, changes=(*workspace.changes, change))
+    if isinstance(template_edit, list):
+        template_edit = {"new_assignments": template_edit}
+    contents = {edit["path"]: edit["content"] for edit in edits}
+    contents[path] = template_edit
+    with pytest.raises(error, match=message):
+        apply_candidate_patch(
+            workspace, patch_from_contents(workspace, json.dumps({"edits": contents}))
+        )
+    assert (workspace.root / path).read_bytes() == source
+    assert (workspace.root / "cart.py").read_bytes() == b"return 1"
+    assert (workspace.root / "old.py").exists()
+    assert not (workspace.root / "tests").exists()
 
 
 @pytest.mark.parametrize(

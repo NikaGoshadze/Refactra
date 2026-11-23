@@ -397,9 +397,9 @@ def test_template_update_keeps_original_values_private_and_preserves_bytes(
 ):
     source, _ = pinned_source
     path = ".env-example"
-    original = b"# private fixture comment\nGOOGLE_API_KEY=synthetic-secret-marker"
+    original = b"# private fixture comment\r\nGOOGLE_API_KEY=synthetic-secret-marker"
     (source / path).write_bytes(original)
-    git(source, "add", "--force", "--", path)
+    git(source, "-c", "core.autocrlf=false", "add", "--force", "--", path)
     git(
         source,
         "-c",
@@ -449,16 +449,19 @@ def test_template_update_keeps_original_values_private_and_preserves_bytes(
     def provider_response(request):
         assert b"synthetic-secret-marker" not in request.content
         assert b"private fixture comment" not in request.content
-        assert json.loads(json.loads(request.content)["input"])["source"] == {
-            path: "GOOGLE_API_KEY=\n"
-        }
+        body = json.loads(request.content)
+        assert json.loads(body["input"])["source"] == {path: "GOOGLE_API_KEY=\n"}
         if request.url.path.endswith("/input_tokens"):
             return httpx.Response(
                 200, json={"object": "response.input_tokens", "input_tokens": 100}
             )
+        schema = body["text"]["format"]["schema"]["properties"]["edits"]["properties"][path]
+        assert schema["type"] == "object"
+        assert schema["required"] == ["new_assignments"]
+        assert schema["properties"]["new_assignments"]["items"]["required"] == ["name", "value"]
         payload = response()
         payload["output"][0]["content"][0]["text"] = json.dumps(
-            {"edits": {path: "BOOK_SEARCH_LIMIT=3\n"}}
+            {"edits": {path: {"new_assignments": [{"name": "BOOK_SEARCH_LIMIT", "value": "3"}]}}}
         )
         return httpx.Response(200, json=payload)
 
@@ -491,7 +494,7 @@ def test_template_update_keeps_original_values_private_and_preserves_bytes(
     artifact = tmp_path / f"{run.id}-r1"
     receipt = json.loads((artifact / "receipt.json").read_bytes())
     assert git(artifact / "repository.git", "show", f"{receipt['commit_sha']}:{path}") == (
-        original + b"\nBOOK_SEARCH_LIMIT=3\n"
+        original + b"\r\nBOOK_SEARCH_LIMIT=3\r\n"
     )
 
 
