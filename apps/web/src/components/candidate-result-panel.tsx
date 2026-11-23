@@ -16,6 +16,11 @@ type CandidateResult = {
   sha256: string;
   approved_plan: { revision: number };
   diff: string;
+  review?: {
+    files: { path: string; action: string; diff_line: number | null }[];
+    criteria: { id: string; description: string; passing_checks: string[] }[];
+    routes_to_review: { path: string; route: string; diff_line: number }[];
+  } | null;
   publication_target: PublicationTarget | null;
   publication_approval: PublicationApproval | null;
   publication: { status: "branch_pushed" } | { status: "draft_opened"; number: number; url: string } | null;
@@ -154,6 +159,21 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
             {check.output && <pre className="analysis-result">{check.output}</pre>}
           </li>
         ))}</ul>
+        {result.review && <>
+          <h5>Plan coverage in the diff</h5>
+          <ul>{result.review.files.map((file) => <li key={file.path}>
+            {file.action} <code>{file.path}</code> · {file.diff_line === null ? "No change in diff" : `Diff line ${file.diff_line}`}
+          </li>)}</ul>
+          <ul>{result.review.criteria.map((criterion) => <li key={criterion.id}>
+            <code>{criterion.id}</code> · {criterion.description} · {criterion.passing_checks.length
+              ? `Linked checks passed (${criterion.passing_checks.join(", ")})` : "Behavior unverified"}
+          </li>)}</ul>
+          {result.review.routes_to_review.length > 0 && <><h5>New routes to review</h5>
+            <ul>{result.review.routes_to_review.map((route) => <li key={`${route.path}:${route.diff_line}`}>
+              <code>{route.route}</code> in <code>{route.path}</code> · Diff line {route.diff_line}
+            </li>)}</ul>
+          </>}
+        </>}
         <h5>Saved diff</h5>
         <pre className="analysis-result">{result.diff}</pre>
       </>}

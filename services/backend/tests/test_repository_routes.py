@@ -602,6 +602,7 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
         assert data["repository"]["base_sha"] == PIN
         assert data["validation"][0]["output"] == "1 passed"
         assert data["validation"][0]["exit_code"] == 0
+        assert data["review"]["criteria"][0]["id"] == "AC-1"
         assert data["publication_target"] is None and data["publication_approval"] is None
         assert data["publication"] is None
         assert "candidate" not in data
