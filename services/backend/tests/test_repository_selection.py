@@ -102,6 +102,21 @@ def test_explicit_path_precedes_lexical_matches():
     assert "explicit_path" in selected.files[0].reasons
 
 
+def test_imports_from_a_secondary_route_are_available_to_the_planner():
+    result = choose(
+        [
+            ("app/book_search.py", b"def search_books(query): pass"),
+            ("app/web_app.py", b"from app.main import search\n# render_template(form)"),
+            ("app/templates/index.html", b"<form>Book search</form>"),
+            ("app/main.py", b"from .book_search import search_books"),
+        ],
+        "Make the browser book search update its results on form submission.",
+    )
+    assert [(file.path, file.reasons) for file in result.files if file.path == "app/main.py"] == [
+        ("app/main.py", ("local_import",))
+    ]
+
+
 def test_prose_search_bug_prefers_code_to_incidental_tabular_data():
     files = [
         ("books/web_app.py", b"# book search page: query, form, failure feedback"),

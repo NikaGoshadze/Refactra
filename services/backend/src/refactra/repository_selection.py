@@ -2,6 +2,7 @@
 
 import re
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import PurePosixPath
 from posixpath import normpath
 
@@ -107,6 +108,20 @@ def _local_imports(path: PurePosixPath, text: str) -> set[str]:
     return targets
 
 
+def _related_sources(ranked, focus: list[SelectedFile], imports: dict[str, set[str]]):
+    modules = set().union(*(imports[item.path] for item in focus))
+    focused_paths = {item.path for item in focus}
+    for _, item in ranked:
+        if item.role != "source" or item.path in focused_paths:
+            continue
+        path = PurePosixPath(item.path)
+        names = {item.path, str(path.with_suffix(""))}
+        if path.stem in {"__init__", "index"}:
+            names.add(str(path.parent))
+        if names & modules:
+            yield SelectedFile(item.path, item.role, ("local_import",), item.size_bytes)
+
+
 def select_task_files(
     snapshot: SourceSnapshot, inventory: RepositoryInventory, task_text: str
 ) -> FileSelection:
@@ -184,21 +199,11 @@ def select_task_files(
             for item in sources
         ]
     focus = sources[:1]
-    related_modules = set().union(*(imports[item.path] for item in focus))
-    focused_paths = {item.path for item in focus}
-    for _, item in ranked:
-        if len(focus) == 3:
-            break
-        if item.role != "source" or item.path in focused_paths:
-            continue
-        path = PurePosixPath(item.path)
-        names = {item.path, str(path.with_suffix(""))}
-        if path.stem in {"__init__", "index"}:
-            names.add(str(path.parent))
-        if names & related_modules:
-            focus.append(SelectedFile(item.path, item.role, ("local_import",), item.size_bytes))
+    focus.extend(islice(_related_sources(ranked, focus, imports), 3 - len(focus)))
     focused_paths = {item.path for item in focus}
     focus.extend([item for item in sources if item.path not in focused_paths][: 3 - len(focus)])
+    # A secondary route can be the only reference to the real entry point.
+    focus.extend(islice(_related_sources(ranked, focus, imports), 1))
     focus_names = set().union(*(_words(PurePosixPath(item.path).stem) for item in focus))
     tests, metadata = [], []
     for score, item in ranked:
