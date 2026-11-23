@@ -13,6 +13,8 @@ from refactra.analysis_context import compact_read_only_context, load_analysis_c
 from refactra.analysis_request import (
     INSTRUCTIONS,
     MAX_MONTH_USD,
+    MAX_REQUEST_INPUT,
+    MAX_REQUEST_OUTPUT,
     MAX_RUN_ATTEMPTS,
     MAX_RUN_INPUT,
     MAX_RUN_OUTPUT,
@@ -186,10 +188,14 @@ def reserve_analysis_request(
             )
         ).where(ModelReservation.budget_month == month)
     )
+    # A saved plan needs enough of the same ledger left for its implementation.
+    planning = instructions == PLAN_INSTRUCTIONS
+    input_limit = MAX_RUN_INPUT - (MAX_REQUEST_INPUT if planning else 0)
+    output_limit = MAX_RUN_OUTPUT - (MAX_REQUEST_OUTPUT if planning else 0)
     checks = (
-        (attempts < MAX_RUN_ATTEMPTS, "run_attempts"),
-        (inputs + request.input_tokens <= MAX_RUN_INPUT, "run_input_tokens"),
-        (outputs + request.model_input.max_output_tokens <= MAX_RUN_OUTPUT, "run_output_tokens"),
+        (attempts + int(planning) < MAX_RUN_ATTEMPTS, "run_attempts"),
+        (inputs + request.input_tokens <= input_limit, "run_input_tokens"),
+        (outputs + request.model_input.max_output_tokens <= output_limit, "run_output_tokens"),
         (run_cost + cost <= MAX_RUN_USD, "run_cost"),
         (month_cost + cost <= MAX_MONTH_USD, "monthly_cost"),
     )

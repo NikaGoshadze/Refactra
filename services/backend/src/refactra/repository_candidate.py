@@ -48,11 +48,14 @@ class CandidateReplyRejected(CandidatePatchError):
     """A completed model response failed candidate validation."""
 
 
-AttemptMode = Literal["initial", "repair", "operator"]
+AttemptMode = Literal["initial", "repair", "operator", "validation_repair"]
+VALIDATION_REPAIR_EVENT = "CANDIDATE_VALIDATION_REPAIR_QUEUED"
+VALIDATION_REPAIR_SUFFIX = ":validation-repair"
 _ATTEMPT_PREFIXES = {
     "initial": "repository:candidate:v1",
     "repair": "repository:candidate:retry:v1",
     "operator": "repository:candidate:operator:v1",
+    "validation_repair": "repository:candidate:validation-repair:v1",
 }
 
 
@@ -63,6 +66,13 @@ def _attempt_id(run_id: UUID, plan_sha256: str, mode: AttemptMode) -> UUID:
 
 def candidate_attempt_ids(run_id: UUID, plan_sha256: str) -> set[UUID]:
     return {_attempt_id(run_id, plan_sha256, mode) for mode in _ATTEMPT_PREFIXES}
+
+
+def candidate_validation_key(run_id: UUID, revision: int, plan_sha256: str, reservation_id: UUID):
+    key = validation_command_key(run_id, revision)
+    if reservation_id == _attempt_id(run_id, plan_sha256, "validation_repair"):
+        return key + VALIDATION_REPAIR_SUFFIX
+    return key
 
 
 def _output_limit(session, run_id: UUID, mode: AttemptMode) -> int:
@@ -122,6 +132,7 @@ def generate_candidate(
     check_admission=None,
     mode: AttemptMode = "initial",
     repair_detail: str | None = None,
+    replaces: UUID | None = None,
 ) -> CandidatePatch:
     with prepare_approved_workspace(session_factory, run_id) as workspace:
         if approved_file_operation(workspace.changes, workspace.validation_checks):
@@ -129,7 +140,12 @@ def generate_candidate(
         attempt_id = _attempt_id(run_id, workspace.sha256, mode)
         with session_factory() as session:
             saved = session.get(RunGeneratedCandidate, run_id)
-            if saved is not None:
+            if saved is not None and saved.reservation_id == attempt_id:
+                return CandidatePatch.model_validate_json(saved.document)
+            if mode == "validation_repair":
+                if saved is None or replaces is None or saved.reservation_id != replaces:
+                    raise CandidatePatchError("The candidate to repair is no longer current.")
+            elif saved is not None:
                 if saved.reservation_id not in candidate_attempt_ids(run_id, workspace.sha256):
                     raise CandidatePatchError("The saved candidate does not match this plan.")
                 return CandidatePatch.model_validate_json(saved.document)
@@ -180,19 +196,30 @@ def generate_candidate(
                     reason="workspace_io",
                 )
             else:
-                patch = candidate
-                session.add(
-                    RunGeneratedCandidate(
-                        run_id=run_id,
-                        reservation_id=attempt_id,
-                        document=patch.model_dump_json().encode(),
+                document = candidate.model_dump_json().encode()
+                if mode == "validation_repair":
+                    current = session.get(
+                        RunGeneratedCandidate, run_id, with_for_update=True, populate_existing=True
                     )
-                )
+                    if current is None or current.reservation_id != replaces:
+                        rejected = "The candidate changed while its repair was in flight."
+                        return
+                    current.reservation_id = attempt_id
+                    current.document = document
+                else:
+                    session.add(
+                        RunGeneratedCandidate(
+                            run_id=run_id, reservation_id=attempt_id, document=document
+                        )
+                    )
+                patch = candidate
                 session.add(
                     RunCommand(
                         run_id=run_id,
                         kind=VALIDATE_CANDIDATE,
-                        dedupe_key=validation_command_key(run_id, workspace.revision),
+                        dedupe_key=candidate_validation_key(
+                            run_id, workspace.revision, workspace.sha256, attempt_id
+                        ),
                     )
                 )
 
@@ -249,6 +276,7 @@ def process_repository_candidate(
 
     error_code = None
     try:
+        repair = None
         with session_factory() as session:
             run = session.get(Run, run_id)
             plan = load_approved_plan(session, run)
@@ -259,6 +287,17 @@ def process_repository_candidate(
                 mode = "repair"
             elif dedupe_key == f"{key}:operator-retry":
                 mode = "operator"
+            elif dedupe_key == key + VALIDATION_REPAIR_SUFFIX:
+                mode = "validation_repair"
+                repair = session.scalar(
+                    select(RunEvent.payload).where(
+                        RunEvent.run_id == run_id,
+                        RunEvent.event_type == VALIDATION_REPAIR_EVENT,
+                        RunEvent.payload["command_id"].astext == str(command_id),
+                    )
+                )
+                if repair is None:
+                    raise CandidatePatchError("The saved validation repair is missing.")
             else:
                 raise CandidatePatchError("The candidate command targets another plan revision.")
             saved = session.get(RunGeneratedCandidate, run_id)
@@ -266,7 +305,17 @@ def process_repository_candidate(
                 run_id, plan.sha256
             ):
                 raise CandidatePatchError("The saved candidate does not match this plan.")
-        if saved is None:
+        if repair is not None:
+            generate_candidate(
+                session_factory,
+                run_id,
+                provider,
+                check_admission=check_admission,
+                mode=mode,
+                repair_detail=repair["detail"],
+                replaces=UUID(repair["reservation_id"]),
+            )
+        elif saved is None:
             try:
                 generate_candidate(
                     session_factory, run_id, provider, check_admission=check_admission, mode=mode
