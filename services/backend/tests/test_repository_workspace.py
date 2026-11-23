@@ -112,7 +112,17 @@ def test_frontend_and_config_patch_uses_builtin_validation(tmp_path, proposal, c
 
 
 @pytest.mark.parametrize(
-    "scenario", ["valid", "recover", "outside_scope", "repair", "manual_retry", "reference_budget"]
+    "scenario",
+    [
+        "valid",
+        "recover",
+        "outside_scope",
+        "repair",
+        "manual_retry",
+        "reference_budget",
+        "missing_import",
+        "package_call",
+    ],
 )
 def test_workspace_requires_verified_approval_and_stages_pinned_source(
     session_factory, proposal, token, monkeypatch, scenario
@@ -234,6 +244,25 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
                 edits["tests/test_cart.py"] = (
                     "from src.cart import cart\n\ndef test_cart():\n    cart(author='Writer')\n"
                 )
+        if scenario == "missing_import":
+            if retrying:
+                assert (
+                    "imports get_price, which is not defined in src/pricing.py"
+                    in prompt["repair_detail"]
+                )
+            else:
+                edits[edit_path] = (
+                    "from src.pricing import get_price\n\ndef cart(): return get_price(2)\n"
+                )
+        if scenario == "package_call":
+            if retrying:
+                assert "unexpected keyword argument 'limit'" in prompt["repair_detail"]
+                assert "src/pricing.py" in prompt["repair_detail"]
+            else:
+                edits[edit_path] = (
+                    "if __package__:\n    from .pricing import price\n"
+                    "else:\n    from pricing import price\n\ndef cart(): return price(2, limit=3)\n"
+                )
         if scenario == "manual_retry" and not retrying:
             result.update(status="incomplete", incomplete_details={"reason": "max_output_tokens"})
         result["output"][0]["content"][0]["text"] = json.dumps({"edits": edits})
@@ -271,7 +300,13 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
         )
         assert process_repository_candidate(session_factory, retry, "worker", provider)
         generation = retry
-    retried = scenario in {"outside_scope", "repair", "manual_retry"}
+    retried = scenario in {
+        "outside_scope",
+        "repair",
+        "manual_retry",
+        "missing_import",
+        "package_call",
+    }
     recount = ["/v1/responses/input_tokens"] if scenario == "reference_budget" else []
     assert requests == recount + ["/v1/responses/input_tokens", "/v1/responses"] * (
         2 if retried else 1
