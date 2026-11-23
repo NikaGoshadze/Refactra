@@ -392,6 +392,109 @@ def test_approved_file_operations_prepare_exact_commit(
             assert git(repository, "show", f"{commit}:{extra_path}") == b"{}\n"
 
 
+def test_template_update_keeps_original_values_private_and_preserves_bytes(
+    pinned_source, tmp_path, session_factory, proposal, monkeypatch
+):
+    source, _ = pinned_source
+    path = ".env-example"
+    original = b"# private fixture comment\nGOOGLE_API_KEY=synthetic-secret-marker"
+    (source / path).write_bytes(original)
+    git(source, "add", "--force", "--", path)
+    git(
+        source,
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@localhost",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        "Add example config fixture",
+    )
+    base = git(source, "rev-parse", "HEAD").decode().strip()
+    snapshot = SourceSnapshot(42, base, (SourceFile(path, original),))
+    with session_factory.begin() as session:
+        run = create_repository_run(
+            session,
+            identity=GitHubIdentity(123, "fixture"),
+            installation_id=77,
+            revision=RepositoryRevision(42, "fixture/repo", "main", "main", base),
+            task_text="Add BOOK_SEARCH_LIMIT=3 to the existing environment example.",
+        )
+        context = prepare_analysis_context(run, snapshot)
+        assert b"synthetic-secret-marker" not in context.document
+        save_analysis_context(session, context)
+        enqueue_repository_analysis(session, run.id)
+    analyze_fixture_run(session_factory)
+    proposal["changes"] = [{"path": path, "action": "MODIFY", "intent": "Add BOOK_SEARCH_LIMIT=3."}]
+    proposal["validation_checks"] = [
+        dict(proposal["validation_checks"][0], check_id=PATCH_CHECK, paths=[path])
+    ]
+    with session_factory.begin() as session:
+        plan = save_refactoring_plan(session, run.id, proposal, expected_revision=0)
+        approve_refactoring_plan(
+            session,
+            run.id,
+            plan_id=plan.id,
+            revision=1,
+            sha256=plan.sha256,
+            actor_id=run.requested_by,
+        )
+    approval = claim_command(session_factory, "worker", workflow=WORKFLOW, kind=APPLY_PLAN_APPROVAL)
+    assert process_repository_plan_approval(session_factory, approval, "worker")
+    monkeypatch.setattr(workspace, "authorize_plan", lambda _: (None, None))
+    monkeypatch.setattr(workspace, "fetch_source_snapshot", lambda *_, **__: snapshot)
+
+    def provider_response(request):
+        assert b"synthetic-secret-marker" not in request.content
+        assert b"private fixture comment" not in request.content
+        assert json.loads(json.loads(request.content)["input"])["source"] == {
+            path: "GOOGLE_API_KEY=\n"
+        }
+        if request.url.path.endswith("/input_tokens"):
+            return httpx.Response(
+                200, json={"object": "response.input_tokens", "input_tokens": 100}
+            )
+        payload = response()
+        payload["output"][0]["content"][0]["text"] = json.dumps(
+            {"edits": {path: "BOOK_SEARCH_LIMIT=3\n"}}
+        )
+        return httpx.Response(200, json=payload)
+
+    with workspace.prepare_approved_workspace(session_factory, run.id) as staged:
+        for additions, explanation in [
+            ("GOOGLE_API_KEY=\n", "preserve existing assignments"),
+            ("OTHER_API_KEY=987654\n", "non-credential settings"),
+        ]:
+            invalid = CandidatePatch(
+                base_sha=base,
+                plan_sha256=plan.sha256,
+                edits=[{"path": path, "action": "MODIFY", "content": additions}],
+            )
+            with pytest.raises(CandidatePatchError, match=explanation):
+                apply_candidate_patch(staged, invalid)
+        assert (staged.root / path).read_bytes() == b"GOOGLE_API_KEY=\n"
+    provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(provider_response))
+    generate_candidate(session_factory, run.id, provider)
+    job = claim_command(session_factory, "worker", workflow=WORKFLOW, kind=VALIDATE_CANDIDATE)
+    assert validation_worker.process_candidate_validation(
+        session_factory, job, "worker", source=source, artifacts=tmp_path
+    )
+    with session_factory() as session:
+        assert session.get(RunCommand, job).status == "DONE"
+        saved = session.scalar(
+            select(RunCandidateResult).where(RunCandidateResult.run_id == run.id)
+        )
+        assert b"synthetic-secret-marker" not in saved.document
+        assert "+BOOK_SEARCH_LIMIT=3" in json.loads(saved.document)["diff"]
+    artifact = tmp_path / f"{run.id}-r1"
+    receipt = json.loads((artifact / "receipt.json").read_bytes())
+    assert git(artifact / "repository.git", "show", f"{receipt['commit_sha']}:{path}") == (
+        original + b"\nBOOK_SEARCH_LIMIT=3\n"
+    )
+
+
 @pytest.mark.skipif(
     os.getenv("REFACTRA_TEST_TYPESCRIPT_DOCKER") != "1",
     reason="Requires a rebuilt local backend image and Docker.",

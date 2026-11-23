@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from refactra.environment_template import append_template_entries
 from refactra.python_calls import new_python_call_issue
 from refactra.refactoring_plan import PlanPath, approved_file_operation, plan_edit_kind
 
@@ -143,7 +144,12 @@ def apply_candidate_patch(workspace: "ApprovedWorkspace", candidate: CandidatePa
                     content.decode("utf-8")
         except UnicodeError:
             raise CandidatePatchError("Edited files must use UTF-8.") from None
-        if kind == "env_template":
+        if kind == "env_template" and edit.action == "MODIFY":
+            try:
+                after = append_template_entries(before or b"", after or b"")
+            except ValueError as error:
+                raise CandidatePatchError(str(error)) from None
+        elif kind == "env_template":
             entries = [line for line in (after or b"").splitlines() if line.strip()]
             if not entries or any(
                 not re.fullmatch(rb"[A-Za-z_][A-Za-z0-9_]*=", line) for line in entries

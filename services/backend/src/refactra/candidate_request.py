@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session
 
 from refactra.analysis_context import FORMAT, PreparedAnalysisContext
 from refactra.candidate_patch import MAX_EDIT_FILE_BYTES, CandidatePatch, CandidatePatchError
+from refactra.environment_template import template_preview
 from refactra.models import Run
-from refactra.refactoring_plan import is_env_path, load_approved_plan
+from refactra.refactoring_plan import is_env_path, load_approved_plan, plan_edit_kind
 
 if TYPE_CHECKING:
     from refactra.repository_workspace import ApprovedWorkspace
@@ -29,7 +30,11 @@ CANDIDATE_INSTRUCTIONS = (
     "Do not execute tools, invent "
     "validation results, include credentials, or publish changes. For each approved new "
     "environment template, use the variable names in the plan with a blank value after each equals "
-    "sign, one assignment per line, without comments. When writing tests, exercise the real "
+    "sign, one assignment per line, without comments. For MODIFY on an environment template, "
+    "return only new assignments to append. Existing assignments are preserved, and source "
+    "lists their names with values removed. "
+    "Use empty values or numeric or boolean non-credential defaults and omit comments. "
+    "When writing tests, exercise the real "
     "edited code with fake dependencies. Stub services before importing modules that "
     "initialize them and avoid live network requests or credentials."
 )
@@ -95,6 +100,14 @@ def _approved_document(session: Session, run_id: UUID) -> dict:
     }
 
 
+def _template_update(path: str, action: str) -> bool:
+    return action == "MODIFY" and plan_edit_kind(path, action) == "env_template"
+
+
+def _has_source(path: str, action: str) -> bool:
+    return action != "CREATE" and (not is_env_path(path) or _template_update(path, action))
+
+
 def prepare_candidate_context(
     session: Session,
     run_id: UUID,
@@ -111,11 +124,13 @@ def prepare_candidate_context(
         raise ValueError("The workspace does not match the approved plan.")
     source = {}
     for change in workspace.changes:
-        if change.action != "CREATE" and not is_env_path(change.path):
+        if _has_source(change.path, change.action):
             with (workspace.root / change.path).open("rb") as file:
                 raw = file.read(MAX_EDIT_FILE_BYTES + 1)
             if len(raw) > MAX_EDIT_FILE_BYTES or b"\0" in raw:
                 raise ValueError("An approved source file exceeds the text limits.")
+            if _template_update(change.path, change.action):
+                raw = template_preview(raw)
             source[change.path] = raw.decode("utf-8")
     document["source"] = source
     if retry:
@@ -148,7 +163,12 @@ def check_candidate_context(session: Session, run_id: UUID, context_json: str) -
         != {
             change["path"]
             for change in expected["approved_plan"]["changes"]
-            if change["action"] != "CREATE" and not is_env_path(change["path"])
+            if _has_source(change["path"], change["action"])
         }
     ):
         raise ValueError("Candidate input must match the saved approval.")
+    for change in expected["approved_plan"]["changes"]:
+        if _template_update(change["path"], change["action"]):
+            text = source[change["path"]]
+            if not isinstance(text, str) or template_preview(text.encode()).decode() != text:
+                raise ValueError("Environment template source must contain only redacted entries.")
