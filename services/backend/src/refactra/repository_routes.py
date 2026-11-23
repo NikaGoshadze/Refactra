@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from refactra.analysis_context import prepare_analysis_context, save_analysis_context
 from refactra.auth_sessions import resolve_session
+from refactra.diff_review import DiffReview
 from refactra.github_app import GitHubAppClient, GitHubAppError
 from refactra.github_auth import GitHubOAuthConfig
 from refactra.github_repository_access import require_github_write_access
@@ -142,6 +143,7 @@ class CandidateResultRead(ArtifactReference):
     diff: str
     diff_sha256: str
     validation: list[ValidationResult]
+    review: DiffReview | None = None
     publication_target: PublicationTargetRead | None
     publication_approval: PublicationApproval | None
     publication: PublicationBranchRead | PublicationDraftRead | None
@@ -592,6 +594,7 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                     diff=saved["diff"],
                     diff_sha256=saved["diff_sha256"],
                     validation=saved["validation"],
+                    review=saved.get("review"),
                     publication_target=target,
                     publication_approval=approval,
                     publication=publication,

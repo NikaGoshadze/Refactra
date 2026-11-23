@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from refactra.candidate_patch import MAX_DIFF_BYTES, CandidatePatch
+from refactra.diff_review import review_candidate_diff
 from refactra.models import Run, RunCandidateResult, RunEvent
 from refactra.refactoring_plan import PlanContent, load_approved_plan
 from refactra.repository_validation import ValidationResult, blocks_candidate, candidate_checks
@@ -93,6 +94,7 @@ def save_validated_candidate(
         .limit(1)
     )
     revision = (previous or 0) + 1
+    review_diff = diff.decode("utf-8")
     document = _canonical(
         {
             "schema_version": "1",
@@ -102,8 +104,9 @@ def save_validated_candidate(
             "approved_plan": {"id": str(plan.id), "revision": plan.revision, "sha256": plan.sha256},
             "candidate": patch,
             "candidate_sha256": candidate_hash,
-            "diff": diff.decode("utf-8"),
+            "diff": review_diff,
             "diff_sha256": diff_hash,
+            "review": review_candidate_diff(content, review_diff, checks).model_dump(),
             "validation": [asdict(check) for check in checks],
         }
     )
