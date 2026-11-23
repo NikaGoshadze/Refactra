@@ -16,6 +16,7 @@ from refactra.repository_snapshot import SourceSnapshot
 
 FORMAT = "analysis-context-v1"
 MAX_CONTEXT_BYTES = 2 * 1024 * 1024
+COMPACT_SOURCE_CHARS = 2400
 
 
 @dataclass(frozen=True)
@@ -100,3 +101,26 @@ def load_analysis_context(session: Session, run_id: UUID) -> PreparedAnalysisCon
         return None
     _require_run(session.get(Run, run_id), run_id, stored.payload)
     return PreparedAnalysisContext(run_id, _encode(stored.payload))
+
+
+def compact_read_only_context(context: PreparedAnalysisContext) -> PreparedAnalysisContext:
+    """Create a deterministic fallback without dropping requests or pinned file identities."""
+    payload = json.loads(context.document)
+    for source in payload["content"]["files"]:
+        original = source["text"]
+        if len(original) <= COMPACT_SOURCE_CHARS:
+            continue
+        prefix = original[:COMPACT_SOURCE_CHARS]
+        last_break = prefix.rfind("\n")
+        if last_break > 0:
+            prefix = prefix[: last_break + 1]
+        source.update(
+            text=prefix,
+            end_line=source["start_line"] + len(prefix.splitlines()) - 1,
+            size_bytes=len(prefix.encode("utf-8")),
+            excerpt=True,
+        )
+    payload["content"]["total_bytes"] = sum(f["size_bytes"] for f in payload["content"]["files"])
+    if len(payload.get("saved_analysis", "")) > COMPACT_SOURCE_CHARS:
+        payload["saved_analysis"] = payload["saved_analysis"][:COMPACT_SOURCE_CHARS] + "\n[Excerpt]"
+    return PreparedAnalysisContext(context.run_id, _encode(payload))

@@ -8,12 +8,17 @@ from uuid import UUID
 
 import httpx
 
-from refactra.analysis_context import PreparedAnalysisContext, load_analysis_context
+from refactra.analysis_context import (
+    PreparedAnalysisContext,
+    compact_read_only_context,
+    load_analysis_context,
+)
 from refactra.analysis_request import (
     DEFAULT_REQUEST_OUTPUT,
     INSTRUCTIONS,
     MAX_REQUEST_OUTPUT,
     AnalysisModelInput,
+    BudgetExceeded,
     BudgetUsage,
     ModelPricing,
     prepare_analysis_request,
@@ -220,17 +225,44 @@ def execute_read_only_analysis(
         )
     if context is None:
         raise ValueError("A saved analysis context is required.")
-    return execute_model_request(
-        session_factory,
-        attempt_id,
-        provider,
-        context,
-        instructions=PLAN_INSTRUCTIONS if planning else INSTRUCTIONS,
-        max_output_tokens=max_output_tokens,
-        ledger_limit_usd=ledger_limit_usd,
-        check_admission=check_admission,
-        save_response=save_response,
-    )
+    instructions = PLAN_INSTRUCTIONS if planning else INSTRUCTIONS
+
+    def request(prompt):
+        return execute_model_request(
+            session_factory,
+            attempt_id,
+            provider,
+            prompt,
+            instructions=instructions,
+            max_output_tokens=max_output_tokens,
+            ledger_limit_usd=ledger_limit_usd,
+            check_admission=check_admission,
+            save_response=save_response,
+        )
+
+    try:
+        return request(context)
+    except BudgetExceeded as error:
+        trace = {
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+            "stage": "plan" if planning else "analysis",
+        }
+        if ledger_limit_usd is None and error.code in {
+            "request_input_tokens",
+            "model_context_tokens",
+            "run_input_tokens",
+        }:
+            compact = compact_read_only_context(context)
+            if compact.document != context.document:
+                workflow_log("read_only_context_compacted", **trace, reason=error.code)
+                try:
+                    return request(compact)
+                except BudgetExceeded as compact_error:
+                    workflow_log("read_only_budget_rejected", **trace, reason=compact_error.code)
+                    raise
+        workflow_log("read_only_budget_rejected", **trace, reason=error.code)
+        raise
 
 
 def execute_model_request(

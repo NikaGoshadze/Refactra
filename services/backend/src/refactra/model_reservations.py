@@ -9,7 +9,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from refactra.analysis_context import load_analysis_context
+from refactra.analysis_context import compact_read_only_context, load_analysis_context
 from refactra.analysis_request import (
     INSTRUCTIONS,
     MAX_MONTH_USD,
@@ -136,7 +136,11 @@ def reserve_analysis_request(
             context = load_planning_context(session, request.run_id, reservation_id)
         else:
             raise ValueError("Request must use trusted model instructions.")
-        if context is None or context.document != request.model_input.context_json.encode():
+        request_document = request.model_input.context_json.encode()
+        if context is None or (
+            context.document != request_document
+            and compact_read_only_context(context).document != request_document
+        ):
             raise ValueError("Request must match the saved context for this step.")
     month = (
         session.scalar(select(func.timezone("UTC", func.clock_timestamp()))).date().replace(day=1)

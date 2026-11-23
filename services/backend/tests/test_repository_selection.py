@@ -98,6 +98,24 @@ def test_explicit_path_precedes_lexical_matches():
     assert "explicit_path" in selected.files[0].reasons
 
 
+def test_prose_search_bug_prefers_code_to_incidental_tabular_data():
+    files = [
+        ("books/web_app.py", b"# book search page: query, form, failure feedback"),
+        ("books/templates/index.html", b"<form>Search books by query</form>"),
+        (
+            "temp_books.csv",
+            b"name,summary\nTitle,book search page query form failure feedback\n" * 500,
+        ),
+    ]
+    selected = choose(files, "Fix feedback for a blank query on the book search page")
+    assert {file.path for file in selected.files} == {
+        "books/web_app.py",
+        "books/templates/index.html",
+    }
+    explicit = choose(files, "Review `temp_books.csv` for the search bug")
+    assert explicit.files[0].path == "temp_books.csv"
+
+
 def test_no_lexical_match_uses_entry_points_before_other_sources():
     result = choose(
         [("src/aaa.py", b"pass"), ("src/main.py", b"pass"), ("tests/test_main.py", b"assert True")],
