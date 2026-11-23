@@ -52,6 +52,16 @@ class _InspectionLimit(Exception):
     pass
 
 
+def python_import_module(path: PurePosixPath, statement: ast.ImportFrom) -> PurePosixPath | None:
+    module = statement.module.split(".") if statement.module else []
+    if not statement.level:
+        return PurePosixPath(*module)
+    parents = path.parent.parts
+    if statement.level > len(parents):
+        return None
+    return PurePosixPath(*parents[: len(parents) - statement.level + 1], *module)
+
+
 def _index_file(source: RetrievedFile) -> PythonFileIndex:
     try:
         with warnings.catch_warnings():

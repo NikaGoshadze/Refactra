@@ -112,7 +112,7 @@ def test_frontend_and_config_patch_uses_builtin_validation(tmp_path, proposal, c
 
 
 @pytest.mark.parametrize(
-    "scenario", ["valid", "recover", "outside_scope", "repair", "manual_retry"]
+    "scenario", ["valid", "recover", "outside_scope", "repair", "manual_retry", "reference_budget"]
 )
 def test_workspace_requires_verified_approval_and_stages_pinned_source(
     session_factory, proposal, token, monkeypatch, scenario
@@ -122,9 +122,13 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
         save_analysis_context(session, context)
         enqueue_repository_analysis(session, run.id)
     analyze_fixture_run(session_factory)
+    pinned_cart = b"from .pricing import price\nfrom .settings import API_KEY\n"
+    pinned_pricing = b"def price(quantity): return quantity * 2\n"
     archive = zip_bytes(
         [
-            ("root/src/cart.py", b"pinned"),
+            ("root/src/cart.py", pinned_cart),
+            ("root/src/pricing.py", pinned_pricing),
+            ("root/src/settings.py", b"API_KEY = 'synthetic-private-value'\n"),
             ("root/.env", b"secret"),
             ("root/src/unrelated.py", b"not approved"),
             ("root/requirements.lock", b"pinned lock metadata"),
@@ -164,7 +168,7 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
     with workspace.prepare_approved_workspace(session_factory, run.id) as prepared:
         root = prepared.root
         assert prepared.base_sha == run.base_sha and prepared.sha256 == plan.sha256
-        assert prepared.file_count == 2 and (root / "src/cart.py").read_bytes() == b"pinned"
+        assert prepared.file_count == 4 and (root / "src/cart.py").read_bytes() == pinned_cart
         assert prepared.python_lock == b"pinned lock metadata"
         assert not (root / "requirements.lock").exists()
         assert not (root / ".env").exists()
@@ -199,18 +203,29 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
         assert schema["required"] == ["src/cart.py", "tests/test_cart.py"]
         assert schema["additionalProperties"] is False
         prompt = json.loads(payload["input"])
-        assert prompt["source"] == {"src/cart.py": "pinned"}
+        assert prompt["source"] == {"src/cart.py": pinned_cart.decode()}
+        if scenario == "reference_budget" and len(requests) > 1:
+            assert "references" not in prompt
+        else:
+            assert prompt["references"] == {"src/pricing.py": pinned_pricing.decode()}
+        assert "synthetic-private-value" not in payload["input"]
         assert prompt["approved_plan"] == json.loads(plan.document)
         if request.url.path.endswith("/input_tokens"):
             return httpx.Response(
-                200, json={"object": "response.input_tokens", "input_tokens": 100}
+                200,
+                json={
+                    "object": "response.input_tokens",
+                    "input_tokens": 12001
+                    if scenario == "reference_budget" and len(requests) == 1
+                    else 100,
+                },
             )
         assert payload["tools"] == [] and payload["store"] is False
         result = response()
         retrying = prompt.get("retry_after_rejection", False)
         edits = {edit["path"]: edit["content"] for edit in patch["edits"]}
         if scenario == "outside_scope":
-            edits["src/unrelated.py"] = edits.pop("src/cart.py")
+            edits["src/pricing.py"] = edits.pop("src/cart.py")
         if scenario == "repair":
             if retrying:
                 assert "unexpected keyword argument 'author'" in prompt["repair_detail"]
@@ -257,7 +272,10 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
         assert process_repository_candidate(session_factory, retry, "worker", provider)
         generation = retry
     retried = scenario in {"outside_scope", "repair", "manual_retry"}
-    assert requests == ["/v1/responses/input_tokens", "/v1/responses"] * (2 if retried else 1)
+    recount = ["/v1/responses/input_tokens"] if scenario == "reference_budget" else []
+    assert requests == recount + ["/v1/responses/input_tokens", "/v1/responses"] * (
+        2 if retried else 1
+    )
     with session_factory() as session:
         attempt_id = uuid5(run.id, f"repository:candidate:v1:{plan.sha256}")
         assert session.get(ModelReservation, attempt_id).actual_output_tokens == 20
@@ -275,4 +293,4 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
             generate_candidate(session_factory, run.id, provider)
     else:
         assert generate_candidate(session_factory, run.id, provider).model_dump() == patch
-    assert len(requests) == (4 if retried else 2)
+    assert len(requests) == len(recount) + (4 if retried else 2)

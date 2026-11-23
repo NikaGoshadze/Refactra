@@ -18,6 +18,7 @@ from refactra.candidate_request import (
     CANDIDATE_INSTRUCTIONS,
     patch_from_contents,
     prepare_candidate_context,
+    without_candidate_references,
 )
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
@@ -195,16 +196,34 @@ def generate_candidate(
                     )
                 )
 
-        execute_model_request(
-            session_factory,
-            attempt_id,
-            provider,
-            context,
-            instructions=CANDIDATE_INSTRUCTIONS,
-            max_output_tokens=output_limit,
-            check_admission=check_admission,
-            save_response=save_response,
-        )
+        def request_patch(request_context):
+            execute_model_request(
+                session_factory,
+                attempt_id,
+                provider,
+                request_context,
+                instructions=CANDIDATE_INSTRUCTIONS,
+                max_output_tokens=output_limit,
+                check_admission=check_admission,
+                save_response=save_response,
+            )
+
+        try:
+            request_patch(context)
+        except BudgetExceeded as error:
+            if error.code not in {
+                "request_input_tokens",
+                "model_context_tokens",
+                "run_input_tokens",
+                "run_cost",
+                "monthly_cost",
+            }:
+                raise
+            smaller_context = without_candidate_references(context)
+            if smaller_context is None:
+                raise
+            workflow_log("candidate_reference_budget", run_id=run_id, reason=error.code)
+            request_patch(smaller_context)
         if patch is None:
             error = CandidateReplyRejected if retryable else CandidatePatchError
             raise error(rejected or "The generated candidate could not be saved.")
