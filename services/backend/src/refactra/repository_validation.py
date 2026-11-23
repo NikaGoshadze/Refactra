@@ -14,6 +14,7 @@ from time import monotonic
 from typing import TYPE_CHECKING
 
 from refactra.diagnostics import workflow_log
+from refactra.go_validation import GO_ENV, GO_IMAGE, GO_TMPFS, go_invocation, go_source_path
 from refactra.python_dependency_cache import PythonLockError, pinned_python_requirements
 from refactra.python_test_support import (
     NO_ROUTE_REQUESTS,
@@ -24,6 +25,7 @@ from refactra.python_test_support import (
 from refactra.refactoring_plan import (
     ASSET_CHECK,
     FLASK_CHECK,
+    GO_CHECK,
     PATCH_CHECK,
     TYPESCRIPT_CHECK,
     ProposedChange,
@@ -78,11 +80,17 @@ def candidate_checks(
 ) -> list[CandidateCheck]:
     if approved_file_operation(changes, checks) == "asset_replace":
         return [CandidateCheck(ASSET_CHECK, [changes[0].path], True)]
-    return [
+    result = [
         CandidateCheck(check.check_id, check.paths, check.required)
         for check in checks
-        if check.check_id != PATCH_CHECK
-    ] + [CandidateCheck(PATCH_CHECK, [edit.path for edit in changes], True)]
+        if check.check_id not in {PATCH_CHECK, GO_CHECK}
+    ]
+    go_paths = [
+        edit.path for edit in changes if edit.action != "DELETE" and go_source_path(edit.path)
+    ]
+    if go_paths:
+        result.append(CandidateCheck(GO_CHECK, go_paths, True))
+    return [*result, CandidateCheck(PATCH_CHECK, [edit.path for edit in changes], True)]
 
 
 def blocks_candidate(checks: list[ValidationResult]) -> bool:
@@ -174,6 +182,11 @@ def _targets(workspace: "ApprovedWorkspace", check: CandidateCheck) -> list[str]
                 else "Pytest needs at least one explicit test file."
             )
             raise RepositoryValidationError(reason)
+    elif check.check_id == GO_CHECK:
+        if not check.paths or any(not go_source_path(path) for path in check.paths):
+            raise RepositoryValidationError(
+                "Go validation needs staged Go source or a go.mod file."
+            )
     elif check.check_id == ASSET_CHECK:
         raise RepositoryValidationError("Asset validation needs one approved binary replacement.")
     else:
@@ -187,6 +200,8 @@ def _targets(workspace: "ApprovedWorkspace", check: CandidateCheck) -> list[str]
             or target.resolve() != target
             or not target.is_file()
         ):
+            if check.check_id == GO_CHECK:
+                raise RepositoryValidationError("Go validation needs staged regular files.")
             raise RepositoryValidationError(
                 "The approved check must target staged Python files or a staged tsconfig."
             )
@@ -197,7 +212,7 @@ def _inspect(container: str) -> dict:
     return json.loads(_docker("inspect", "--format", "{{json .}}", container))
 
 
-def _verify_isolation(info: dict) -> None:
+def _verify_isolation(info: dict, tmpfs: str = TMPFS) -> None:
     limits = {
         "NetworkMode": "none",
         "ReadonlyRootfs": True,
@@ -208,7 +223,7 @@ def _verify_isolation(info: dict) -> None:
         "Memory": 2 * 1024**3,
         "MemorySwap": 2 * 1024**3,
         "PidsLimit": 128,
-        "Tmpfs": {"/tmp": TMPFS},
+        "Tmpfs": {"/tmp": tmpfs},
         "PidMode": "",
         "PortBindings": {},
     }
@@ -252,6 +267,9 @@ def _validate_check(
     workspace: "ApprovedWorkspace", check: CandidateCheck, targets: list[str], image_id: str
 ) -> ValidationResult:
     entrypoint = "/app/.venv/bin/python"
+    workdir, tmpfs = "/workspace", TMPFS
+    environment = ["--env", "HOME=/tmp", "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1"]
+    standalone_go = False
     declared = (
         declared_test_imports(workspace.root, check.paths)
         if check.check_id in _PYTHON_CHECKS
@@ -295,6 +313,16 @@ def _validate_check(
             "--project",
             targets[0],
         ]
+    elif check.check_id == GO_CHECK:
+        try:
+            go = go_invocation(workspace.root.resolve(), check.paths)
+        except ValueError as error:
+            raise RepositoryValidationError(str(error)) from None
+        entrypoint = "/usr/local/go/bin/go"
+        workdir, tmpfs, arguments = go.directory, GO_TMPFS, go.arguments
+        standalone_go = go.standalone
+        for setting in (*GO_ENV, f"GO111MODULE={'off' if standalone_go else 'on'}"):
+            environment.extend(("--env", setting))
     container = _docker(
         "create",
         "--pull",
@@ -319,24 +347,21 @@ def _validate_check(
         "--pids-limit",
         "128",
         "--tmpfs",
-        f"/tmp:{TMPFS}",
+        f"/tmp:{tmpfs}",
         "--log-driver",
         "none",
         "--mount",
         f"type=bind,source={workspace.root.resolve()},target=/workspace,readonly",
         "--workdir",
-        "/workspace",
-        "--env",
-        "HOME=/tmp",
-        "--env",
-        "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
+        workdir,
+        *environment,
         "--entrypoint",
         entrypoint,
         image_id,
         *arguments,
     )
     try:
-        _verify_isolation(_inspect(container))
+        _verify_isolation(_inspect(container), tmpfs)
         start = monotonic()
         output, reason = _capture(container)
         duration_ms = round((monotonic() - start) * 1000)
@@ -352,6 +377,22 @@ def _validate_check(
             unavailable = "The tests did not send a request to a changed Flask route."
         elif check.check_id in _PYTHON_CHECKS:
             unavailable = python_unavailable_reason(exit_code, text, declared)
+        elif check.check_id == GO_CHECK:
+            if standalone_go:
+                note = "No go.mod found. Go checks ran in standalone mode."
+                text = f"{note}\n{text}"
+                if exit_code == 0:
+                    unavailable = note
+            if (
+                exit_code == 1
+                and "module lookup disabled by GOPROXY=off" in text
+                and "[setup failed]" in text
+                and "--- FAIL:" not in text
+                and "[build failed]" not in text
+            ):
+                unavailable = "The Go module requires dependencies unavailable offline."
+            elif exit_code == 1 and text.startswith("go: go.mod requires go >="):
+                unavailable = "The module requires a newer Go toolchain than the offline runner."
         if unavailable:
             return ValidationResult(
                 check.check_id,
@@ -395,6 +436,15 @@ def validate_candidate(workspace: "ApprovedWorkspace") -> list[ValidationResult]
             continue
         try:
             targets = _targets(workspace, check)
+            if check.check_id == GO_CHECK:
+                try:
+                    runner = _docker("image", "inspect", "--format", "{{.Id}}", GO_IMAGE)
+                except RepositoryValidationError:
+                    raise RepositoryValidationError(
+                        "The offline Go validation image is unavailable."
+                    ) from None
+                results.append(_validate_check(workspace, check, targets, runner))
+                continue
             if image_error:
                 raise RepositoryValidationError(image_error)
             if not image_id:

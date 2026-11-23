@@ -30,9 +30,11 @@ PATCH_CHECK = "repository.patch"
 TYPESCRIPT_CHECK = "typescript.tsc"
 ASSET_CHECK = "repository.asset"
 FLASK_CHECK = "python.flask"
+GO_CHECK = "go.test"
 SUPPORTED_PLAN_CHECK_IDS = (
     "python.pytest",
     FLASK_CHECK,
+    GO_CHECK,
     PATCH_CHECK,
     TYPESCRIPT_CHECK,
     ASSET_CHECK,

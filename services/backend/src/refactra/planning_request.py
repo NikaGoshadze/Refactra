@@ -103,6 +103,8 @@ PLAN_INSTRUCTIONS = (
     "unavailable. "
     "Use typescript.tsc for TypeScript projects with one retained tsconfig file and "
     "dependencies available to the validator (TypeScript and React types). "
+    "Use go.test for Go source edits. Include go.mod when the new tool's documented usage "
+    "requires module mode and there is no parent module. "
     "Use check identifiers, not shell commands or executable arguments. Do not edit files, "
     "execute tooling, publish changes, or claim validation ran. Keep the proposal concise. "
     "For plans with changes, include consistent criterion IDs. Propose project checks only "
