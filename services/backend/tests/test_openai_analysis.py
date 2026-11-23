@@ -1,10 +1,12 @@
 import json
+from dataclasses import replace
 from decimal import Decimal
 from uuid import uuid4
 
 import httpx
 import pytest
 
+from refactra.analysis_context import prepare_analysis_context, save_analysis_context
 from refactra.analysis_request import AnalysisModelInput, BudgetExceeded
 from refactra.models import ModelReservation
 from refactra.openai_analysis import (
@@ -13,7 +15,15 @@ from refactra.openai_analysis import (
     OpenAIAnalysisProvider,
     execute_read_only_analysis,
 )
+from refactra.repository_analysis_worker import (
+    WORKFLOW,
+    enqueue_repository_analysis,
+    process_repository_analysis,
+)
+from refactra.repository_snapshot import SourceFile
+from refactra.worker import claim_command
 
+from .test_analysis_context import prepare as prepare_run
 from .test_model_reservations import prepare
 
 
@@ -173,6 +183,45 @@ def test_invalid_or_excessive_count_never_allocates_or_generates(session_factory
         )
     with session_factory() as session:
         assert session.get(ModelReservation, attempt) is None
+
+
+@pytest.mark.parametrize("planning", [False, True])
+def test_over_budget_read_only_request_recounts_a_pinned_excerpt(session_factory, planning):
+    run, snapshot, _ = prepare_run(session_factory)
+    snapshot = replace(snapshot, files=(SourceFile("src/cart.py", b"# cart source\n" * 800),))
+    with session_factory.begin() as session:
+        save_analysis_context(session, prepare_analysis_context(run, snapshot))
+        enqueue_repository_analysis(session, run.id)
+    requests = []
+
+    def handle(request):
+        body = json.loads(request.content)
+        payload = json.loads(body["input"])
+        excerpt = payload["content"]["files"][0].get("excerpt", False)
+        assert payload["task_text"] == "Refactor cart" and payload["base_sha"] == run.base_sha
+        requests.append((request.url.path, excerpt))
+        if request.url.path.endswith("/input_tokens"):
+            return httpx.Response(
+                200,
+                json={"object": "response.input_tokens", "input_tokens": 100 if excerpt else 12001},
+            )
+        assert len(payload["content"]["files"][0]["text"]) <= 2400
+        return httpx.Response(200, json=response())
+
+    provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(handle))
+    command = claim_command(session_factory, "fixture", workflow=WORKFLOW)
+    assert process_repository_analysis(session_factory, command, "fixture", provider)
+    attempt = uuid4() if planning else command
+    if planning:
+        requests.clear()
+        execute_read_only_analysis(session_factory, run.id, attempt, provider, planning=True)
+    assert requests == [
+        ("/v1/responses/input_tokens", False),
+        ("/v1/responses/input_tokens", True),
+        ("/v1/responses", True),
+    ]
+    with session_factory() as session:
+        assert session.get(ModelReservation, attempt).settled_at is not None
 
 
 @pytest.mark.parametrize(

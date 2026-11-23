@@ -11,6 +11,10 @@ from refactra.repository_snapshot import SKIP_DIRECTORIES, SourceSnapshot
 MAX_FILES = 8
 MAX_FILE_BYTES = 64 * 1024
 MAX_TOTAL_BYTES = 128 * 1024
+TABULAR_SUFFIXES = {".csv", ".tsv", ".jsonl", ".ndjson"}
+DATA_TERMS = {"csv", "tsv", "jsonl", "ndjson", "dataset", "datasets"}
+BROWSER_REQUEST = re.compile(r"\b(?:browser|frontend|html|page|web|form)\b", re.IGNORECASE)
+BROWSER_PATH_TERMS = {"template", "templates", "web"}
 STOP_WORDS = frozenset(
     (
         "the and for from with into this that refactor extract change "
@@ -114,6 +118,7 @@ def select_task_files(
     if not isinstance(task_text, str) or not 1 <= len(task_text) <= 4000 or not task_text.strip():
         raise ValueError("A nonblank task of at most 4000 characters is required.")
     terms = set(sorted(_words(task_text))[:32])
+    browser_request = bool(BROWSER_REQUEST.search(task_text))
     text_paths = set(inventory.text_paths)
     entry_paths = set(inventory.entry_point_candidates)
     candidates, oversized = [], 0
@@ -123,14 +128,31 @@ def select_task_files(
         role = eligible_file_role(source.path, inventory)
         if source.path not in text_paths or role is None:
             continue
+        is_named = _named_in_task(source.path, task_text)
+        suffix = PurePosixPath(source.path).suffix.casefold()
+        if suffix in TABULAR_SUFFIXES and not is_named and not terms.intersection(DATA_TERMS):
+            continue
         if len(source.content) > MAX_FILE_BYTES:
             oversized += 1
             continue
-        path_hits = len(terms.intersection(_words(source.path)))
+        path_terms = _words(source.path)
+        path_hits = len(terms.intersection(path_terms))
         # Inspect only eligible bounded bytes; never export content or matched task terms.
         text = source.content.decode("utf-8-sig").casefold()
         content_hits = sum(term in text for term in terms) if role != "metadata" else 0
         score = 10 * path_hits + content_hits
+        browser_surface = (
+            browser_request
+            and role == "source"
+            and (path_hits or content_hits)
+            and (
+                bool(BROWSER_PATH_TERMS.intersection(path_terms))
+                or suffix in {".html", ".jinja", ".jinja2"}
+                or (suffix == ".py" and "render_template(" in text)
+            )
+        )
+        if browser_surface:
+            score += 16
         if role == "source":
             imports[source.path] = _relative_imports(
                 PurePosixPath(source.path), source.content.decode("utf-8-sig")
@@ -138,7 +160,9 @@ def select_task_files(
         reasons = (
             ("task_path_match",) if path_hits else ("task_content_match",) if content_hits else ()
         )
-        if _named_in_task(source.path, task_text):
+        if browser_surface:
+            reasons += ("browser_surface",)
+        if is_named:
             named.add(source.path)
             reasons = ("explicit_path",) + reasons
             score += 1000
