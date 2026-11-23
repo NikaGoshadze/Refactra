@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session, undefer
 from refactra.analysis_context import load_analysis_context
 from refactra.models import Run, RunAnalysisResult, RunCommand, RunEvent, RunPlan, RunPlanApproval
 from refactra.repository_selection import BLOCKED_PARTS, is_excluded_source_path
+from refactra.request_coverage import requested_paths
 
 MAX_PLAN_BYTES = 64 * 1024
 PATCH_CHECK = "repository.patch"
@@ -114,6 +115,10 @@ class PlanContent(PlanProposal):
     schema_version: Literal["1"]
     run_id: UUID
     repository: PlanRepository
+    requested_files: dict[PlanPath, Literal["CREATE", "MODIFY", "DELETE"]] = Field(
+        default_factory=dict
+    )
+    inventory_errors: list[str] = Field(default_factory=list)
 
 
 class PlanReadiness(BaseModel):
@@ -184,6 +189,14 @@ def evaluate_plan_readiness(proposal: PlanProposal) -> PlanReadiness:
         for edit in proposal.changes
         if plan_edit_kind(edit.path, edit.action) is None
     ]
+    if isinstance(proposal, PlanContent) and proposal.changes:
+        planned = {edit.path: edit.action for edit in proposal.changes}
+        scope_errors.extend(proposal.inventory_errors)
+        scope_errors.extend(
+            f"The request calls for {action} {path}, but the plan does not include that action."
+            for path, action in proposal.requested_files.items()
+            if planned.get(path) != action
+        )
     unsupported_checks = sorted(
         {
             check.check_id
@@ -281,7 +294,12 @@ def queue_plan_feedback(session: Session, run_id: UUID, feedback: PlanFeedback) 
 
 
 def save_refactoring_plan(
-    session: Session, run_id: UUID, proposal: dict, *, expected_revision: int
+    session: Session,
+    run_id: UUID,
+    proposal: dict,
+    *,
+    expected_revision: int,
+    feedback_notes: str = "",
 ) -> RunPlan:
     """Caller authorizes the run and commits. The server supplies repository identity."""
     if type(expected_revision) is not int or expected_revision < 0:
@@ -298,6 +316,7 @@ def save_refactoring_plan(
         or context is None
     ):
         raise PlanRevisionConflict("A repository run with completed analysis is required.")
+    tracked = set(json.loads(context.document)["inventory"]["file_paths"])
     special_edits = [
         edit
         for edit in parsed.changes
@@ -306,7 +325,6 @@ def save_refactoring_plan(
     if approved_file_operation(parsed.changes, parsed.validation_checks) == "asset_replace":
         special_edits = parsed.changes
     if special_edits:
-        tracked = json.loads(context.document)["inventory"]["file_paths"]
         for edit in special_edits:
             exists = edit.path in tracked
             if exists != (edit.action == "CREATE"):
@@ -319,6 +337,24 @@ def save_refactoring_plan(
                 blocking_questions=[],
             )
             break
+    latest = load_refactoring_plan(session, run_id)
+    previous = json.loads(latest.document) if latest is not None else {}
+    requirements = previous.get("requested_files", requested_paths(run.task_text, tracked))
+    had_requirements = bool(requirements) or "requested_files" in previous
+    if feedback_notes:
+        requirements = requested_paths(feedback_notes, tracked, requirements)
+    if requirements or had_requirements:
+        payload["requested_files"] = requirements
+        errors = [
+            f"{edit['path']} "
+            f"{'already exists in' if edit['path'] in tracked else 'is absent from'}"
+            " the pinned commit."
+            for edit in payload["changes"]
+            if edit["path"] in requirements
+            and (edit["action"] == "CREATE") == (edit["path"] in tracked)
+        ]
+        if errors:
+            payload["inventory_errors"] = errors
     payload.update(
         schema_version="1",
         run_id=str(run_id),
@@ -334,7 +370,6 @@ def save_refactoring_plan(
     if len(document) > MAX_PLAN_BYTES:
         raise ValueError("Plan exceeds the 64 KiB storage limit.")
     digest = sha256(document).hexdigest()
-    latest = load_refactoring_plan(session, run_id)
     if latest is not None and latest.sha256 == digest:
         return latest
     if session.get(RunPlanApproval, run_id) is not None:

@@ -125,7 +125,11 @@ def generate_initial_plan(
             schema_error = error.errors(include_input=False, include_context=False)[0]["type"]
         else:
             plan = save_refactoring_plan(
-                session, run_id, proposal.model_dump(), expected_revision=expected_revision
+                session,
+                run_id,
+                proposal.model_dump(),
+                expected_revision=expected_revision,
+                feedback_notes=feedback["notes"] if feedback else "",
             )
 
     execute_read_only_analysis(
