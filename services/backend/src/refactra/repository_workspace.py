@@ -24,6 +24,7 @@ from refactra.candidate_patch import (
 from refactra.candidate_results import CandidateResultError, save_validated_candidate
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
+from refactra.environment_template import template_preview
 from refactra.github_app import GitHubAppError
 from refactra.models import Run, RunCommand
 from refactra.python_dependency_cache import PYTHON_LOCK_PATH
@@ -88,25 +89,26 @@ def _workspace_files(snapshot: SourceSnapshot, content: PlanContent) -> dict[Pur
     paths = [_workspace_path(file.path) for file in snapshot.files]
     if len(paths) != len(set(paths)):
         raise WorkspacePreparationError("The source snapshot contains duplicate paths.")
-    files = {
-        path: file.content
-        for path, file in zip(paths, snapshot.files, strict=True)
-        if not is_excluded_source_path(path)
-    }
+    tracked = {path: file.content for path, file in zip(paths, snapshot.files, strict=True)}
+    files = {path: data for path, data in tracked.items() if not is_excluded_source_path(path)}
     operation = approved_file_operation(content.changes, content.validation_checks)
-    tracked_paths = set(paths)
     expected_paths = set(files)
     for change in content.changes:
         path = _workspace_path(change.path)
         kind = plan_edit_kind(change.path, change.action)
         if kind is None:
             raise WorkspacePreparationError("An approved file action is outside the edit scope.")
-        if (change.action == "CREATE") == (path in tracked_paths):
+        if (change.action == "CREATE") == (path in tracked):
             raise WorkspacePreparationError(
                 "An approved file action does not match the pinned source."
             )
         if kind == "env_delete":
             files[path] = b""
+        elif kind == "env_template" and change.action == "MODIFY":
+            try:
+                files[path] = template_preview(tracked[path])
+            except ValueError as error:
+                raise WorkspacePreparationError(str(error)) from None
         elif path in files and operation != "asset_replace":
             data = files[path]
             try:

@@ -136,7 +136,7 @@ def plan_edit_kind(value: str, action: str) -> Literal["text", "env_delete", "en
     if is_env_path(value):
         if action == "DELETE":
             return "env_delete"
-        if action == "CREATE" and re.search(
+        if action in {"CREATE", "MODIFY"} and re.search(
             r"[._-](example|sample|template|dist)$", path.name.casefold()
         ):
             return "env_template"

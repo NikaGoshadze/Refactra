@@ -17,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from refactra.candidate_patch import MAX_EDIT_FILE_BYTES, CandidatePatch, apply_candidate_patch
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
+from refactra.environment_template import append_template_entries
 from refactra.models import Run, RunCandidateResult
 from refactra.publication_target import PublicationTargetError, save_publication_target
 from refactra.refactoring_plan import PlanContent, load_approved_plan, plan_edit_kind
@@ -171,6 +172,7 @@ def prepare_candidate_commit(
         modes = {}
         base_objects = {}
         source_files = []
+        template_blobs = {}
         for edit in candidate.edits:
             entry = git("ls-tree", "-z", base, "--", edit.path)
             if not entry:
@@ -179,12 +181,15 @@ def prepare_candidate_commit(
             mode, kind, oid = entry.split(b"\t", 1)[0].split()
             if kind != b"blob" or mode not in {b"100644", b"100755"}:
                 raise CandidateCommitError("The pinned Git tree has a non-regular candidate path.")
-            redact = plan_edit_kind(edit.path, edit.action) == "env_delete"
+            kind = plan_edit_kind(edit.path, edit.action)
+            redact = kind == "env_delete"
             if not redact and int(git("cat-file", "-s", oid.decode())) > MAX_EDIT_FILE_BYTES:
                 raise CandidateCommitError("A candidate path exceeds the source file size limit.")
             modes[edit.path] = mode
             base_objects[edit.path] = oid
             data = b"" if redact else git("cat-file", "blob", oid.decode())
+            if kind == "env_template" and edit.action == "MODIFY":
+                template_blobs[edit.path] = data
             source_files.append(SourceFile(edit.path, data))
         snapshot = SourceSnapshot(content.repository.repository_id, base, tuple(source_files))
         workspace.root.mkdir()
@@ -207,9 +212,12 @@ def prepare_candidate_commit(
                 mode, oid = b"0", b"0" * 40
             else:
                 mode = modes[edit.path]
-                oid = git(
-                    "hash-object", "-w", "--stdin", data=(workspace.root / edit.path).read_bytes()
-                )
+                data = (workspace.root / edit.path).read_bytes()
+                if edit.path in template_blobs:
+                    data = append_template_entries(
+                        template_blobs[edit.path], (edit.content or "").encode()
+                    )
+                oid = git("hash-object", "-w", "--stdin", data=data)
                 oid = oid.strip()
                 if oid == base_objects.get(edit.path):
                     continue
