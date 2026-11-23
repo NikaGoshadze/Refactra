@@ -156,6 +156,37 @@ def test_search(monkeypatch):
     assert validation.blocks_candidate([result, baseline]) == (mode == "wrong_type")
 
 
+@pytest.mark.skipif(os.getenv("REFACTRA_TEST_GO_DOCKER") != "1", reason="Requires the Go image.")
+@pytest.mark.parametrize(
+    "mode, expected",
+    [("module", "PASSED"), ("standalone", "UNAVAILABLE"), ("bad_import", "FAILED")],
+)
+def test_go_changes_run_an_offline_build_and_tests(tmp_path, mode, expected):
+    tool = tmp_path / "tools" / "book-index"
+    tool.mkdir(parents=True)
+    go_file = tool / "main.go"
+    extra = 'import "bytes"\n' if mode == "bad_import" else ""
+    go_file.write_text(f"package main\n{extra}func main() {{}}\nfunc books() int {{ return 2 }}\n")
+    (tool / "main_test.go").write_text(
+        'package main\nimport "testing"\n'
+        'func TestBooks(t *testing.T) { if books() != 2 { t.Fatal("wrong number") } }\n'
+    )
+    if mode == "module":
+        (tool / "go.mod").write_text("module example.test/book-index\n\ngo 1.24\n")
+    change = ProposedChange(
+        path="tools/book-index/main.go", action="CREATE", intent="Create a tool."
+    )
+    workspace = ApprovedWorkspace(tmp_path, "a" * 40, 1, "b" * 64, 3, (change,))
+    result, baseline = validation.validate_candidate(workspace)
+    assert result.check_id == "go.test" and result.status == expected, (result, baseline)
+    assert baseline.status == "PASSED"
+    assert validation.blocks_candidate([result, baseline]) == (mode == "bad_import")
+    if mode != "module":
+        assert "No go.mod" in result.output
+    if mode == "bad_import":
+        assert "imported and not used" in result.output
+
+
 def lock_for(version: str = "1.0") -> bytes:
     return f"example-wheel=={version} --hash=sha256:{'a' * 64}\n".encode()
 
