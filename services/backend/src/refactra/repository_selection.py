@@ -2,6 +2,7 @@
 
 import re
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import PurePosixPath
 from posixpath import normpath
 
@@ -87,8 +88,8 @@ def _named_in_task(path: str, task: str) -> bool:
     )
 
 
-def _relative_imports(path: PurePosixPath, text: str) -> set[str]:
-    """Recognize the relative links used by Python and JavaScript module imports."""
+def _local_imports(path: PurePosixPath, text: str) -> set[str]:
+    """Collect Python and JavaScript import targets for matching against inventory."""
     targets = {
         normpath(str(path.parent / relative))
         for relative in re.findall(r"""['"](\.{1,2}/[^'"/][^'"\s]*)['"]""", text)
@@ -98,7 +99,27 @@ def _relative_imports(path: PurePosixPath, text: str) -> set[str]:
         for _ in dots[1:]:
             parent = parent.parent
         targets.add(str(parent / module.replace(".", "/")))
+    if path.suffix == ".py":
+        targets.update(
+            module.replace(".", "/")
+            for module in re.findall(r"^\s*(?:from|import)\s+([\w.]+)\b", text, re.MULTILINE)
+            if not module.startswith(".")
+        )
     return targets
+
+
+def _related_sources(ranked, focus: list[SelectedFile], imports: dict[str, set[str]]):
+    modules = set().union(*(imports[item.path] for item in focus))
+    focused_paths = {item.path for item in focus}
+    for _, item in ranked:
+        if item.role != "source" or item.path in focused_paths:
+            continue
+        path = PurePosixPath(item.path)
+        names = {item.path, str(path.with_suffix(""))}
+        if path.stem in {"__init__", "index"}:
+            names.add(str(path.parent))
+        if names & modules:
+            yield SelectedFile(item.path, item.role, ("local_import",), item.size_bytes)
 
 
 def select_task_files(
@@ -154,7 +175,7 @@ def select_task_files(
         if browser_surface:
             score += 16
         if role == "source":
-            imports[source.path] = _relative_imports(
+            imports[source.path] = _local_imports(
                 PurePosixPath(source.path), source.content.decode("utf-8-sig")
             )
         reasons = (
@@ -178,21 +199,11 @@ def select_task_files(
             for item in sources
         ]
     focus = sources[:1]
-    related_modules = set().union(*(imports[item.path] for item in focus))
-    focused_paths = {item.path for item in focus}
-    for _, item in ranked:
-        if len(focus) == 3:
-            break
-        if item.role != "source" or item.path in focused_paths:
-            continue
-        path = PurePosixPath(item.path)
-        names = {item.path, str(path.with_suffix(""))}
-        if path.stem in {"__init__", "index"}:
-            names.add(str(path.parent))
-        if names & related_modules:
-            focus.append(SelectedFile(item.path, item.role, ("relative_import",), item.size_bytes))
+    focus.extend(islice(_related_sources(ranked, focus, imports), 3 - len(focus)))
     focused_paths = {item.path for item in focus}
     focus.extend([item for item in sources if item.path not in focused_paths][: 3 - len(focus)])
+    # A secondary route can be the only reference to the real entry point.
+    focus.extend(islice(_related_sources(ranked, focus, imports), 1))
     focus_names = set().union(*(_words(PurePosixPath(item.path).stem) for item in focus))
     tests, metadata = [], []
     for score, item in ranked:

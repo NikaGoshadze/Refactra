@@ -93,6 +93,11 @@ def candidate_checks(
     return [*result, CandidateCheck(PATCH_CHECK, [edit.path for edit in changes], True)]
 
 
+def _pytest_file(path: str) -> bool:
+    file = PurePosixPath(path)
+    return file.suffix == ".py" and (file.stem.startswith("test_") or file.stem.endswith("_test"))
+
+
 def blocks_candidate(checks: list[ValidationResult]) -> bool:
     # candidate_checks always puts the built-in verification last.
     if not checks or checks[-1].status != "PASSED":
@@ -182,6 +187,8 @@ def _targets(workspace: "ApprovedWorkspace", check: CandidateCheck) -> list[str]
                 else "Pytest needs at least one explicit test file."
             )
             raise RepositoryValidationError(reason)
+        if check.check_id == FLASK_CHECK and not all(_pytest_file(path) for path in check.paths):
+            raise RepositoryValidationError("Flask validation needs pytest test modules.")
     elif check.check_id == GO_CHECK:
         if not check.paths or any(not go_source_path(path) for path in check.paths):
             raise RepositoryValidationError(

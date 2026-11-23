@@ -73,10 +73,14 @@ def test_binary_files_are_not_read_as_candidates():
     assert [file.path for file in result.files] == ["src/cart.ts"]
 
 
-def test_finds_backend_route_relative_dependency_and_tests_without_filenames():
+@pytest.mark.parametrize("import_path", [".store", "backend.store"])
+def test_finds_backend_route_dependency_and_tests_without_filenames(import_path):
     selected = choose(
         [
-            ("backend/routes.py", b"from .store import list_rows\n# pagination support"),
+            (
+                "backend/routes.py",
+                f"from {import_path} import list_rows\n# pagination support".encode(),
+            ),
             ("backend/store.py", b"def list_rows(): return []"),
             ("backend/unrelated.py", b"pass"),
             ("tests/test_store.py", b"def test_list_rows(): pass"),
@@ -88,7 +92,7 @@ def test_finds_backend_route_relative_dependency_and_tests_without_filenames():
         "backend/store.py",
         "tests/test_store.py",
     ]
-    assert selected.files[1].reasons == ("relative_import",)
+    assert selected.files[1].reasons == ("local_import",)
 
 
 def test_explicit_path_precedes_lexical_matches():
@@ -96,6 +100,21 @@ def test_explicit_path_precedes_lexical_matches():
     selected = choose(files, "Use the cart calculation in `src/filters.py`")
     assert selected.files[0].path == "src/filters.py"
     assert "explicit_path" in selected.files[0].reasons
+
+
+def test_imports_from_a_secondary_route_are_available_to_the_planner():
+    result = choose(
+        [
+            ("app/book_search.py", b"def search_books(query): pass"),
+            ("app/web_app.py", b"from app.main import search\n# render_template(form)"),
+            ("app/templates/index.html", b"<form>Book search</form>"),
+            ("app/main.py", b"from .book_search import search_books"),
+        ],
+        "Make the browser book search update its results on form submission.",
+    )
+    assert [(file.path, file.reasons) for file in result.files if file.path == "app/main.py"] == [
+        ("app/main.py", ("local_import",))
+    ]
 
 
 def test_prose_search_bug_prefers_code_to_incidental_tabular_data():
