@@ -7,7 +7,7 @@ from functools import lru_cache
 from inspect import Parameter, Signature
 from pathlib import Path, PurePosixPath
 
-from refactra.python_symbols import MAX_NODES_PER_FILE
+from refactra.python_symbols import MAX_NODES_PER_FILE, python_import_module
 
 MAX_SOURCE_BYTES = 64 * 1024
 MAX_IMPORTED_MODULES = 64
@@ -60,16 +60,6 @@ def _bindings(nodes) -> Counter:
     return names
 
 
-def _parent_module(path: PurePosixPath, statement: ast.ImportFrom) -> PurePosixPath | None:
-    module = statement.module.split(".") if statement.module else []
-    if not statement.level:
-        return PurePosixPath(*module)
-    parents = path.parent.parts
-    if statement.level > len(parents):
-        return None
-    return PurePosixPath(*parents[: len(parents) - statement.level + 1], *module)
-
-
 def _issues(
     root: Path, paths: tuple[PurePosixPath, ...], overlay: dict[PurePosixPath, bytes | None]
 ):
@@ -115,7 +105,7 @@ def _issues(
         for statement in tree.body:
             if not isinstance(statement, ast.ImportFrom):
                 continue
-            module = _parent_module(path, statement)
+            module = python_import_module(path, statement)
             if module is None or not module.parts:
                 continue
             names = {
