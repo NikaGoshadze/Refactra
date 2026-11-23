@@ -1,4 +1,4 @@
-"""Check statically resolvable calls to functions defined in the staged repository."""
+"""Check statically resolvable imports and calls in the staged repository."""
 
 import ast
 import warnings
@@ -12,6 +12,17 @@ from refactra.python_symbols import MAX_NODES_PER_FILE, python_import_module
 MAX_SOURCE_BYTES = 64 * 1024
 MAX_IMPORTED_MODULES = 64
 _DEFINITIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
+_DYNAMIC_EXPORTS = {
+    "__getattr__",
+    "__dict__",
+    "eval",
+    "exec",
+    "globals",
+    "locals",
+    "setattr",
+    "vars",
+}
+_DYNAMIC_ATTRIBUTES = _DYNAMIC_EXPORTS | {"modules"}
 
 
 def _signature(arguments: ast.arguments) -> Signature:
@@ -60,6 +71,30 @@ def _bindings(nodes) -> Counter:
     return names
 
 
+def _import_mode_tree(tree: ast.Module, path: PurePosixPath) -> ast.Module:
+    """Follow an explicit package guard in the file's ordinary import mode."""
+    body = []
+    for statement in tree.body:
+        if (
+            isinstance(statement, ast.If)
+            and isinstance(statement.test, ast.Name)
+            and statement.test.id == "__package__"
+        ):
+            body.extend(statement.body if path.parent.parts else statement.orelse)
+        else:
+            body.append(statement)
+    return ast.Module(body=body, type_ignores=tree.type_ignores)
+
+
+def _dynamic_exports(nodes: tuple[ast.AST, ...], bindings: Counter) -> bool:
+    return "__getattr__" in bindings or any(
+        (isinstance(node, ast.alias) and node.name == "*")
+        or (isinstance(node, ast.Name) and node.id in _DYNAMIC_EXPORTS)
+        or (isinstance(node, ast.Attribute) and node.attr in _DYNAMIC_ATTRIBUTES)
+        for node in nodes
+    )
+
+
 def _issues(
     root: Path, paths: tuple[PurePosixPath, ...], overlay: dict[PurePosixPath, bytes | None]
 ):
@@ -84,9 +119,20 @@ def _issues(
             for index, _ in enumerate(ast.walk(tree), start=1):
                 if index > MAX_NODES_PER_FILE:
                     return None
-            return tree
+            return _import_mode_tree(tree, path)
         except (OSError, SyntaxError, UnicodeError, ValueError, RecursionError):
             return None
+
+    @lru_cache(maxsize=MAX_IMPORTED_MODULES)
+    def exports(source: ast.Module):
+        nodes = tuple(ast.walk(source))
+        names = _bindings(nodes)
+        definitions = {
+            item.name: item
+            for item in source.body
+            if isinstance(item, _DEFINITIONS) and not item.decorator_list and names[item.name] == 1
+        }
+        return names, definitions, _dynamic_exports(nodes, names)
 
     for path in paths:
         tree = read(path)
@@ -113,7 +159,7 @@ def _issues(
                 for item in statement.names
                 if bindings[item.asname or item.name] == 1
             }
-            if not names or not any(call.func.id in names for call in calls):
+            if not names:
                 continue
             if module not in imported and len(imported) >= MAX_IMPORTED_MODULES:
                 continue
@@ -125,19 +171,21 @@ def _issues(
                 source = read(source_path)
             if source is None:
                 continue
-            source_bindings = _bindings(ast.walk(source))
-            for definition in source.body:
-                if (
-                    isinstance(definition, _DEFINITIONS)
-                    and not definition.decorator_list
-                    and source_bindings[definition.name] == 1
-                ):
-                    for alias, name in names.items():
-                        if name == definition.name:
-                            try:
-                                targets[alias] = (source_path, name, _signature(definition.args))
-                            except ValueError:
-                                continue
+            source_bindings, definitions, dynamic = exports(source)
+            # Packages may supply child modules and ordinary modules may populate names dynamically.
+            exports_known = source_path.name != "__init__.py" and not dynamic
+            for alias, name in names.items():
+                if exports_known and name not in source_bindings and not name.startswith("__"):
+                    yield (
+                        (path, source_path, name, "missing_import"),
+                        f"{path}:{statement.lineno} imports {name}, which is not defined "
+                        f"in {source_path}.",
+                    )
+                if definition := definitions.get(name):
+                    try:
+                        targets[alias] = (source_path, name, _signature(definition.args))
+                    except ValueError:
+                        continue
 
         for call in calls:
             if call.func.id not in targets:
