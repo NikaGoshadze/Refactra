@@ -11,12 +11,18 @@ _REQUIREMENT = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)(?=\s*(?:\[|[<>=!~;@
 _ALIASES = {"python-dotenv": "dotenv", "pyyaml": "yaml", "pillow": "PIL", "scikit-learn": "sklearn"}
 _MISSING_PREFIX = "REFACTRA_MISSING_PYTHON:"
 _MISSING_EXIT = 76
+NO_ROUTE_REQUESTS = 77
 
 PYTEST_ENTRY = f"""
 import importlib.util
 import json
 import sys
 
+plugins = []
+if '--refactra-flask' in sys.argv:
+    sys.argv.remove('--refactra-flask')
+    from refactra import flask_smoke
+    plugins.append(flask_smoke)
 sys.path.insert(0, '/locked-deps')
 import pytest
 
@@ -47,7 +53,7 @@ class Collection:
 
 collection = Collection()
 sys.path.insert(0, '/workspace')
-code = pytest.main(sys.argv[1:], plugins=[collection])
+code = pytest.main(sys.argv[1:], plugins=[collection, *plugins])
 if code == pytest.ExitCode.INTERRUPTED and collection.failed:
     if collection.failed == len(collection.missing_modules):
         print({_MISSING_PREFIX!r} + json.dumps(sorted(set(collection.missing_modules))), flush=True)
