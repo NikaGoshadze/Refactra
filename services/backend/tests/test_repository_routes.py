@@ -1,5 +1,6 @@
 import json
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from uuid import UUID, uuid4
 
 import httpx
@@ -42,6 +43,10 @@ ARCHIVE = zip_bytes(
 )
 PIN = "a" * 40
 ARCHIVE_PATH = f"/repositories/42/zipball/{PIN}"
+NO_QUESTIONS = (
+    "None. The provided inventory is sufficient to propose the refactor "
+    "without additional scope clarification."
+)
 
 
 @pytest.fixture
@@ -400,8 +405,9 @@ def test_revising_a_plan_appends_once_and_preserves_previous_revision(
     assert historical["content"]["blocking_questions"] == previous["blocking_questions"]
 
 
+@pytest.mark.parametrize("old_feedback", [False, True])
 def test_plan_feedback_is_queued_once_and_revises_the_saved_plan(
-    browser, session_factory, proposal, monkeypatch
+    browser, session_factory, proposal, monkeypatch, old_feedback
 ):
     client, _, _, _ = browser
     receipt = submit(client)
@@ -419,6 +425,9 @@ def test_plan_feedback_is_queued_once_and_revises_the_saved_plan(
             ],
         )
         plan = save_refactoring_plan(session, run_id, previous, expected_revision=0)
+        stored = json.loads(plan.document) | {"blocking_questions": [NO_QUESTIONS, question]}
+        plan.document = json.dumps(stored).encode()
+        plan.sha256 = sha256(plan.document).hexdigest()
 
     headers = {"Origin": "https://refactra.example", "X-Refactra-CSRF": "1"}
     feedback = {
@@ -430,6 +439,14 @@ def test_plan_feedback_is_queued_once_and_revises_the_saved_plan(
         pending = client.post(url, json=feedback, headers=headers)
         assert pending.status_code == 200 and pending.json()["feedback_status"] == "pending"
     assert client.get(url).json()["feedback_status"] == "pending"
+    if old_feedback:
+        with session_factory.begin() as session:
+            event = session.scalar(
+                select(RunEvent).where(
+                    RunEvent.run_id == run_id, RunEvent.event_type == "PLAN_FEEDBACK_REQUESTED"
+                )
+            )
+            event.payload = event.payload | {"answers": ["", "Return zero."]}
     approval = {"plan_id": str(plan.id), "revision": 1, "sha256": plan.sha256}
     assert client.post(f"{url}/approve", json=approval, headers=headers).status_code == 409
     edit = {"expected_revision": 1, "proposal": proposal}
@@ -461,6 +478,41 @@ def test_plan_feedback_is_queued_once_and_revises_the_saved_plan(
     assert updated["artifact"]["revision"] == 2 and updated["feedback_status"] is None
     assert updated["content"]["blocking_questions"] == []
     assert client.get(f"{url}?revision=1").json()["content"]["blocking_questions"] == [question]
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("questions", [[], ["Which output format should be used?"]])
+def test_placeholder_questions_do_not_block_the_saved_revision(
+    browser, session_factory, proposal, legacy, questions
+):
+    client, _, _, _ = browser
+    receipt = submit(client)
+    url = f"{receipt.headers['Location']}/plan"
+    run_id = UUID(receipt.json()["run_id"])
+    analyze_fixture_run(session_factory)
+    proposed = ["N/A", NO_QUESTIONS, *questions]
+    with session_factory.begin() as session:
+        plan = save_refactoring_plan(
+            session, run_id, dict(proposal, blocking_questions=proposed), expected_revision=0
+        )
+        assert json.loads(plan.document)["blocking_questions"] == questions
+        if legacy:
+            plan.document = json.dumps(
+                json.loads(plan.document) | {"blocking_questions": proposed}
+            ).encode()
+            plan.sha256 = sha256(plan.document).hexdigest()
+
+    saved = client.get(url).json()
+    assert saved["content"]["blocking_questions"] == questions
+    assert saved["readiness"]["blocking_question_count"] == len(questions)
+    assert saved["artifact"]["sha256"] == plan.sha256
+    assert saved["readiness"]["outcome"] == ("needs_clarification" if questions else "ready")
+    response = client.post(
+        f"{url}/approve",
+        json={"plan_id": str(plan.id), "revision": 1, "sha256": plan.sha256},
+        headers={"Origin": "https://refactra.example", "X-Refactra-CSRF": "1"},
+    )
+    assert response.status_code == (409 if questions else 200)
 
 
 @pytest.mark.parametrize("blocker", ["question", "check_id", "file", "test_target", "no_checks"])

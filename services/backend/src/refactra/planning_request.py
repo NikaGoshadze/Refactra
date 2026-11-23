@@ -78,6 +78,8 @@ PLAN_INSTRUCTIONS = (
     "If a material question prevents proposing any edits, list it and leave changes empty. "
     "Resolve details from the request and pinned evidence. Record low-risk choices as assumptions. "
     "Ask only when the answer materially changes scope, behavior, or safety. "
+    "Put only questions that require an answer in blocking_questions. If none are needed, "
+    "return an empty list, with no placeholder or explanation in that field. "
     "When reviewer feedback is present, revise the previous plan using the answers and notes. "
     "Use previous_plan_readiness to resolve file and validation scope errors on revision. "
     "Keep questions open only when the feedback and pinned evidence still leave a material gap. "
@@ -138,23 +140,30 @@ def load_planning_context(
         if previous is None:
             raise ValueError("The plan for this feedback is unavailable.")
         payload["previous_plan"] = json.loads(previous.document)
+        previous_content = PlanContent.model_validate_json(previous.document)
+        questions = previous_content.blocking_questions
+        original_questions = payload["previous_plan"]["blocking_questions"]
+        answers = feedback["answers"]
+        if len(original_questions) != len(questions) and len(answers) == len(original_questions):
+            answers = [
+                answer
+                for question, answer in zip(original_questions, answers, strict=True)
+                if question in questions
+            ]
+        payload["previous_plan"]["blocking_questions"] = questions
         requirements = requested_paths(
             feedback["notes"],
             tracked,
             payload["previous_plan"].get("requested_files", requirements),
         )
-        payload["previous_plan_readiness"] = evaluate_plan_readiness(
-            PlanContent.model_validate_json(previous.document)
-        ).model_dump(mode="json")
+        payload["previous_plan_readiness"] = evaluate_plan_readiness(previous_content).model_dump(
+            mode="json"
+        )
         payload["reviewer_feedback"] = {
             "notes": feedback["notes"],
             "questions_and_answers": [
                 {"question": question, "answer": answer}
-                for question, answer in zip(
-                    payload["previous_plan"]["blocking_questions"],
-                    feedback["answers"],
-                    strict=True,
-                )
+                for question, answer in zip(questions, answers, strict=True)
             ],
         }
     if requirements:
