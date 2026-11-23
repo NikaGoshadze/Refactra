@@ -15,6 +15,7 @@ from pydantic import (
     Field,
     StringConstraints,
     ValidationError,
+    field_validator,
     model_validator,
 )
 from sqlalchemy import select
@@ -87,6 +88,29 @@ class ValidationCheck(_PlanModel):
     criteria_ids: Annotated[list[Identifier], Field(min_length=1, max_length=16)]
 
 
+_NO_QUESTION = re.compile(
+    r"(?:none(?: (?:needed|required))?|n/a|not applicable|"
+    r"no (?:(?:blocking |open |outstanding )?questions|(?:additional |further )?clarification)"
+    r"(?: (?:needed|required))?)(?: at this (?:stage|time))?"
+)
+_ENOUGH_INFORMATION = re.compile(
+    r"(?:the )?(?:(?:provided|available|current|pinned|repository) )*"
+    r"(?:inventory|context|information|details|request|requirements|scope|task) (?:is|are) "
+    r"(?:sufficient|clear|complete|well[- ]defined)"
+    r"(?: to (?:proceed|plan(?: the refactor)?|"
+    r"propose (?:the|a) (?:refactor|plan|refactoring plan)))?"
+    r"(?: without (?:additional |further )?(?:scope )?clarification)?"
+)
+
+
+def _question_placeholder(text: str) -> bool:
+    normalized = " ".join(text.casefold().split()).rstrip(".!")
+    if _NO_QUESTION.fullmatch(normalized) or _ENOUGH_INFORMATION.fullmatch(normalized):
+        return True
+    head, _, explanation = normalized.partition(".")
+    return bool(_NO_QUESTION.fullmatch(head) and _ENOUGH_INFORMATION.fullmatch(explanation.strip()))
+
+
 class PlanProposal(_PlanModel):
     summary: PlanText
     changes: Annotated[list[ProposedChange], Field(max_length=10)]
@@ -95,6 +119,11 @@ class PlanProposal(_PlanModel):
     preserve_behavior: Annotated[list[PlanText], Field(max_length=16)]
     assumptions: Annotated[list[PlanText], Field(max_length=16)]
     blocking_questions: Annotated[list[PlanText], Field(max_length=16)]
+
+    @field_validator("blocking_questions")
+    @classmethod
+    def remove_question_placeholders(cls, questions: list[str]) -> list[str]:
+        return [question for question in questions if not _question_placeholder(question)]
 
     @model_validator(mode="after")
     def check_references(self):
