@@ -13,7 +13,7 @@ from refactra.python_test_support import (
     declared_test_imports,
     python_unavailable_reason,
 )
-from refactra.refactoring_plan import ProposedChange, ValidationCheck
+from refactra.refactoring_plan import FLASK_CHECK, ProposedChange, ValidationCheck
 from refactra.repository_workspace import ApprovedWorkspace
 
 
@@ -117,6 +117,43 @@ def test_cached_web_dependencies_run_inside_the_offline_container(tmp_path):
     workspace = ApprovedWorkspace(tmp_path, "a" * 40, 1, "b" * 64, 1, (change,), (check,))
     pytest_result, baseline = validation.validate_candidate(workspace)
     assert pytest_result.status == baseline.status == "PASSED", pytest_result.output
+
+
+@pytest.mark.skipif(os.getenv("REFACTRA_TEST_PYTHON_DOCKER") != "1", reason="Requires Docker.")
+@pytest.mark.parametrize(
+    "mode, expected",
+    [("fixed", "PASSED"), ("wrong_type", "FAILED"), ("helper_only", "UNAVAILABLE")],
+)
+def test_flask_smoke_checks_a_changed_route_with_fake_dependencies(tmp_path, mode, expected):
+    argument = "search" if mode == "wrong_type" else "store"
+    (tmp_path / "web_app.py").write_text(
+        "from flask import Flask, request\n"
+        "app = Flask(__name__)\n"
+        "def search(query, backend):\n    return backend.similarity_search(query)\n"
+        "store = None\n"
+        "@app.post('/search')\n"
+        f"def index():\n    return search(request.form['query'], {argument})\n"
+    )
+    body = """from types import SimpleNamespace
+import web_app
+
+def test_search(monkeypatch):
+    fake = SimpleNamespace(similarity_search=lambda query: 'Found ' + query)
+    monkeypatch.setattr(web_app, 'store', fake)
+    response = web_app.app.test_client().post('/search', data={'query': 'Ada'})
+    assert response.status_code == 200
+    assert response.data == b'Found Ada'
+"""
+    if mode == "helper_only":
+        body = "import web_app\ndef test_helper(): assert callable(web_app.search)\n"
+    name = "test_web_app.py"
+    (tmp_path / name).write_text(body)
+    change = ProposedChange(path="web_app.py", action="MODIFY", intent="Update the Flask route.")
+    check = ValidationCheck(check_id=FLASK_CHECK, paths=[name], required=True, criteria_ids=["AC1"])
+    workspace = ApprovedWorkspace(tmp_path, "a" * 40, 1, "b" * 64, 2, (change,), (check,))
+    result, baseline = validation.validate_candidate(workspace)
+    assert result.status == expected and baseline.status == "PASSED", (result, baseline)
+    assert validation.blocks_candidate([result, baseline]) == (mode == "wrong_type")
 
 
 def lock_for(version: str = "1.0") -> bytes:

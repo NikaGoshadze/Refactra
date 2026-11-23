@@ -16,12 +16,14 @@ from typing import TYPE_CHECKING
 from refactra.diagnostics import workflow_log
 from refactra.python_dependency_cache import PythonLockError, pinned_python_requirements
 from refactra.python_test_support import (
+    NO_ROUTE_REQUESTS,
     PYTEST_ENTRY,
     declared_test_imports,
     python_unavailable_reason,
 )
 from refactra.refactoring_plan import (
     ASSET_CHECK,
+    FLASK_CHECK,
     PATCH_CHECK,
     TYPESCRIPT_CHECK,
     ProposedChange,
@@ -43,6 +45,7 @@ _CACHE_LABEL = "org.refactra.python-lock-cache"
 USER = "10001:10001"
 TMPFS = "rw,noexec,nosuid,nodev,size=64m"
 SECURITY_OPTIONS = ["no-new-privileges", "seccomp=builtin"]
+_PYTHON_CHECKS = {"python.pytest", FLASK_CHECK}
 
 
 class RepositoryValidationError(ValueError):
@@ -163,9 +166,14 @@ def _targets(workspace: "ApprovedWorkspace", check: CandidateCheck) -> list[str]
     if check.check_id == TYPESCRIPT_CHECK:
         if len(check.paths) != 1 or not is_typescript_config(check.paths[0]):
             raise RepositoryValidationError("TypeScript validation needs one tsconfig file.")
-    elif check.check_id == "python.pytest":
+    elif check.check_id in _PYTHON_CHECKS:
         if not check.paths:
-            raise RepositoryValidationError("Pytest needs at least one explicit test file.")
+            reason = (
+                "No Flask route test file was approved."
+                if check.check_id == FLASK_CHECK
+                else "Pytest needs at least one explicit test file."
+            )
+            raise RepositoryValidationError(reason)
     elif check.check_id == ASSET_CHECK:
         raise RepositoryValidationError("Asset validation needs one approved binary replacement.")
     else:
@@ -174,7 +182,7 @@ def _targets(workspace: "ApprovedWorkspace", check: CandidateCheck) -> list[str]
     for path in check.paths:
         target = root.joinpath(*PurePosixPath(path).parts)
         if (
-            (check.check_id == "python.pytest" and target.suffix != ".py")
+            (check.check_id in _PYTHON_CHECKS and target.suffix != ".py")
             or not target.is_relative_to(root)
             or target.resolve() != target
             or not target.is_file()
@@ -246,9 +254,18 @@ def _validate_check(
     entrypoint = "/app/.venv/bin/python"
     declared = (
         declared_test_imports(workspace.root, check.paths)
-        if check.check_id == "python.pytest"
+        if check.check_id in _PYTHON_CHECKS
         else {}
     )
+    flask_args = []
+    if check.check_id == FLASK_CHECK:
+        flask_args = ["--refactra-flask"] + [
+            f"--refactra-route-file={edit.path}"
+            for edit in workspace.changes
+            if edit.path.endswith(".py")
+            and edit.action != "DELETE"
+            and edit.path not in check.paths
+        ]
     arguments = [
         "-I",
         "-B",
@@ -262,6 +279,7 @@ def _validate_check(
         "/dev/null",
         "--noconftest",
         "--basetemp=/tmp/pytest",
+        *flask_args,
         "--",
         *targets,
     ]
@@ -329,9 +347,12 @@ def _validate_check(
                 raise RepositoryValidationError("The validation container did not finish normally.")
             exit_code = state["ExitCode"]
         text = output.decode("utf-8", errors="replace")
-        if check.check_id == "python.pytest" and (
-            unavailable := python_unavailable_reason(exit_code, text, declared)
-        ):
+        unavailable = None
+        if check.check_id == FLASK_CHECK and exit_code == NO_ROUTE_REQUESTS:
+            unavailable = "The tests did not send a request to a changed Flask route."
+        elif check.check_id in _PYTHON_CHECKS:
+            unavailable = python_unavailable_reason(exit_code, text, declared)
+        if unavailable:
             return ValidationResult(
                 check.check_id,
                 check.paths,
@@ -383,7 +404,7 @@ def validate_candidate(workspace: "ApprovedWorkspace") -> list[ValidationResult]
                     image_error = "The offline Docker validation image is unavailable."
                     raise RepositoryValidationError(image_error) from None
             runner = image_id
-            if check.check_id == "python.pytest" and workspace.python_lock is not None:
+            if check.check_id in _PYTHON_CHECKS and workspace.python_lock is not None:
                 if python_image_error:
                     raise RepositoryValidationError(python_image_error)
                 if not python_image:
