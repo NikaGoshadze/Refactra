@@ -13,6 +13,7 @@ from sqlalchemy import select
 import refactra.repository_plan_worker as planner
 import refactra.worker as worker
 from refactra.analysis_context import prepare_analysis_context, save_analysis_context
+from refactra.analysis_request import BudgetExceeded
 from refactra.model_reservations import settle_model_usage
 from refactra.models import ModelReservation, RunCommand, RunEvent, RunPlanApproval
 from refactra.openai_analysis import OpenAIAnalysisProvider
@@ -127,6 +128,28 @@ def test_revision_context_treats_feedback_as_current_and_initial_analysis_as_sta
         assert revised["original_request"] == run.task_text
         assert revised["reviewer_feedback"]["notes"] == feedback.notes
         assert "task_text" not in revised and "saved_analysis" not in revised
+
+
+def test_plan_budget_leaves_capacity_for_candidate(session_factory, monkeypatch):
+    run, _, context = prepare(session_factory)
+    with session_factory.begin() as session:
+        save_analysis_context(session, context)
+        enqueue_repository_analysis(session, run.id)
+    analyze_fixture_run(session_factory)
+    with session_factory.begin() as session:
+        usage = session.scalar(select(ModelReservation).where(ModelReservation.run_id == run.id))
+        usage.actual_input_tokens = 26_000
+
+    def model(request):
+        assert request.url.path.endswith("/input_tokens"), "Planning spent the candidate budget"
+        return httpx.Response(200, json={"object": "response.input_tokens", "input_tokens": 3000})
+
+    monkeypatch.setattr(planner, "authorize_plan", lambda run: None)
+    provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(model))
+    with pytest.raises(BudgetExceeded, match="run_input_tokens"):
+        planner.generate_initial_plan(session_factory, run.id, provider)
+    with session_factory() as session:
+        assert load_refactoring_plan(session, run.id) is None
 
 
 def analyze_fixture_run(session_factory, *, queue_plan=False):

@@ -4,15 +4,24 @@ from uuid import uuid4, uuid5
 
 import httpx
 import pytest
+from sqlalchemy import select
 
+from refactra import candidate_validation_worker as validation_worker
 from refactra import repository_workspace as workspace
 from refactra.analysis_context import save_analysis_context
 from refactra.candidate_patch import CandidatePatch, CandidatePatchError
-from refactra.models import ModelReservation, RunCommand, RunGeneratedCandidate
+from refactra.models import (
+    ModelReservation,
+    RunCandidateResult,
+    RunCommand,
+    RunEvent,
+    RunGeneratedCandidate,
+)
 from refactra.openai_analysis import OpenAIAnalysisProvider
 from refactra.refactoring_plan import (
     APPLY_PLAN_APPROVAL,
     PATCH_CHECK,
+    VALIDATE_CANDIDATE,
     PlanContent,
     approve_refactoring_plan,
     save_refactoring_plan,
@@ -24,13 +33,14 @@ from refactra.repository_analysis_worker import (
     process_repository_plan_approval,
 )
 from refactra.repository_candidate import (
+    VALIDATION_REPAIR_EVENT,
     candidate_attempt_ids,
     generate_candidate,
     process_repository_candidate,
     queue_candidate_retry,
 )
 from refactra.repository_snapshot import SourceFile, SourceSnapshot
-from refactra.repository_validation import validate_candidate
+from refactra.repository_validation import ValidationResult, candidate_checks, validate_candidate
 from refactra.worker import claim_command
 
 from .test_analysis_context import prepare
@@ -122,10 +132,12 @@ def test_frontend_and_config_patch_uses_builtin_validation(tmp_path, proposal, c
         "reference_budget",
         "missing_import",
         "package_call",
+        "validation_repair",
+        "validation_still_fails",
     ],
 )
 def test_workspace_requires_verified_approval_and_stages_pinned_source(
-    session_factory, proposal, token, monkeypatch, scenario
+    session_factory, proposal, token, monkeypatch, scenario, tmp_path
 ):
     run, _, context = prepare(session_factory)
     with session_factory.begin() as session:
@@ -265,6 +277,12 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
                 )
         if scenario == "manual_retry" and not retrying:
             result.update(status="incomplete", incomplete_details={"reason": "max_output_tokens"})
+        if scenario.startswith("validation_") and retrying:
+            assert "Startup requires GOOGLE_API_KEY" in prompt["repair_detail"]
+            assert "synthetic-test-secret" not in payload["input"]
+            edits["tests/test_cart.py"] += (
+                "\n# Set any required fixture environment before imports.\n"
+            )
         result["output"][0]["content"][0]["text"] = json.dumps({"edits": edits})
         return httpx.Response(200, json=result)
 
@@ -329,3 +347,72 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
     else:
         assert generate_candidate(session_factory, run.id, provider).model_dump() == patch
     assert len(requests) == len(recount) + (4 if retried else 2)
+    if scenario.startswith("validation_"):
+        _exercise_validation_repair(
+            session_factory, run.id, provider, monkeypatch, tmp_path, scenario
+        )
+        assert len(requests) == 4
+
+
+def _exercise_validation_repair(session_factory, run_id, provider, monkeypatch, tmp_path, scenario):
+    succeeds = scenario == "validation_repair"
+    checked = []
+
+    def checks(staged):
+        checked.append((staged.root / "tests/test_cart.py").read_text())
+        failure = len(checked) == 1 or not succeeds
+        return [
+            ValidationResult(
+                check.check_id,
+                check.paths,
+                check.required,
+                "FAILED" if failure and check.check_id == "python.pytest" else "PASSED",
+                int(failure and check.check_id == "python.pytest"),
+                1,
+                (
+                    "E   ValueError: Error: GOOGLE_API_KEY environment variable not set.\n"
+                    "synthetic-test-secret\n"
+                ),
+                None,
+                "builtin",
+            )
+            for check in candidate_checks(staged.changes, staged.validation_checks)
+        ]
+
+    monkeypatch.setattr(validation_worker, "validate_candidate", checks)
+    monkeypatch.setattr(
+        validation_worker,
+        "prepare_candidate_commit",
+        lambda *args, **kwargs: {"result_id": "fixture", "commit_sha": "a" * 40},
+    )
+    first = claim_command(session_factory, "worker", workflow=WORKFLOW, kind=VALIDATE_CANDIDATE)
+    assert validation_worker.process_candidate_validation(
+        session_factory, first, "worker", source=tmp_path, artifacts=tmp_path
+    )
+    # Restart with a different worker identity and use the persisted event.
+    retry = claim_command(session_factory, "restart", workflow=WORKFLOW, kind=GENERATE_CANDIDATE)
+    assert retry and process_repository_candidate(session_factory, retry, "restart", provider)
+    second = claim_command(session_factory, "restart", workflow=WORKFLOW, kind=VALIDATE_CANDIDATE)
+    assert second != first
+    assert validation_worker.process_candidate_validation(
+        session_factory, second, "restart", source=tmp_path, artifacts=tmp_path
+    )
+    assert len(checked) == 2 and "required fixture environment" in checked[-1]
+    assert (
+        claim_command(session_factory, "restart", workflow=WORKFLOW, kind=GENERATE_CANDIDATE)
+        is None
+    )
+    with session_factory() as session:
+        event = session.scalar(
+            select(RunEvent).where(RunEvent.event_type == VALIDATION_REPAIR_EVENT)
+        )
+        assert event.payload["command_id"] == str(retry)
+        assert session.get(RunCommand, second).status == ("DONE" if succeeds else "FAILED")
+        assert (
+            bool(
+                session.scalar(
+                    select(RunCandidateResult).where(RunCandidateResult.run_id == run_id)
+                )
+            )
+            == succeeds
+        )
