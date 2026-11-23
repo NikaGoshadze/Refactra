@@ -19,6 +19,7 @@ from refactra.planning_request import PLAN_INSTRUCTIONS
 from refactra.refactoring_plan import (
     APPLY_PLAN_APPROVAL,
     PlanProposal,
+    PlanRevisionConflict,
     approve_refactoring_plan,
     evaluate_plan_readiness,
     load_refactoring_plan,
@@ -99,7 +100,7 @@ def test_revisions_pin_exact_content_and_stale_saves_cannot_replace_them(session
         ]
 
 
-def analyze_fixture_run(session_factory):
+def analyze_fixture_run(session_factory, *, queue_plan=False):
     def mock_model(request):
         if request.url.path.endswith("/input_tokens"):
             return httpx.Response(
@@ -109,7 +110,73 @@ def analyze_fixture_run(session_factory):
 
     provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(mock_model))
     command = claim_command(session_factory, "fixture", workflow=WORKFLOW)
-    assert process_repository_analysis(session_factory, command, "fixture", provider)
+    assert process_repository_analysis(
+        session_factory, command, "fixture", provider, queue_plan=queue_plan
+    )
+
+
+@pytest.mark.parametrize(
+    "task_text, missing",
+    [
+        ("Delete src/legacy-cart.py.", True),
+        (
+            "Delete `src/legacy-cart.py`. If that exact file is absent from the selected branch, "
+            "tell me it is absent and stop. Do not delete a similarly named file or propose "
+            "unrelated changes.",
+            True,
+        ),
+        ("Delete src/cart.py.", False),
+        ("Delete src/legacy-cart.py and update src/cart.py.", False),
+    ],
+)
+def test_exact_missing_delete_saves_an_unapprovable_plan_without_a_model_call(
+    session_factory, proposal, monkeypatch, task_text, missing
+):
+    run, _, context = prepare(session_factory, task_text=task_text)
+    with session_factory.begin() as session:
+        save_analysis_context(session, context)
+        enqueue_repository_analysis(session, run.id)
+    analyze_fixture_run(session_factory, queue_plan=True)
+    monkeypatch.setattr(planner, "authorize_plan", lambda _: None)
+    command_id = claim_command(session_factory, "fixture", workflow=WORKFLOW, kind=GENERATE_PLAN)
+
+    def model(request):
+        assert not missing, "A missing deletion target needs no planning request."
+        if request.url.path.endswith("/input_tokens"):
+            return httpx.Response(
+                200, json={"object": "response.input_tokens", "input_tokens": 100}
+            )
+        payload = response()
+        payload["output"][0]["content"][0]["text"] = json.dumps(proposal)
+        return httpx.Response(200, json=payload)
+
+    provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(model))
+    assert planner.process_initial_plan(session_factory, command_id, "fixture", provider)
+    with session_factory.begin() as session:
+        plan = load_refactoring_plan(session, run.id)
+        assert plan.revision == 1 and session.get(RunCommand, command_id).status == "DONE"
+        attempt = session.get(
+            ModelReservation, uuid5(run.id, "repository:initial-plan:structured-v1")
+        )
+        assert (attempt is None) == missing
+        if missing:
+            content = json.loads(plan.document)
+            assert content["summary"] == (
+                "src/legacy-cart.py is absent from the pinned source snapshot. "
+                "There is nothing to delete."
+            )
+            assert content["changes"] == content["validation_checks"] == []
+            with pytest.raises(PlanRevisionConflict, match="requires a plan with proposed changes"):
+                approve_refactoring_plan(
+                    session,
+                    run.id,
+                    plan_id=plan.id,
+                    revision=1,
+                    sha256=plan.sha256,
+                    actor_id=run.requested_by,
+                )
+        else:
+            assert json.loads(plan.document)["changes"] == proposal["changes"]
 
 
 @pytest.mark.parametrize("outcome", ["fresh", "reclaimed", "denied"])

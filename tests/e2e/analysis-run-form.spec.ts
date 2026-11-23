@@ -53,6 +53,23 @@ test("verified repository submits a selected branch and shows the saved read-onl
   await expect(panel).toHaveCount(0);
 });
 
+test("a missing deletion target shows a saved result without an approval action", async ({ page }) => {
+  const summary = "src/legacy-cart.py is absent from the pinned source snapshot. There is nothing to delete.";
+  await page.route(`**${PLAN_PATH}`, (route) => route.fulfill({
+    json: { ...PLAN, content: { ...PLAN.content, summary, changes: [], blocking_questions: [],
+      acceptance_criteria: [], validation_checks: [], preserve_behavior: [] },
+    readiness: { outcome: "unsupported", unsupported_check_ids: [], scope_errors: [] } },
+  }));
+  await page.getByText("Open a saved run", { exact: true }).click();
+  await page.getByLabel("Run ID", { exact: true }).fill(RUN_ID);
+  await page.getByRole("button", { name: "Open run", exact: true }).click();
+  const plan = page.getByRole("region", { name: "Refactoring plan" });
+  await expect(plan.getByText(summary, { exact: true })).toBeVisible();
+  await expect(plan.getByText("No changes proposed.")).toBeVisible();
+  await expect(plan.getByText("Unsupported", { exact: true })).toHaveCount(0);
+  await expect(plan.getByRole("button", { name: /Approve plan/ })).toHaveCount(0);
+});
+
 test("submission retry reuses its key and a failed run shows the backend reason", async ({ page }) => {
   const panel = page.getByRole("region", { name: "Repository analysis" });
   const start = panel.getByRole("button", { name: "Start analysis" });

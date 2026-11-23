@@ -1,8 +1,10 @@
 """Build the trusted plan prompt from the same saved inputs at count and admission."""
 
 import json
+import re
 from uuid import UUID
 
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.orm import Session
 
 from refactra.analysis_context import PreparedAnalysisContext, load_analysis_context
@@ -10,11 +12,53 @@ from refactra.models import RunAnalysisResult
 from refactra.refactoring_plan import (
     SUPPORTED_PLAN_CHECK_IDS,
     PlanContent,
+    PlanPath,
     PlanProposal,
     evaluate_plan_readiness,
     load_plan_feedback,
     load_refactoring_plan,
+    plan_edit_kind,
 )
+
+EXACT_DELETE_REQUEST = re.compile(
+    r"(?:delete|remove) (?P<quote>`?)(?P<path>[\w./-]+?)(?P=quote)\.?"
+    r"(?:\s+If that exact file is absent from the selected branch, tell me it is absent and stop\."
+    r"(?:\s+Do not delete a similarly named (?:file|stylesheet) or propose unrelated changes\.)?)?",
+    re.IGNORECASE,
+)
+PLAN_PATH = TypeAdapter(PlanPath)
+
+
+def missing_delete_proposal(session: Session, run_id: UUID, task: str) -> PlanProposal | None:
+    """Resolve a standalone exact-path deletion with no other requested edits."""
+    match = EXACT_DELETE_REQUEST.fullmatch(task.strip())
+    if match is None:
+        return None
+    path = match["path"]
+    if not match["quote"] and "/" not in path and "." not in path:
+        return None
+    try:
+        PLAN_PATH.validate_python(path)
+    except ValidationError:
+        return None
+    if plan_edit_kind(path, "DELETE") is None:
+        return None
+    context = load_analysis_context(session, run_id)
+    if context is None:
+        return None
+    tracked = json.loads(context.document)["inventory"]["file_paths"]
+    if any(candidate == path or candidate.startswith(f"{path}/") for candidate in tracked):
+        return None
+    return PlanProposal(
+        summary=f"{path} is absent from the pinned source snapshot. There is nothing to delete.",
+        changes=[],
+        acceptance_criteria=[],
+        validation_checks=[],
+        preserve_behavior=[],
+        assumptions=[],
+        blocking_questions=[],
+    )
+
 
 PLAN_INSTRUCTIONS = (
     "Propose a small refactoring plan for task_text using the pinned source and saved analysis. "
@@ -23,6 +67,8 @@ PLAN_INSTRUCTIONS = (
     "Honor explicitly requested edit targets. Otherwise identify paths from pinned inventory, "
     "imports, entry points and nearby tests. Label each action and explain why it is needed. "
     "Use existing paths for modifications and deletions, and clear new paths for creations. "
+    "If the only requested deletion target is missing from pinned inventory, explain that "
+    "in summary and return empty changes, validation_checks, and blocking_questions. "
     "If the goal is outside the capabilities below, explain the limitation in summary and "
     "return empty changes and checks. Never substitute unrelated edits or tests. "
     "If a material question prevents proposing any edits, list it and leave changes empty. "

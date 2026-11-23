@@ -16,6 +16,7 @@ from refactra.analysis_request import BudgetExceeded
 from refactra.auth_sessions import GitHubIdentity
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
+from refactra.diagnostics import workflow_log
 from refactra.github_app import GitHubAppClient, GitHubAppError, InstallationToken
 from refactra.github_repository_access import require_github_write_access
 from refactra.models import ModelReservation, Run, RunEvent
@@ -24,6 +25,7 @@ from refactra.openai_analysis import (
     OpenAIAnalysisProvider,
     execute_read_only_analysis,
 )
+from refactra.planning_request import missing_delete_proposal
 from refactra.refactoring_plan import (
     PlanContent,
     PlanProposal,
@@ -79,7 +81,7 @@ def generate_initial_plan(
     check_admission=None,
     feedback_id: UUID | None = None,
 ):
-    """Recheck repository access and make one budgeted plan attempt."""
+    """Recheck repository access and resolve the plan before any model admission."""
     legacy_id = uuid5(run_id, "repository:initial-plan")
     attempt_id = feedback_id or uuid5(run_id, "repository:initial-plan:structured-v1")
     with session_factory() as session:
@@ -87,7 +89,7 @@ def generate_initial_plan(
         if run is None or run.workflow_version != WORKFLOW or run.status != "NEEDS_HUMAN_REVIEW":
             raise PlanGenerationError("A repository run with completed analysis is required.")
     authorize_plan(run)
-    with session_factory() as session:
+    with session_factory.begin() as session:
         feedback = load_plan_feedback(session, run_id, feedback_id) if feedback_id else None
         if feedback_id and feedback is None:
             raise PlanGenerationError("Saved plan feedback is required.")
@@ -97,6 +99,14 @@ def generate_initial_plan(
             return existing
         if feedback_id and (existing is None or existing.revision != expected_revision):
             raise PlanGenerationError("The plan changed before feedback could be applied.")
+        if not feedback_id:
+            proposal = missing_delete_proposal(session, run_id, run.task_text)
+            if proposal is not None:
+                if check_admission is not None:
+                    check_admission(session)
+                return save_refactoring_plan(
+                    session, run_id, proposal.model_dump(), expected_revision=expected_revision
+                )
         if session.get(ModelReservation, attempt_id) is not None:
             raise PlanGenerationError("A plan attempt is already recorded. It cannot be resent.")
         legacy = session.get(ModelReservation, legacy_id)
@@ -128,6 +138,7 @@ def generate_initial_plan(
         save_response=save_response,
     )
     if schema_error:
+        workflow_log("plan_response_invalid", warning=True, run_id=run_id, reason=schema_error)
         raise PlanGenerationError(
             f"The generated plan did not match the proposal schema ({schema_error})."
         )
