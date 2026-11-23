@@ -168,16 +168,18 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
           {plan.feedback_status === "failed" && <p role="alert">The worker could not update the plan. Revise your feedback and try again.</p>}
           {plan.feedback_status === "unchanged" && <p role="status">The worker returned the same plan.</p>}
           {writeError?.kind === "feedback" && <p role="alert">{writeError.message}</p>}
-          <div id="plan-approval-hint">
-            {revising ? <p>Wait for the updated plan before approving.</p> : blockers.length > 0
-              ? <ul>{blockers.map((reason) => <li key={reason}>{reason}</li>)}</ul>
-              : <p>Approval locks this saved revision.</p>}
-          </div>
-          {writeError?.kind === "approval" && <p className="error-box" role="alert">{writeError.message}</p>}
-          <button className="repository-check" type="button" onClick={approvePlan}
-            aria-describedby="plan-approval-hint" disabled={!canApprove || writing !== null}>
-            {writing === "approval" ? "Recording approval…" : `Approve plan revision ${plan.artifact.revision}`}
-          </button>
+          {plan.content.changes.length > 0 && <>
+            <div id="plan-approval-hint">
+              {revising ? <p>Wait for the updated plan before approving.</p> : blockers.length > 0
+                ? <ul>{blockers.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+                : <p>Approval locks this saved revision.</p>}
+            </div>
+            {writeError?.kind === "approval" && <p className="error-box" role="alert">{writeError.message}</p>}
+            <button className="repository-check" type="button" onClick={approvePlan}
+              aria-describedby="plan-approval-hint" disabled={!canApprove || writing !== null}>
+              {writing === "approval" ? "Recording approval…" : `Approve plan revision ${plan.artifact.revision}`}
+            </button>
+          </>}
         </div>}
         {plan.approval && <CandidateResultPanel runId={runId} />}
       </>}
@@ -194,7 +196,8 @@ function PlanReview({ plan: { artifact, content, readiness } }: { plan: SavedPla
         <div><dt>SHA-256</dt><dd><code>{artifact.sha256}</code></dd></div>
       </dl>
       <h4>Summary</h4>
-      {readiness.outcome && <p>{outcome[readiness.outcome]}</p>}
+      {readiness.outcome && (readiness.outcome !== "unsupported" || content.changes.length > 0) &&
+        <p>{outcome[readiness.outcome]}</p>}
       <p>{content.summary}</p>
       <div>
         <h4>Proposed changes</h4>

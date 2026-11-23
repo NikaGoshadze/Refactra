@@ -16,14 +16,14 @@ from refactra.repository_snapshot import SourceFile, SourceSnapshot
 from .conftest import migration_config
 
 
-def prepare(session_factory, *, base_sha="a" * 40):
+def prepare(session_factory, *, base_sha="a" * 40, task_text="Refactor cart"):
     with session_factory.begin() as session:
         run = create_repository_run(
             session,
             identity=GitHubIdentity(123, "fixture"),
             installation_id=77,
             revision=RepositoryRevision(42, "fixture/repo", "main", "main", base_sha),
-            task_text="Refactor cart",
+            task_text=task_text,
         )
     snapshot = SourceSnapshot(
         42,
