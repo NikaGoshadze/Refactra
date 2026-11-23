@@ -17,6 +17,21 @@ from refactra.refactoring_plan import FLASK_CHECK, ProposedChange, ValidationChe
 from refactra.repository_workspace import ApprovedWorkspace
 
 
+def test_flask_check_never_collects_application_modules_as_tests(tmp_path, monkeypatch):
+    check = ValidationCheck(
+        check_id=FLASK_CHECK,
+        paths=["web.py"],
+        required=True,
+        criteria_ids=["AC1"],
+    )
+    (tmp_path / "web.py").touch()
+    workspace = ApprovedWorkspace(tmp_path, "a" * 40, 1, "b" * 64, 0, (), (check,))
+    monkeypatch.setattr(validation, "_docker", lambda *args: pytest.fail("Docker was called"))
+    route, baseline = validation.validate_candidate(workspace)
+    assert route.status == "UNAVAILABLE" and "pytest test modules" in route.reason
+    assert not validation.blocks_candidate([route, baseline])
+
+
 def test_validation_preflights_explicit_paths_before_docker(tmp_path, monkeypatch):
     check = ValidationCheck(
         check_id="python.pytest", paths=["--collect-only.py"], required=True, criteria_ids=["AC1"]

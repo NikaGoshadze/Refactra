@@ -2,6 +2,7 @@
 
 import ast
 import warnings
+from collections import deque
 from itertools import islice
 from pathlib import Path, PurePosixPath
 
@@ -62,7 +63,9 @@ def collect_candidate_references(
 ) -> dict[str, str]:
     result, seen = {}, set()
     remaining = MAX_REFERENCE_BYTES
-    for alternatives in _reference_paths(source):
+    pending = deque(_reference_paths(source))
+    while pending:
+        alternatives = pending.popleft()
         if alternatives in seen:
             continue
         seen.add(alternatives)
@@ -86,12 +89,13 @@ def collect_candidate_references(
                 remaining -= len(raw)
                 if len(result) == MAX_REFERENCE_FILES or not remaining:
                     return result
+                pending.extend(_reference_paths({key: content}))
             break
     return result
 
 
 def valid_candidate_references(value: object, source: dict[str, str], editable: set[str]) -> bool:
-    return (
+    if not (
         isinstance(value, dict)
         and len(value) <= MAX_REFERENCE_FILES
         and all(
@@ -99,10 +103,14 @@ def valid_candidate_references(value: object, source: dict[str, str], editable: 
             for path, text in value.items()
         )
         and sum(len(text.encode("utf-8")) for text in value.values()) <= MAX_REFERENCE_BYTES
-        and (
-            not value
-            or set(value).issubset(
-                ref.as_posix() for alternatives in _reference_paths(source) for ref in alternatives
-            )
-        )
-    )
+    ):
+        return False
+    remaining = dict(value)
+    pending = deque(_reference_paths(source))
+    while remaining and pending:
+        for ref in pending.popleft():
+            key = ref.as_posix()
+            if key in remaining:
+                pending.extend(_reference_paths({key: remaining.pop(key)}))
+                break
+    return not remaining
