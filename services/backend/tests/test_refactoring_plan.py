@@ -16,15 +16,17 @@ from refactra.analysis_context import prepare_analysis_context, save_analysis_co
 from refactra.model_reservations import settle_model_usage
 from refactra.models import ModelReservation, RunCommand, RunEvent, RunPlanApproval
 from refactra.openai_analysis import OpenAIAnalysisProvider
-from refactra.planning_request import PLAN_INSTRUCTIONS
+from refactra.planning_request import PLAN_INSTRUCTIONS, load_planning_context
 from refactra.refactoring_plan import (
     APPLY_PLAN_APPROVAL,
     PlanContent,
+    PlanFeedback,
     PlanProposal,
     PlanRevisionConflict,
     approve_refactoring_plan,
     evaluate_plan_readiness,
     load_refactoring_plan,
+    queue_plan_feedback,
     save_refactoring_plan,
 )
 from refactra.repository_analysis_worker import (
@@ -101,6 +103,30 @@ def test_revisions_pin_exact_content_and_stale_saves_cannot_replace_them(session
             {"plan_id": str(plan.id), "revision": plan.revision, "sha256": plan.sha256}
             for plan in (first, second)
         ]
+
+
+def test_revision_context_treats_feedback_as_current_and_initial_analysis_as_stale(
+    session_factory, proposal
+):
+    run, _, context = prepare(session_factory, task_text="Add asynchronous browser search.")
+    with session_factory.begin() as session:
+        save_analysis_context(session, context)
+        enqueue_repository_analysis(session, run.id)
+    analyze_fixture_run(session_factory)
+    with session_factory.begin() as session:
+        save_refactoring_plan(session, run.id, proposal, expected_revision=0)
+        feedback = PlanFeedback(
+            expected_revision=1, notes="Keep the existing HTML form.", answers=[]
+        )
+        queue_plan_feedback(session, run.id, feedback)
+        command_id = session.scalar(select(RunCommand.id).where(RunCommand.kind == GENERATE_PLAN))
+
+        initial = json.loads(load_planning_context(session, run.id).document)
+        assert initial["task_text"] == run.task_text and "saved_analysis" in initial
+        revised = json.loads(load_planning_context(session, run.id, command_id).document)
+        assert revised["original_request"] == run.task_text
+        assert revised["reviewer_feedback"]["notes"] == feedback.notes
+        assert "task_text" not in revised and "saved_analysis" not in revised
 
 
 def analyze_fixture_run(session_factory, *, queue_plan=False):
