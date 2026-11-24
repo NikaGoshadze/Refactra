@@ -7,6 +7,7 @@ test("login redirects reach the browser with the OAuth cookie", async ({ authPro
   expect(response.status()).toBe(302);
   expect(response.headers().location).toBe("https://github.com/login/oauth/authorize?client_id=fixture");
   expect(response.headersArray().filter((item) => item.name.toLowerCase() === "set-cookie").map((item) => item.value)).toEqual([OAUTH_COOKIE]);
+  expect(response.headers()["referrer-policy"]).toBe("no-referrer");
   expect(proxy.calls).toHaveLength(1);
 });
 
@@ -17,12 +18,30 @@ test("callback preserves multiple cookie headers and session status", async ({ a
   expect(response.status()).toBe(302);
   expect(response.headers().location).toBe(`${proxy.origin}/`);
   expect(response.headersArray().filter((item) => item.name.toLowerCase() === "set-cookie").map((item) => item.value)).toEqual([SESSION_COOKIE, CLEAR_OAUTH]);
+  expect(response.headers()["referrer-policy"]).toBe("no-referrer");
   expect(proxy.calls[0].url).toBe("/api/v1/auth/github/callback?code=fixture-code&state=fixture-state");
   expect(proxy.calls[0].headers.cookie).toBe("refactra_oauth=fixture-attempt");
   const status = await request.get(`${proxy.origin}/api/v1/auth/session`);
   expect(status.status()).toBe(200);
   expect(status.headers()["cache-control"]).toBe("no-store");
   expect(await status.json()).toEqual({ authenticated: true, user: { user_id: 12345, login: "fixture-user" } });
+});
+
+test("a failed callback keeps the authorization URL out of the referrer", async ({ authProxy: proxy, request }) => {
+  const response = await request.get(`${proxy.origin}/api/v1/auth/github/callback?error=access_denied&state=fixture-state`, {
+    maxRedirects: 0, headers: { Cookie: "refactra_oauth=fixture-attempt" },
+  });
+  expect(response.status()).toBe(400);
+  expect(response.headers()["referrer-policy"]).toBe("no-referrer");
+  expect(response.headers()["cache-control"]).toBe("no-store");
+  expect(response.headersArray().filter((item) => item.name.toLowerCase() === "set-cookie").map((item) => item.value)).toEqual([CLEAR_OAUTH]);
+  expect(await response.json()).toEqual({ error: { code: "oauth_denied" } });
+});
+
+test("non-authentication routes keep the default referrer policy", async ({ authProxy: proxy, request }) => {
+  const response = await request.get(`${proxy.origin}/api/v1/repositories/42`);
+  expect(response.status()).toBe(401);
+  expect(response.headers()["referrer-policy"]).toBeUndefined();
 });
 
 test("logout preserves CSRF headers and returns an empty 204 with cookie deletion", async ({ authProxy: proxy, request }) => {

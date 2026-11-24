@@ -82,6 +82,10 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
       if (route === "/api/v1/auth/github/login") {
         response.writeHead(302, { Location: "https://github.com/login/oauth/authorize?client_id=fixture", "Set-Cookie": OAUTH_COOKIE });
       } else if (route === "/api/v1/auth/github/callback") {
+        if (new URL(request.url!, "http://fixture").searchParams.has("error")) {
+          response.writeHead(400, { "Set-Cookie": CLEAR_OAUTH }).end(JSON.stringify({ error: { code: "oauth_denied" } }));
+          return;
+        }
         response.writeHead(302, { Location: `${origin}/`, "Set-Cookie": [SESSION_COOKIE, CLEAR_OAUTH] });
       } else if (route === "/api/v1/auth/session") {
         const authenticated = request.headers.cookie?.includes("refactra_session=fixture-session") ?? false;
