@@ -273,3 +273,15 @@ class RunEvent(Base):
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class WorkerHeartbeat(Base):
+    """One row for the single execution slot; the worker holding the slot refreshes it."""
+
+    __tablename__ = "worker_heartbeats"
+
+    slot: Mapped[str] = mapped_column(String(32), primary_key=True)
+    worker_id: Mapped[str] = mapped_column(String(64))
+    mode: Mapped[str] = mapped_column(String(32))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    beat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

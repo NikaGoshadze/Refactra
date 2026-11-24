@@ -84,6 +84,8 @@ ANALYSIS_FAILURE_MESSAGES = {
     "analysis_access_unconfigured": "The worker's repository access settings are unavailable.",
     "snapshot_unavailable": "The pinned source could not be retrieved. Submit the run again.",
     "snapshot_unsupported": "The pinned source exceeds the supported analysis limits.",
+    "worker_command_failed": "The worker stopped this run after an unexpected error.",
+    "command_attempts_exhausted": "The worker stopped this run after repeated interruptions.",
     "analysis_budget_exceeded": "The run reached an analysis budget limit.",
     "analysis_input_invalid": "The saved input could not be analyzed.",
     "analysis_outcome_unknown": "The model request outcome could not be confirmed.",
