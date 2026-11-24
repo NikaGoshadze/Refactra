@@ -202,6 +202,40 @@ def test_tracked_template_requirement_blocks_an_omission(session_factory, propos
         )
 
 
+def test_edits_to_files_withheld_from_analysis_block_approval(session_factory, proposal):
+    run, snapshot, _ = prepare(session_factory)
+    secret = b'ACCESS_TOKEN = "synthetic-plan-secret"\n\ndef cart():\n    return 2\n'
+    snapshot = replace(snapshot, files=(SourceFile("src/cart.py", secret), *snapshot.files[1:]))
+    context = prepare_analysis_context(run, snapshot)
+    assert b"synthetic-plan-secret" not in context.document
+    with session_factory.begin() as session:
+        save_analysis_context(session, context)
+        enqueue_repository_analysis(session, run.id)
+    analyze_fixture_run(session_factory)
+    with session_factory.begin() as session:
+        first = save_refactoring_plan(session, run.id, proposal, expected_revision=0)
+        readiness = evaluate_plan_readiness(PlanContent.model_validate_json(first.document))
+        assert readiness.outcome == "unsupported"
+        assert readiness.scope_errors == [
+            "src/cart.py may contain a credential and cannot be sent to the model for editing."
+        ]
+        with pytest.raises(PlanRevisionConflict, match="scope issues"):
+            approve_refactoring_plan(
+                session,
+                run.id,
+                plan_id=first.id,
+                revision=1,
+                sha256=first.sha256,
+                actor_id=run.requested_by,
+            )
+        proposal["changes"] = [
+            {"path": "src/checkout.py", "action": "CREATE", "intent": "Add checkout totals."}
+        ]
+        revised = save_refactoring_plan(session, run.id, proposal, expected_revision=1)
+        content = PlanContent.model_validate_json(revised.document)
+        assert evaluate_plan_readiness(content).outcome == "ready"
+
+
 @pytest.mark.parametrize(
     "task_text, missing",
     [

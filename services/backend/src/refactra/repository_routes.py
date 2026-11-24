@@ -165,8 +165,29 @@ CANDIDATE_STAGES = {
 }
 
 
+def candidate_failure_message(session, run_id: UUID) -> str | None:
+    """Explain a policy stop using only the recorded path, never file contents."""
+    payload = session.scalar(
+        select(RunEvent.payload)
+        .where(RunEvent.run_id == run_id, RunEvent.event_type == "CANDIDATE_GENERATION_FAILED")
+        .order_by(RunEvent.id.desc())
+        .limit(1)
+    )
+    if not isinstance(payload, dict) or payload.get("code") != "candidate_source_withheld":
+        return None
+    path = payload.get("path")
+    if not isinstance(path, str):
+        return None
+    return (
+        f"{path} may contain a credential, so it was not sent to the model. "
+        "Remove the credential from that file, then start a new run."
+    )
+
+
 def _candidate_progress(
-    activity: tuple[str, str] | None, result: CandidateResultRead | None
+    activity: tuple[str, str] | None,
+    result: CandidateResultRead | None,
+    failure_message: str | None = None,
 ) -> CandidateProgressRead:
     if activity is None or (result and isinstance(result.publication, PublicationDraftRead)):
         return CandidateProgressRead(status="idle", result=result)
@@ -177,7 +198,9 @@ def _candidate_progress(
     if kind == VALIDATE_CANDIDATE and result:
         stage, failure = "preparing", "The worker could not prepare the reviewed commit."
     if status == "FAILED":
-        return CandidateProgressRead(status="failed", message=failure, result=result)
+        return CandidateProgressRead(
+            status="failed", message=failure_message or failure, result=result
+        )
     return CandidateProgressRead(status=stage, result=result)
 
 
@@ -542,6 +565,11 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                 ).one_or_none()
                 if row is not None:
                     activity = (row.kind, row.status)
+            failure_message = (
+                candidate_failure_message(session, run_id)
+                if activity == (GENERATE_CANDIDATE, "FAILED")
+                else None
+            )
             query = select(RunCandidateResult).where(RunCandidateResult.run_id == run_id)
             if revision is not None:
                 query = query.where(RunCandidateResult.revision == revision)
@@ -549,7 +577,7 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
             if result is None:
                 if live:
                     response.headers["Cache-Control"] = "no-store"
-                    return _candidate_progress(activity, None)
+                    return _candidate_progress(activity, None, failure_message)
                 return error(
                     404,
                     {
@@ -608,7 +636,7 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                     },
                 )
             response.headers["Cache-Control"] = "no-store"
-            return _candidate_progress(activity, payload) if live else payload
+            return _candidate_progress(activity, payload, failure_message) if live else payload
 
     @router.post("/runs/{run_id}/result/approve", response_model=PublicationApproval)
     def approve_result(

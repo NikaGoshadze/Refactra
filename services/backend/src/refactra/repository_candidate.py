@@ -16,6 +16,7 @@ from refactra.analysis_request import MAX_REQUEST_OUTPUT, MAX_RUN_OUTPUT, Budget
 from refactra.candidate_patch import CandidatePatch, CandidatePatchError, apply_candidate_patch
 from refactra.candidate_request import (
     CANDIDATE_INSTRUCTIONS,
+    CandidateSourceWithheld,
     patch_from_contents,
     prepare_candidate_context,
     without_candidate_references,
@@ -275,6 +276,7 @@ def process_repository_candidate(
         command.lease_until = now + timedelta(seconds=120)
 
     error_code = None
+    withheld_path = None
     try:
         repair = None
         with session_factory() as session:
@@ -341,6 +343,18 @@ def process_repository_candidate(
             command_id=command_id,
             reason=error.code,
         )
+    except CandidateSourceWithheld as error:
+        # Record only the approved path and policy reason; never the matched text.
+        error_code = "candidate_source_withheld"
+        withheld_path = error.path
+        workflow_log(
+            "candidate_source_withheld",
+            warning=True,
+            run_id=run_id,
+            command_id=command_id,
+            path=error.path,
+            reason=error.reason,
+        )
     except (
         AnalysisProviderError,
         GitHubAppError,
@@ -372,6 +386,7 @@ def process_repository_candidate(
                 payload={
                     "command_id": str(command_id),
                     **({"code": error_code} if error_code else {}),
+                    **({"path": withheld_path} if withheld_path else {}),
                 },
             )
         )
@@ -401,6 +416,8 @@ def main() -> None:
         print(f"Saved candidate with {len(patch.edits)} approved edits.")
     except (BudgetExceeded, CandidatePatchError, WorkspacePreparationError) as error:
         raise SystemExit(str(error)) from None
+    except CandidateSourceWithheld as error:
+        raise SystemExit(f"{error.path} may contain a credential; it was not sent.") from None
     except (
         AnalysisProviderError,
         GitHubAppError,

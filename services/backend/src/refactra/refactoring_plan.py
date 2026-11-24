@@ -354,7 +354,13 @@ def save_refactoring_plan(
         or context is None
     ):
         raise PlanRevisionConflict("A repository run with completed analysis is required.")
-    tracked = set(json.loads(context.document)["inventory"]["file_paths"])
+    saved_context = json.loads(context.document)
+    tracked = set(saved_context["inventory"]["file_paths"])
+    withheld = {
+        item["path"]
+        for item in saved_context["content"]["skipped"]
+        if item["reason"] == "possible_secret"
+    }
     special_edits = [
         edit
         for edit in parsed.changes
@@ -393,6 +399,16 @@ def save_refactoring_plan(
         ]
         if errors:
             payload["inventory_errors"] = errors
+    # Candidate generation would send these files' full text, which analysis already withheld.
+    disclosure_errors = [
+        f"{edit['path']} may contain a credential and cannot be sent to the model for editing."
+        for edit in payload["changes"]
+        if edit["path"] in withheld
+        and edit["action"] != "CREATE"
+        and plan_edit_kind(edit["path"], edit["action"]) == "text"
+    ]
+    if disclosure_errors:
+        payload["inventory_errors"] = [*payload.get("inventory_errors", []), *disclosure_errors]
     payload.update(
         schema_version="1",
         run_id=str(run_id),

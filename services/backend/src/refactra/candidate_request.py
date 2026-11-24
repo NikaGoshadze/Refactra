@@ -13,6 +13,7 @@ from refactra.candidate_references import collect_candidate_references, valid_ca
 from refactra.environment_template import template_preview
 from refactra.models import Run
 from refactra.refactoring_plan import is_env_path, load_approved_plan, plan_edit_kind
+from refactra.repository_content import SECRET_MARKERS
 
 if TYPE_CHECKING:
     from refactra.repository_workspace import ApprovedWorkspace
@@ -161,6 +162,35 @@ def _has_source(path: str, action: str) -> bool:
     return action != "CREATE" and (not is_env_path(path) or _template_update(path, action))
 
 
+class CandidateSourceWithheld(ValueError):
+    """An approved file matches the source-disclosure policy, so no provider request is made."""
+
+    reason = "possible_secret"
+
+    def __init__(self, path: str):
+        super().__init__("An approved file may contain a credential.")
+        self.path = path
+
+
+def approved_source(workspace: "ApprovedWorkspace") -> dict[str, str]:
+    """Read edit targets under the same disclosure policy as analysis content."""
+    source = {}
+    for change in workspace.changes:
+        if _has_source(change.path, change.action):
+            with (workspace.root / change.path).open("rb") as file:
+                raw = file.read(MAX_EDIT_FILE_BYTES + 1)
+            if len(raw) > MAX_EDIT_FILE_BYTES or b"\0" in raw:
+                raise ValueError("An approved source file exceeds the text limits.")
+            if _template_update(change.path, change.action):
+                # Templates expose only assignment names, so check what the model would receive.
+                raw = template_preview(raw)
+            text = raw.decode("utf-8")
+            if SECRET_MARKERS.search(text):
+                raise CandidateSourceWithheld(change.path)
+            source[change.path] = text
+    return source
+
+
 def prepare_candidate_context(
     session: Session,
     run_id: UUID,
@@ -175,16 +205,7 @@ def prepare_candidate_context(
         workspace.sha256,
     ):
         raise ValueError("The workspace does not match the approved plan.")
-    source = {}
-    for change in workspace.changes:
-        if _has_source(change.path, change.action):
-            with (workspace.root / change.path).open("rb") as file:
-                raw = file.read(MAX_EDIT_FILE_BYTES + 1)
-            if len(raw) > MAX_EDIT_FILE_BYTES or b"\0" in raw:
-                raise ValueError("An approved source file exceeds the text limits.")
-            if _template_update(change.path, change.action):
-                raw = template_preview(raw)
-            source[change.path] = raw.decode("utf-8")
+    source = approved_source(workspace)
     document["source"] = source
     references = collect_candidate_references(
         workspace.root, source, {change.path for change in workspace.changes}
