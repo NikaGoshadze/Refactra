@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 
 import refactra.repository_plan_worker as plan_worker
 import refactra.repository_routes as routes
+import refactra.run_access as run_access
 from refactra.api import create_app
 from refactra.auth_sessions import GitHubIdentity, issue_session, revoke_session
 from refactra.candidate_patch import CandidatePatch
@@ -30,6 +31,7 @@ from refactra.refactoring_plan import GENERATE_PLAN, approve_refactoring_plan, s
 from refactra.repository_analysis_worker import WORKFLOW, process_repository_analysis
 from refactra.repository_candidate import VALIDATE_CANDIDATE
 from refactra.repository_validation import ValidationResult
+from refactra.snapshot_preparation import PREPARE_SNAPSHOT, process_snapshot_preparation
 from refactra.worker import claim_command
 
 from .test_candidate_results import passing_patch
@@ -101,7 +103,9 @@ def browser(database, session_factory, monkeypatch, tmp_path):
         if request.url.path == ARCHIVE_PATH:
             with session_factory() as session:
                 assert session.scalar(select(Run.base_sha)) == PIN
-                assert session.scalar(select(func.count()).select_from(RunCommand)) == 0
+                # Analysis is queued only after the worker saves the pinned context.
+                started = select(RunCommand.id).where(RunCommand.kind == "START")
+                assert session.scalar(started) is None
             return httpx.Response(
                 302, headers={"Location": f"https://codeload.github.com/fixture/example/zip/{PIN}"}
             )
@@ -123,6 +127,7 @@ def browser(database, session_factory, monkeypatch, tmp_path):
         return InstallationToken("fixture-secret-token", 42, datetime.now(UTC) + timedelta(hours=1))
 
     monkeypatch.setattr(routes, "GitHubAppClient", app)
+    monkeypatch.setattr(run_access, "GitHubAppClient", app)
     monkeypatch.setattr(GitHubAppClient, "mint_read_token", mint)
     with session_factory.begin() as session:
         token = issue_session(session, GitHubIdentity(12345, "old-login"))
@@ -131,6 +136,7 @@ def browser(database, session_factory, monkeypatch, tmp_path):
         base_url="https://refactra.example",
     ) as client:
         client.cookies.set("__Host-refactra_session", token, domain="refactra.example", path="/")
+        client.prepare_snapshots = lambda: prepare_snapshots(session_factory)
         yield client, calls, mode, token
 
 
@@ -210,41 +216,63 @@ def test_github_denials_and_failures_do_not_expose_metadata_or_credentials(brows
     )
 
 
-def submit(client, key=None, *, origin="https://refactra.example", **overrides):
-    return client.post(
+def prepare_snapshots(session_factory) -> int:
+    """Run queued snapshot preparation as the worker would, with real access checks."""
+    processed = 0
+    while command := claim_command(
+        session_factory, "snapshot-worker", workflow=WORKFLOW, kind=PREPARE_SNAPSHOT
+    ):
+        assert process_snapshot_preparation(session_factory, command, "snapshot-worker")
+        processed += 1
+    return processed
+
+
+def submit(client, key=None, *, origin="https://refactra.example", prepare=True, **overrides):
+    response = client.post(
         "/api/v1/runs",
         json={"repository_id": 42, "base_branch": "feature/cart", "task_text": "Review cart"}
         | overrides,
         headers={"Origin": origin, "X-Refactra-CSRF": "1", "Idempotency-Key": str(key or uuid4())},
     )
+    if prepare and response.status_code == 202:
+        client.prepare_snapshots()
+    return response
 
 
-def test_submission_retries_preserve_pin_and_queue_exactly_once(browser, session_factory):
+def test_submission_returns_once_pinned_and_the_worker_prepares_source(browser, session_factory):
     client, calls, switches, _ = browser
     key = uuid4()
     switches["source_failure"] = True
-    assert submit(client, key).status_code == 502
-    with session_factory() as session:
-        pending = session.scalar(select(Run))
-        assert pending.base_sha == PIN
-        assert session.get(RunAnalysisContext, pending.id) is None
-        assert session.scalar(select(func.count()).select_from(RunCommand)) == 0
-    switches.update(source_failure=False, branch_tip="b" * 40)
-    accepted = submit(client, key)
+    accepted = submit(client, key, prepare=False)
     assert accepted.status_code == 202
     assert accepted.headers["cache-control"] == "no-store"
     receipt = accepted.json()
-    assert receipt["base_sha"] == PIN and receipt["run_id"] == str(pending.id)
+    assert receipt["base_sha"] == PIN
+    assert ARCHIVE_PATH not in calls  # The receipt never waits for the source download.
+    run_id = UUID(receipt["run_id"])
+    with session_factory() as session:
+        assert session.get(RunAnalysisContext, run_id) is None
+        assert session.scalars(select(RunCommand.kind)).all() == [PREPARE_SNAPSHOT]
+
+    # A failed download is retried by the worker, not by the browser.
+    assert prepare_snapshots(session_factory) == 1
+    with session_factory.begin() as session:
+        command = session.scalar(select(RunCommand).where(RunCommand.kind == PREPARE_SNAPSHOT))
+        assert command.status == "PENDING" and session.get(Run, run_id).status == "CREATED"
+        command.available_at = session.scalar(select(func.now()))
+    switches.update(source_failure=False, branch_tip="b" * 40)
+    assert submit(client, key, prepare=False).json() == receipt
+    assert prepare_snapshots(session_factory) == 1
     assert submit(client, key).json() == receipt
     assert submit(client, key, task_text="Another task").status_code == 409
     assert calls.count(ARCHIVE_PATH) == 2
     assert sum("/git/ref/" in path for path in calls) == 1
     with session_factory() as session:
-        run_id = UUID(receipt["run_id"])
         context = session.get(RunAnalysisContext, run_id)
         assert context.payload["base_sha"] == PIN
         assert [f["path"] for f in context.payload["content"]["files"]] == ["src/cart.py"]
-        assert session.scalars(select(RunCommand.run_id)).all() == [run_id]
+        commands = session.execute(select(RunCommand.kind, RunCommand.status)).all()
+        assert sorted(commands) == [(PREPARE_SNAPSHOT, "DONE"), ("START", "PENDING")]
 
 
 @pytest.mark.parametrize("problem,status", [("csrf", 403), ("sign_in", 401), ("non_writer", 403)])
@@ -578,7 +606,8 @@ def test_approval_binds_the_latest_ready_revision_and_locks_edits(
         ).all()
         assert len(events) == 1
         assert events[0].payload == approval | {"approved_by": 12345}
-        assert session.scalar(select(func.count()).select_from(RunCommand)) == 2
+        approvals = select(func.count()).where(RunCommand.kind == "APPLY_PLAN_APPROVAL")
+        assert session.scalar(approvals) == 1
 
 
 def test_read_saved_candidate_result(browser, session_factory, proposal):

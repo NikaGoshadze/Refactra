@@ -54,9 +54,8 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
         if (value !== null) headers.set(name, value);
       }
     }
-    // Submission also resolves the branch and downloads the source before returning a receipt.
-    const timeoutMs = isAnalysisSubmit ? 90000 : sessionOnly ? 60000
-      : relative === "auth/github/callback" ? 25000 : 5000;
+    // Protected routes recheck GitHub access; submission also pins the branch head.
+    const timeoutMs = sessionOnly ? 60000 : relative === "auth/github/callback" ? 25000 : 5000;
     const upstream = await fetch(`${process.env.REFACTRA_API_URL ?? "http://127.0.0.1:8000"}/api/v1/${relative}${request.nextUrl.search}`, {
       method: request.method, headers,
       body: request.method === "POST" ? await request.text() : undefined,

@@ -115,7 +115,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     def ready():
         with engine.connect() as connection:
             version = connection.scalar(text("SELECT version_num FROM alembic_version"))
-            if version != "0016_initial_plan_queue":
+            if version != "0017_snapshot_preparation":
                 raise HTTPException(503, {"code": "schema_not_ready", "message": "Run migrations."})
         return {"status": "ready", "database": "postgresql", "schema": version}
 

@@ -116,7 +116,7 @@ export function AnalysisRunPanel({ repositoryId, defaultBranch }: {
         method: "POST",
         body,
         headers: { "X-Refactra-CSRF": "1", "Idempotency-Key": submission.current.key },
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(95000)]),
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(65000)]),
       });
       if (controller.signal.aborted) return;
       submission.current = null;
