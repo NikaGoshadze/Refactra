@@ -39,6 +39,7 @@ from refactra.repository_candidate import (
     process_repository_candidate,
     queue_candidate_retry,
 )
+from refactra.repository_routes import candidate_failure_message
 from refactra.repository_snapshot import SourceFile, SourceSnapshot
 from refactra.repository_validation import ValidationResult, candidate_checks, validate_candidate
 from refactra.worker import claim_command
@@ -134,10 +135,11 @@ def test_frontend_and_config_patch_uses_builtin_validation(tmp_path, proposal, c
         "package_call",
         "validation_repair",
         "validation_still_fails",
+        "withheld_source",
     ],
 )
 def test_workspace_requires_verified_approval_and_stages_pinned_source(
-    session_factory, proposal, token, monkeypatch, scenario, tmp_path
+    session_factory, proposal, token, monkeypatch, scenario, tmp_path, caplog
 ):
     run, _, context = prepare(session_factory)
     with session_factory.begin() as session:
@@ -145,6 +147,8 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
         enqueue_repository_analysis(session, run.id)
     analyze_fixture_run(session_factory)
     pinned_cart = b"from .pricing import price\nfrom .settings import API_KEY\n"
+    if scenario == "withheld_source":
+        pinned_cart += b'ACCESS_TOKEN = "synthetic-edit-secret"\n'
     pinned_pricing = b"def price(quantity): return quantity * 2\n"
     archive = zip_bytes(
         [
@@ -291,6 +295,31 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
         session_factory, "worker", workflow=WORKFLOW, kind=GENERATE_CANDIDATE
     )
     assert generation is not None
+    if scenario == "withheld_source":
+        assert process_repository_candidate(session_factory, generation, "worker", provider)
+        assert requests == []
+        with session_factory() as session:
+            attempt_id = uuid5(run.id, f"repository:candidate:v1:{plan.sha256}")
+            assert session.get(ModelReservation, attempt_id) is None
+            assert session.get(RunGeneratedCandidate, run.id) is None
+            assert session.get(RunCommand, generation).status == "FAILED"
+            event = session.scalar(
+                select(RunEvent).where(
+                    RunEvent.run_id == run.id,
+                    RunEvent.event_type == "CANDIDATE_GENERATION_FAILED",
+                )
+            )
+            assert event.payload == {
+                "command_id": str(generation),
+                "code": "candidate_source_withheld",
+                "path": "src/cart.py",
+            }
+            assert candidate_failure_message(session, run.id).startswith(
+                "src/cart.py may contain a credential"
+            )
+        assert "candidate_source_withheld" in caplog.text
+        assert "synthetic-edit-secret" not in caplog.text
+        return
     if scenario == "recover":
         assert generate_candidate(session_factory, run.id, provider).model_dump() == patch
         with session_factory.begin() as session:
