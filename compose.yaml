@@ -57,6 +57,14 @@ services:
   worker:
     <<: *backend
     command: [uv, run, --no-sync, python, -m, refactra.worker]
+    # Restart after a database or process failure; `docker compose stop worker` stays stopped.
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, uv, run, --no-sync, python, -m, refactra.worker, --health]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     depends_on:
       migrate:
         condition: service_completed_successfully

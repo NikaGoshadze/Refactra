@@ -274,7 +274,7 @@ With a clone of the configured repository alongside Refactra, launch the worker 
 $source = (Resolve-Path '../AI-Hub').Path
 $env:REFACTRA_GITHUB_PRIVATE_KEY_PATH = (Resolve-Path '.runtime/secrets/github-app.pem').Path
 $artifacts = (New-Item -ItemType Directory -Path '.runtime/demo-artifacts' -Force).FullName
-uv run --project services/backend --env-file .env python -m refactra.worker --repository-workflow --candidate-source $source --candidate-artifacts $artifacts
+.\scripts\run-worker.ps1 --repository-workflow --candidate-source $source --candidate-artifacts $artifacts
 ```
 
 1. Open [the local workspace](http://localhost:3000), sign in, and click **Check repository access**.
@@ -288,6 +288,24 @@ To repeat the exact formatter task, use a branch at the [original AI-Hub base co
 > Extract the `!summary` display logic from `pizza_app/main.py` into a pure `summary_lines` helper in `pizza_app/chat_summary.py` that returns a list of strings to print. Preserve the exact Georgian messages, leading newlines, and summary text. Keep command detection and both script and package startup intact. Treat a missing or empty summary the same way. Add offline tests in `pizza_app/test_chat_summary.py` for missing, empty, and populated summaries. Use `python.pytest` on that test file.
 
 This mode queues planning for analyses it completes. Use the operator command below if an earlier analysis has no saved plan.
+
+`run-worker.ps1` passes its arguments to `python -m refactra.worker` and restarts the worker if it exits unexpectedly. The delay doubles up to 60 seconds and resets after five minutes of uptime. Press Ctrl+C to stop it.
+
+## Worker supervision
+
+`GET /health/worker` on the API reports whether the execution worker is alive and whether work is waiting. It returns 503 when the worker's heartbeat is `missing` or `stale` (older than 60 seconds), or when claimable work has waited more than five minutes (`stalled`). A stall usually means the running worker is in the wrong mode. The response contains counts and ages only, never run IDs:
+
+```json
+{"status": "running", "mode": "repository_workflow", "heartbeat_age_seconds": 4,
+ "pending_commands": 0, "oldest_pending_seconds": null, "stalled": false}
+```
+
+- **Heartbeat:** the worker holding the single execution slot refreshes it every 15 seconds and clears it on a clean stop. Migration `0018_worker_heartbeats` adds the table and is required for API readiness.
+- **Isolated failures:** an unexpected error in one command marks that command `FAILED` and records a `COMMAND_FAILED` event with the error type only. If the run was still preparing or analyzing, it stops with `worker_command_failed`. The worker keeps serving other runs.
+- **Interrupted commands:** a command reclaimed after five interrupted attempts, for example after repeated hard kills, is failed with `command_attempts_exhausted` instead of being retried again.
+- **Database failures** still stop the process. The Compose worker restarts automatically (`restart: unless-stopped`) and reports its heartbeat through a health check (`python -m refactra.worker --health`). `docker compose stop worker` keeps it stopped. On the host, use `run-worker.ps1`.
+
+Leases are not renewed during long commands, and the advisory lock keeps exactly one worker running. Renewable leases and ownership checks around external side effects are required before running a second worker.
 
 ## Refactoring plan checkpoint
 

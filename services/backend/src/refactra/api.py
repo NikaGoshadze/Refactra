@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from typing import Annotated
 from uuid import UUID
 
@@ -16,6 +17,7 @@ from refactra.models import Run, RunCommand, RunEvent
 from refactra.repository_routes import create_repository_router
 from refactra.schemas import EventPage, EventRead, MockRunCreate, MockRunRead
 from refactra.session_routes import create_session_router
+from refactra.worker_health import worker_status
 
 
 def create_app(settings: Settings | None = None, engine: Engine | None = None) -> FastAPI:
@@ -115,9 +117,19 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     def ready():
         with engine.connect() as connection:
             version = connection.scalar(text("SELECT version_num FROM alembic_version"))
-            if version != "0017_snapshot_preparation":
+            if version != "0018_worker_heartbeats":
                 raise HTTPException(503, {"code": "schema_not_ready", "message": "Run migrations."})
         return {"status": "ready", "database": "postgresql", "schema": version}
+
+    @app.get("/health/worker")
+    def worker_health(response: Response):
+        """Liveness of the execution worker and the claimable backlog; 503 needs attention."""
+        with session_factory() as session:
+            status = worker_status(session)
+        response.headers["Cache-Control"] = "no-store"
+        if not status.healthy:
+            response.status_code = 503
+        return asdict(status)
 
     @app.get("/api/v1/capabilities")
     def capabilities():

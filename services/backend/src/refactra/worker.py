@@ -32,6 +32,15 @@ from refactra.repository_analysis_worker import (
 from refactra.repository_candidate import VALIDATE_CANDIDATE, process_repository_candidate
 from refactra.repository_plan_worker import process_initial_plan
 from refactra.snapshot_preparation import PREPARE_SNAPSHOT, process_snapshot_preparation
+from refactra.worker_health import (
+    HEARTBEAT_INTERVAL_SECONDS,
+    MAX_COMMAND_ATTEMPTS,
+    clear_heartbeat,
+    fail_claimed_command,
+    record_heartbeat,
+    stop_command,
+    worker_status,
+)
 
 logger = logging.getLogger("refactra.worker")
 WORKER_LOCK = 72341001
@@ -59,6 +68,12 @@ def claim_command(
             .limit(1)
         )
         if command is None:
+            return None
+        if command.attempts >= MAX_COMMAND_ATTEMPTS:
+            # Repeated reclaims mean this command keeps interrupting its worker.
+            stop_command(
+                session, command, code="command_attempts_exhausted", error_type="Interrupted"
+            )
             return None
         command.status = "CLAIMED"
         command.claimed_by = worker_id
@@ -154,7 +169,19 @@ def main():
     parser.add_argument(
         "--candidate-artifacts", type=Path, help="Directory for prepared artifacts."
     )
+    parser.add_argument(
+        "--health",
+        action="store_true",
+        help="Exit 0 when a worker heartbeat is fresh; for container health checks.",
+    )
     args = parser.parse_args()
+    if args.health:
+        engine = make_engine(Settings.from_env().database_url)
+        try:
+            with sessions(engine)() as session:
+                raise SystemExit(0 if worker_status(session).status == "running" else 1)
+        finally:
+            engine.dispose()
     if args.repository_workflow or args.candidate_source or args.candidate_artifacts:
         if not (
             (args.repository_candidate or args.repository_workflow)
@@ -198,6 +225,34 @@ def main():
     engine = make_engine(settings.database_url)
     session_factory = sessions(engine)
     worker_id = str(uuid4())
+
+    def dispatch(claimed_kind: str, command_id: UUID) -> bool:
+        if claimed_kind == APPLY_PLAN_APPROVAL:
+            return process_repository_plan_approval(session_factory, command_id, worker_id)
+        if claimed_kind == VALIDATE_CANDIDATE:
+            return process_candidate_validation(
+                session_factory,
+                command_id,
+                worker_id,
+                source=args.candidate_source,
+                artifacts=args.candidate_artifacts,
+            )
+        if claimed_kind == PUBLISH_CANDIDATE:
+            return process_approved_publication(
+                session_factory, command_id, worker_id, artifacts=args.candidate_artifacts
+            )
+        if claimed_kind == GENERATE_CANDIDATE:
+            return process_repository_candidate(session_factory, command_id, worker_id, provider)
+        if claimed_kind == PREPARE_SNAPSHOT:
+            return process_snapshot_preparation(session_factory, command_id, worker_id)
+        if claimed_kind == GENERATE_PLAN:
+            return process_initial_plan(session_factory, command_id, worker_id, provider)
+        if provider is None:
+            return process_command(session_factory, command_id, worker_id)
+        return process_repository_analysis(
+            session_factory, command_id, worker_id, provider, queue_plan=args.repository_workflow
+        )
+
     stopped = threading.Event()
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, lambda *_: stopped.set())
@@ -206,9 +261,14 @@ def main():
         with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as guard:
             if not guard.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": WORKER_LOCK}):
                 raise SystemExit("Another Refactra worker holds the local execution slot.")
+            record_heartbeat(session_factory, worker_id, mode, started=True)
+            last_beat = monotonic()
             logger.info(json.dumps({"event": "worker_started", "mode": mode}))
             while not stopped.is_set():
                 guard.execute(text("SELECT 1"))  # Loss of the lock connection stops this worker.
+                if monotonic() - last_beat >= HEARTBEAT_INTERVAL_SECONDS:
+                    record_heartbeat(session_factory, worker_id, mode)
+                    last_beat = monotonic()
                 for claimed_kind in kinds:
                     command_id = claim_command(
                         session_factory, worker_id, workflow=workflow, kind=claimed_kind
@@ -217,51 +277,22 @@ def main():
                         break
                 if command_id:
                     started = monotonic()
-                    if claimed_kind == APPLY_PLAN_APPROVAL:
-                        processed = process_repository_plan_approval(
-                            session_factory, command_id, worker_id
-                        )
-                    elif claimed_kind == VALIDATE_CANDIDATE:
-                        processed = process_candidate_validation(
-                            session_factory,
-                            command_id,
-                            worker_id,
-                            source=args.candidate_source,
-                            artifacts=args.candidate_artifacts,
-                        )
-                    elif claimed_kind == PUBLISH_CANDIDATE:
-                        processed = process_approved_publication(
-                            session_factory,
-                            command_id,
-                            worker_id,
-                            artifacts=args.candidate_artifacts,
-                        )
-                    elif claimed_kind == GENERATE_CANDIDATE:
-                        processed = process_repository_candidate(
-                            session_factory, command_id, worker_id, provider
-                        )
-                    elif claimed_kind == PREPARE_SNAPSHOT:
-                        processed = process_snapshot_preparation(
-                            session_factory, command_id, worker_id
-                        )
-                    elif claimed_kind == GENERATE_PLAN:
-                        processed = process_initial_plan(
-                            session_factory, command_id, worker_id, provider
-                        )
-                    elif provider is None:
-                        processed = process_command(session_factory, command_id, worker_id)
-                    else:
-                        processed = process_repository_analysis(
-                            session_factory,
-                            command_id,
-                            worker_id,
-                            provider,
-                            queue_plan=args.repository_workflow,
+                    event = "command_processed"
+                    try:
+                        if not dispatch(claimed_kind, command_id):
+                            event = "command_claim_lost"
+                    except SQLAlchemyError:
+                        raise
+                    except Exception as error:
+                        # Isolate a deterministic failure to its command; keep serving others.
+                        event = "command_failed"
+                        fail_claimed_command(
+                            session_factory, command_id, worker_id, type(error).__name__
                         )
                     logger.info(
                         json.dumps(
                             {
-                                "event": "command_processed" if processed else "command_claim_lost",
+                                "event": event,
                                 "command_id": str(command_id),
                                 "mode": mode,
                                 "stage": claimed_kind,
@@ -269,19 +300,22 @@ def main():
                             }
                         )
                     )
+                    record_heartbeat(session_factory, worker_id, mode)
+                    last_beat = monotonic()
                 if args.once:
                     break
                 if command_id is None:
                     stopped.wait(1)
+            clear_heartbeat(session_factory, worker_id)
             guard.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": WORKER_LOCK})
-    except (SQLAlchemyError, ValueError) as error:
+    except SQLAlchemyError as error:
         logger.error(
             json.dumps(
                 {
                     "event": "worker_stopped",
-                    "reason": "database_or_state_error",
+                    "reason": "database_error",
                     "error_type": type(error).__name__,
-                    "message": "Inspect the database and restart the worker.",
+                    "message": "Check the database; a supervised worker restarts automatically.",
                 }
             )
         )
