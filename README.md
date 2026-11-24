@@ -244,13 +244,15 @@ Migration `0007_analysis_results` adds `run_analysis_results`. The worker saves 
 
 ## Protected analysis submission
 
-Set `REFACTRA_ENABLE_REPOSITORY_ANALYSIS=true` for the configured repository API to enable `POST /api/v1/runs`. Submit JSON with `repository_id`, a literal `base_branch`, and `task_text`. Send the session cookie, the configured app `Origin`, `X-Refactra-CSRF: 1`, and a UUID `Idempotency-Key`. The API requires an invited user with current GitHub write access and reads source using the App's scoped read token.
+Set `REFACTRA_ENABLE_REPOSITORY_ANALYSIS=true` for the configured repository API to enable `POST /api/v1/runs`. Submit JSON with `repository_id`, a literal `base_branch`, and `task_text`. Send the session cookie, the configured app `Origin`, `X-Refactra-CSRF: 1`, and a UUID `Idempotency-Key`. The API requires an invited user with current GitHub write access and pins the branch head using the App's scoped read token.
 
-A `202` receipt contains the run ID, repository ID, branch, pinned SHA, and creation timestamp. Its `Location` header points to the run status. A retry using the same account, key and input keeps the same commit, even after a failed source download or a branch update. Use a new key to submit different input. The worker can claim the command once the bounded context and command commit together.
+A `202` receipt contains the run ID, repository ID, branch, pinned SHA, and creation timestamp. Its `Location` header points to the run status. The receipt is returned as soon as the run and its source preparation command are saved together; it never waits for the source download. A retry using the same account, key and input keeps the same commit, even after a branch update. Use a new key to submit different input.
+
+The repository worker (`--repository-analysis` or `--repository-workflow`) then rechecks the owner's access, downloads the archive at the pinned SHA, and saves the bounded analysis context and the analysis command in one transaction. A failed download is retried up to three times, 15 seconds apart, before the run stops with `snapshot_unavailable`. Source beyond the analysis limits stops it with `snapshot_unsupported`, and lost access uses the same stop reasons as analysis. A replacement worker can finish preparation without a browser retry. Migration `0017_snapshot_preparation` adds the command kind and is required for API readiness.
 
 `GET /api/v1/runs/{run_id}` returns the pinned revision and run status, plus a sanitized `stop_reason` if analysis failed. The worker uses the saved analysis internally. Each read requires ownership, an active session, and current repository access under the configured installation. Existing runs remain readable when new submissions are disabled.
 
-Both routes are available through the same-origin Next.js proxy. It forwards only Refactra session cookies, preserves the original submission origin and CSRF and idempotency headers, and keeps responses uncached. The proxy allows up to 90 seconds to prepare a submission and 60 seconds to check a run.
+Both routes are available through the same-origin Next.js proxy. It forwards only Refactra session cookies, preserves the original submission origin and CSRF and idempotency headers, and keeps responses uncached. The proxy allows up to 60 seconds for a submission or a run check.
 
 After verifying repository access, use **Repository analysis** to choose the base branch and enter a task. The panel shows the pinned commit and polls until the worker saves the analysis or records a failure. A submission retry with the same input reuses its key while the panel is open. The panel clears on sign-out and tracks the current run in memory.
 

@@ -31,6 +31,7 @@ from refactra.repository_analysis_worker import (
 )
 from refactra.repository_candidate import VALIDATE_CANDIDATE, process_repository_candidate
 from refactra.repository_plan_worker import process_initial_plan
+from refactra.snapshot_preparation import PREPARE_SNAPSHOT, process_snapshot_preparation
 
 logger = logging.getLogger("refactra.worker")
 WORKER_LOCK = 72341001
@@ -183,6 +184,8 @@ def main():
     elif not settings.enable_mock:
         raise SystemExit("Mock mode is disabled.")
     kinds = [kind]
+    if args.repository_analysis:
+        kinds = [PREPARE_SNAPSHOT, "START"]
     if args.repository_candidate or args.repository_workflow:
         mode = "repository_workflow" if args.repository_workflow else "repository_candidate"
         kinds = [GENERATE_CANDIDATE]
@@ -190,7 +193,7 @@ def main():
             kinds.extend((VALIDATE_CANDIDATE, PUBLISH_CANDIDATE))
         kinds.append(APPLY_PLAN_APPROVAL)
         if args.repository_workflow:
-            kinds.extend((GENERATE_PLAN, "START"))
+            kinds.extend((GENERATE_PLAN, PREPARE_SNAPSHOT, "START"))
     workflow = "mock-v0.1" if mode == "mock" else WORKFLOW
     engine = make_engine(settings.database_url)
     session_factory = sessions(engine)
@@ -236,6 +239,10 @@ def main():
                     elif claimed_kind == GENERATE_CANDIDATE:
                         processed = process_repository_candidate(
                             session_factory, command_id, worker_id, provider
+                        )
+                    elif claimed_kind == PREPARE_SNAPSHOT:
+                        processed = process_snapshot_preparation(
+                            session_factory, command_id, worker_id
                         )
                     elif claimed_kind == GENERATE_PLAN:
                         processed = process_initial_plan(

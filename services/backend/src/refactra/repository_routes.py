@@ -15,7 +15,6 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from refactra.analysis_context import prepare_analysis_context, save_analysis_context
 from refactra.auth_sessions import resolve_session
 from refactra.diff_review import DiffReview
 from refactra.github_app import GitHubAppClient, GitHubAppError
@@ -65,12 +64,10 @@ from refactra.repository_analysis_worker import (
     GENERATE_CANDIDATE,
     GENERATE_PLAN,
     WORKFLOW,
-    enqueue_repository_analysis,
 )
 from refactra.repository_candidate import VALIDATE_CANDIDATE
 from refactra.repository_revision import resolve_revision
 from refactra.repository_runs import create_repository_run
-from refactra.repository_snapshot import fetch_source_snapshot
 from refactra.repository_validation import ValidationResult
 from refactra.schemas import (
     RepositoryRunCreate,
@@ -79,11 +76,14 @@ from refactra.schemas import (
     StopReason,
 )
 from refactra.session_routes import is_trusted_mutation
+from refactra.snapshot_preparation import enqueue_snapshot_preparation
 
 ANALYSIS_FAILURE_MESSAGES = {
     "analysis_access_revoked": "The run owner no longer has access to this repository.",
     "analysis_access_unavailable": "GitHub access could not be verified. Submit the run again.",
     "analysis_access_unconfigured": "The worker's repository access settings are unavailable.",
+    "snapshot_unavailable": "The pinned source could not be retrieved. Submit the run again.",
+    "snapshot_unsupported": "The pinned source exceeds the supported analysis limits.",
     "analysis_budget_exceeded": "The run reached an analysis budget limit.",
     "analysis_input_invalid": "The saved input could not be analyzed.",
     "analysis_outcome_unknown": "The model request outcome could not be confirmed.",
@@ -397,6 +397,8 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                             task_text=body.task_text,
                             run_id=run_id,
                         )
+                        # The worker fetches the pinned source; the receipt never waits for it.
+                        enqueue_snapshot_preparation(session, run_id)
                 except IntegrityError:
                     # A concurrent request may have won the pin with this key.
                     with session_factory() as session:
@@ -418,21 +420,11 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                         "message": "Use a new key for a different run.",
                     },
                 )
-            with session_factory() as session:
-                saved = session.get(RunAnalysisContext, run_id) is not None
-            if not saved:
-                snapshot = fetch_source_snapshot(run, token, transport=transport)
-                context = prepare_analysis_context(run, snapshot)
-            else:
-                context = None
+            # A run pinned before queued preparation may have no context or command yet.
             with session_factory.begin() as session:
-                RepositoryAccessPolicy.from_env().require_eligible_session(
-                    session, request.cookies.get(oauth.session_cookie_name), body.repository_id
-                )
                 session.get(Run, run_id, with_for_update=True)
-                if context is not None and session.get(RunAnalysisContext, run_id) is None:
-                    save_analysis_context(session, context)
-                enqueue_repository_analysis(session, run_id)
+                if session.get(RunAnalysisContext, run_id) is None:
+                    enqueue_snapshot_preparation(session, run_id)
             response.headers["Cache-Control"] = "no-store"
             response.headers["Location"] = f"/api/v1/runs/{run_id}"
             return RepositoryRunReceipt(
