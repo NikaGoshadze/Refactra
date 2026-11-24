@@ -658,7 +658,7 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
         assert data["validation"][0]["exit_code"] == 0
         assert data["review"]["criteria"][0]["id"] == "AC-1"
         assert data["publication_target"] is None and data["publication_approval"] is None
-        assert data["publication"] is None
+        assert data["publication"] is None and data["publication_waivers"] == []
         assert "candidate" not in data
     assert client.get(f"{url}?revision=3").status_code == 404
     assert client.get(live_url).json()["status"] == "preparing"
@@ -693,6 +693,16 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
     assert target["destination"]["base_branch"] == "feature/cart"
     body = {"result_id": str(latest.id), "target_sha256": target_sha}
     headers = {"Origin": "https://refactra.example", "X-Refactra-CSRF": "1"}
+    waiver = {
+        "result_id": str(latest.id),
+        "result_sha256": latest.sha256,
+        "check_index": 0,
+        "reason": "Reviewed manually.",
+    }
+    assert client.post(f"{url}/waivers", json=waiver).status_code == 403
+    passed_check = client.post(f"{url}/waivers", json=waiver, headers=headers)
+    assert passed_check.status_code == 409
+    assert passed_check.json()["error"]["code"] == "publication_waiver_conflict"
     assert client.post(f"{url}/approve", json=body).status_code == 403
     for stale in (dict(body, result_id=str(fixtures[0][0].id)), dict(body, target_sha256="b" * 64)):
         assert client.post(f"{url}/approve", json=stale, headers=headers).status_code == 409
@@ -765,6 +775,7 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
         ("POST", "/plan"),
         ("POST", "/plan/approve"),
         ("POST", "/result/approve"),
+        ("POST", "/result/waivers"),
     ],
 )
 @pytest.mark.parametrize(
@@ -800,6 +811,13 @@ def test_run_routes_recheck_access(
     payload = None
     if suffix == "/result/approve":
         payload = {"result_id": str(uuid4()), "target_sha256": "a" * 64}
+    elif suffix == "/result/waivers":
+        payload = {
+            "result_id": str(uuid4()),
+            "result_sha256": "a" * 64,
+            "check_index": 0,
+            "reason": "Reviewed manually.",
+        }
     elif method == "POST":
         payload = (
             {"plan_id": str(uuid4()), "revision": 1, "sha256": "a" * 64}

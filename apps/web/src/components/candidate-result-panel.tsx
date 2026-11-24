@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { request } from "@/lib/api";
 
 type PublicationApproval = { result_revision: number };
+type PublicationWaiver = { check_index: number; check_id: string; reason: string };
 type PublicationTarget = {
   sha256: string;
   commit_sha: string;
@@ -23,10 +24,12 @@ type CandidateResult = {
   } | null;
   publication_target: PublicationTarget | null;
   publication_approval: PublicationApproval | null;
+  publication_waivers?: PublicationWaiver[];
   publication: { status: "branch_pushed" } | { status: "draft_opened"; number: number; url: string } | null;
   validation: {
     check_id: string;
     paths: string[];
+    required: boolean;
     status: string;
     exit_code: number | null;
     output: string;
@@ -54,6 +57,8 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
   const [loading, setLoading] = useState(false);
   const [approving, setApproving] = useState(false);
   const [approvalError, setApprovalError] = useState<string | null>(null);
+  const [waiverReasons, setWaiverReasons] = useState<Record<number, string>>({});
+  const [waiving, setWaiving] = useState<number | null>(null);
   const pending = useRef<AbortController | null>(null);
   const loadResult = useCallback(async () => {
     if (pending.current) return;
@@ -128,9 +133,46 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
     }
   }
 
+  async function waiveCheck(result: CandidateResult, index: number) {
+    const reason = (waiverReasons[index] ?? "").trim();
+    if (pending.current || !reason) return;
+    const controller = new AbortController();
+    pending.current = controller;
+    setWaiving(index);
+    setApprovalError(null);
+    try {
+      const waiver = await request<PublicationWaiver>(`runs/${runId}/result/waivers`, {
+        method: "POST",
+        headers: { "X-Refactra-CSRF": "1" },
+        body: JSON.stringify({ result_id: result.id, result_sha256: result.sha256, check_index: index, reason }),
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(65000)]),
+      });
+      if (!controller.signal.aborted) {
+        setProgress((current) => current?.result?.id === result.id ? { ...current, result: {
+          ...current.result,
+          publication_waivers: [...(current.result.publication_waivers ?? []), waiver],
+        } } : current);
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setApprovalError(error instanceof Error ? error.message : "Could not record the waiver.");
+      }
+    } finally {
+      pending.current = null;
+      if (!controller.signal.aborted) setWaiving(null);
+    }
+  }
+
   const result = progress?.result;
   const target = result?.publication_target;
   const publication = result?.publication;
+  const waivers = result?.publication_waivers ?? [];
+  const waiverFor = (index: number, checkId: string) =>
+    waivers.find((waiver) => waiver.check_index === index && waiver.check_id === checkId);
+  // Required checks that could not run block publication until the owner waives each one.
+  const unwaived = result?.validation.filter((check, index) =>
+    check.required && check.status !== "PASSED" && !waiverFor(index, check.check_id)).length ?? 0;
+  const canWaive = status === "idle" && Boolean(target) && !result?.publication_approval && !publication;
   const activity = status && status !== "failed" && status !== "idle" ? activeMessages[status] : null;
   return (
     <section className="saved-run" aria-labelledby="candidate-result-title">
@@ -150,15 +192,27 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
           <div><dt>Result SHA-256</dt><dd><code>{result.sha256}</code></dd></div>
         </dl>
         <h5>Validation checks</h5>
-        <ul>{result.validation.map((check, index) => (
-          <li key={index}>
-            <code>{check.check_id}</code> · {check.status}
+        <ul>{result.validation.map((check, index) => {
+          const waiver = waiverFor(index, check.check_id);
+          const reasonId = `waiver-reason-${index}`;
+          return <li key={index}>
+            <code>{check.check_id}</code> · {check.status} · {check.required ? "Required" : "Optional"}
             {check.exit_code !== null && <span> · Exit code {check.exit_code}</span>}
             {check.paths.length > 0 && <p>Files {check.paths.join(", ")}</p>}
             {check.reason && <p>{check.reason}</p>}
             {check.output && <pre className="analysis-result">{check.output}</pre>}
-          </li>
-        ))}</ul>
+            {waiver && <p role="status">Waived by the owner: {waiver.reason}</p>}
+            {!waiver && check.required && check.status === "UNAVAILABLE" && canWaive && <div>
+              <label htmlFor={reasonId}>Reason to publish without check {index + 1}</label>
+              <textarea id={reasonId} maxLength={500} rows={2} value={waiverReasons[index] ?? ""}
+                onChange={(event) => setWaiverReasons((reasons) => ({ ...reasons, [index]: event.target.value }))} />
+              <button className="repository-check" type="button" onClick={() => waiveCheck(result, index)}
+                disabled={!(waiverReasons[index] ?? "").trim() || waiving !== null || loading || approving}>
+                {waiving === index ? "Recording waiver…" : `Waive check ${index + 1}`}
+              </button>
+            </div>}
+          </li>;
+        })}</ul>
         {result.review && <>
           <h5>Plan coverage in the diff</h5>
           <ul>{result.review.files.map((file) => <li key={file.path}>
@@ -198,7 +252,8 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
           <p role="status">Publication approved for result revision {result.publication_approval.result_revision}.</p>
         ) : target ? <>
           <p role="status">Candidate ready for review.</p>
-          <button className="repository-check" type="button" onClick={() => approvePublication(result)} disabled={loading || approving || Boolean(loadError)}>
+          {unwaived > 0 && <p>Waive each required check that could not run before approving publication.</p>}
+          <button className="repository-check" type="button" onClick={() => approvePublication(result)} disabled={loading || approving || waiving !== null || unwaived > 0 || Boolean(loadError)}>
             {approving ? "Recording approval…" : "Approve publication"}
           </button>
         </> : <p>Publication target has not been prepared.</p>)}

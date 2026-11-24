@@ -26,10 +26,13 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     && (path.length === 3 || (path.length === 4 && action === "approve"));
   const isPublicationApproval = isRun && section === "result" && action === "approve"
     && path.length === 4 && request.method === "POST";
-  const sessionOnly = isRepository || isAnalysisSubmit || isRunRead || isPlanWrite || isPublicationApproval;
+  const isCheckWaiver = isRun && section === "result" && action === "waivers"
+    && path.length === 4 && request.method === "POST";
+  const isResultWrite = isPublicationApproval || isCheckWaiver;
+  const sessionOnly = isRepository || isAnalysisSubmit || isRunRead || isPlanWrite || isResultWrite;
   const readAllowed = isRepository || isRunRead || AUTH_READ_ROUTES.has(relative)
     || relative === "capabilities" || /^mock\/runs\/[0-9a-f-]{36}(\/events)?$/i.test(relative);
-  const writeAllowed = isAnalysisSubmit || isPlanWrite || isPublicationApproval
+  const writeAllowed = isAnalysisSubmit || isPlanWrite || isResultWrite
     || relative === "mock/runs" || relative === "auth/logout";
   if (!(request.method === "GET" ? readAllowed : request.method === "POST" && writeAllowed)) {
     return NextResponse.json({ error: { code: "unavailable_route", message: "This route is not available in the foundation build." } }, { status: 404, headers: { "Cache-Control": "no-store" } });
@@ -44,7 +47,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
         .filter((item) => allowedCookies.has(item.slice(0, item.indexOf("=")))).join("; ");
       if (cookies) headers.set("Cookie", cookies);
     }
-    if (isAuth || isAnalysisSubmit || isPlanWrite || isPublicationApproval) {
+    if (isAuth || isAnalysisSubmit || isPlanWrite || isResultWrite) {
       // Preserve browser-supplied values; inventing a trusted Origin would bypass CSRF checks.
       for (const name of ["Origin", "X-Refactra-CSRF"]) {
         const value = request.headers.get(name);
