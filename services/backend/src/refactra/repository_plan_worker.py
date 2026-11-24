@@ -3,7 +3,6 @@
 import argparse
 import json
 import os
-from pathlib import Path
 from uuid import UUID, uuid5
 
 import httpx
@@ -13,12 +12,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from refactra.analysis_request import BudgetExceeded
-from refactra.auth_sessions import GitHubIdentity
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.diagnostics import workflow_log
-from refactra.github_app import GitHubAppClient, GitHubAppError, InstallationToken
-from refactra.github_repository_access import require_github_write_access
+from refactra.github_app import GitHubAppError, InstallationToken
 from refactra.models import ModelReservation, Run, RunEvent
 from refactra.openai_analysis import (
     AnalysisProviderError,
@@ -34,38 +31,17 @@ from refactra.refactoring_plan import (
     load_refactoring_plan,
     save_refactoring_plan,
 )
-from refactra.repository_access import RepositoryAccessPolicy
 from refactra.repository_analysis_worker import (
     GENERATE_PLAN,
     WORKFLOW,
     _claimed_command,
     initial_plan_command_key,
 )
+from refactra.run_access import authorize_run_repository
 
 
 class PlanGenerationError(ValueError):
     """Source-free stop reason suitable for operator output."""
-
-
-def authorize_run_repository(run: Run) -> tuple[GitHubAppClient, InstallationToken]:
-    """Recheck the pinned run owner's permission and return the App and read token."""
-    policy = RepositoryAccessPolicy.from_env()
-    installation_id = int(os.environ["REFACTRA_GITHUB_INSTALLATION_ID"])
-    if (
-        run.github_repository_id != policy.repository_id
-        or run.requested_by not in policy.allowed_user_ids
-        or installation_id != run.github_installation_id
-        or installation_id <= 0
-    ):
-        raise ValueError("Repository access is not allowed.")
-    app = GitHubAppClient(
-        os.environ["REFACTRA_GITHUB_CLIENT_ID"],
-        Path(os.environ["REFACTRA_GITHUB_PRIVATE_KEY_PATH"]).read_bytes(),
-    )
-    token = require_github_write_access(
-        app, installation_id, run.github_repository_id, GitHubIdentity(run.requested_by, "operator")
-    )
-    return app, token
 
 
 def authorize_plan(run: Run) -> tuple[InstallationToken, httpx.BaseTransport | None]:

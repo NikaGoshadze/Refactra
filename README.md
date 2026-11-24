@@ -238,6 +238,8 @@ Migration `0005_model_usage` adds nullable pricing and usage fields and an all-o
 
 After authorizing model use for the repository, an internal caller can queue a prepared run with `enqueue_repository_analysis(session, run_id)`. The worker uses its saved, pinned context and GPT-5.4 mini with the default 3,000-token output allowance. Set `REFACTRA_OPENAI_API_KEY` in the worker environment and start `uv run python -m refactra.worker --repository-analysis` after applying migrations. Choose either mock or repository analysis mode for the single worker slot.
 
+Before its first model request, including token counting, the worker rechecks the run owner's allowlist entry and current GitHub write access. It therefore also needs the protected repository settings and the PEM path. Revoked access stops the run with `analysis_access_revoked`. If GitHub cannot verify access, the worker retries up to three times, 15 seconds apart, and then stops with `analysis_access_unavailable`. Missing settings stop it with `analysis_access_unconfigured`.
+
 Migration `0007_analysis_results` adds `run_analysis_results`. The worker saves the result as untrusted text and transitions the run to `NEEDS_HUMAN_REVIEW` in the same transaction. Budget receipts are committed before generation. If a restarted worker finds a receipt without a saved result, it records an unknown outcome or missing result and stops that run.
 
 ## Protected analysis submission

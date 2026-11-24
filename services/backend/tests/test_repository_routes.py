@@ -283,7 +283,9 @@ def test_run_status_returns_the_saved_worker_result(browser, session_factory):
 
     provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(model))
     command = claim_command(session_factory, "fixture-worker", workflow=WORKFLOW)
-    assert process_repository_analysis(session_factory, command, "fixture-worker", provider)
+    assert process_repository_analysis(
+        session_factory, command, "fixture-worker", provider, authorize=lambda _run: None
+    )
     result = client.get(url)
     assert result.status_code == 200
     assert result.headers["cache-control"] == "no-store"
