@@ -1,12 +1,15 @@
 """Process read-only repository workflow commands."""
 
+from datetime import timedelta
 from uuid import UUID
 
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from refactra.analysis_context import load_analysis_context
 from refactra.analysis_request import BudgetExceeded
+from refactra.github_app import GitHubAppError
 from refactra.models import ModelReservation, Run, RunAnalysisResult, RunCommand, RunEvent
 from refactra.openai_analysis import (
     AnalysisProviderError,
@@ -24,9 +27,13 @@ from refactra.refactoring_plan import (
     load_approved_plan,
     validation_command_key,
 )
+from refactra.run_access import RunAccessDenied, authorize_run_repository
 
 WORKFLOW = "repository-v0.1"
 GENERATE_CANDIDATE = "GENERATE_CANDIDATE"
+ACCESS_RETRY_ATTEMPTS = 3
+ACCESS_RETRY_DELAY = timedelta(seconds=15)
+ANALYSIS_ACCESS_RETRY = "ANALYSIS_ACCESS_RETRY"
 
 
 def initial_plan_command_key(run_id: UUID) -> str:
@@ -91,8 +98,51 @@ def _finish(
     session.add(RunEvent(run_id=run.id, event_type="RUN_STOPPED", payload={"code": code}))
 
 
+def _access_outcome(authorize, run: Run) -> str | None:
+    """Return None while the run owner keeps access, otherwise a source-free stop code."""
+    try:
+        authorize(run)
+    except (RunAccessDenied, HTTPException):
+        return "analysis_access_revoked"
+    except GitHubAppError:
+        return "analysis_access_unavailable"
+    except (KeyError, OSError, ValueError):
+        return "analysis_access_unconfigured"
+    return None
+
+
+def _stop_for_access(session_factory, command_id, worker_id, attempt, run_id, code) -> bool:
+    with session_factory.begin() as session:
+        command = _claimed_command(session, command_id, worker_id)
+        if command is None or command.attempts != attempt:
+            return False
+        now = session.scalar(select(func.now()))
+        if code == "analysis_access_unavailable" and attempt < ACCESS_RETRY_ATTEMPTS:
+            # GitHub may recover; no provider request has been made for this command.
+            command.status = "PENDING"
+            command.claimed_by = None
+            command.lease_until = None
+            command.available_at = now + ACCESS_RETRY_DELAY
+            session.add(
+                RunEvent(
+                    run_id=run_id,
+                    event_type=ANALYSIS_ACCESS_RETRY,
+                    payload={"code": code, "attempt": attempt},
+                )
+            )
+            return True
+        _finish(session, command, session.get(Run, run_id, with_for_update=True), now, code=code)
+        return True
+
+
 def process_repository_analysis(
-    session_factory, command_id: UUID, worker_id: str, provider, *, queue_plan: bool = False
+    session_factory,
+    command_id: UUID,
+    worker_id: str,
+    provider,
+    *,
+    queue_plan: bool = False,
+    authorize=None,
 ) -> bool:
     with session_factory.begin() as session:
         command = _claimed_command(session, command_id, worker_id)
@@ -127,6 +177,12 @@ def process_repository_analysis(
             run.updated_at = now
             session.add(RunEvent(run_id=run_id, event_type="ANALYSIS_STARTED", payload={}))
         attempt = command.attempts
+
+    # Access may have changed since submission. Recheck before any provider call,
+    # including remote token counting.
+    access = _access_outcome(authorize or authorize_run_repository, run)
+    if access is not None:
+        return _stop_for_access(session_factory, command_id, worker_id, attempt, run_id, access)
 
     def check_admission(session):
         command = _claimed_command(session, command_id, worker_id)

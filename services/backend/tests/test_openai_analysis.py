@@ -210,7 +210,9 @@ def test_over_budget_read_only_request_recounts_a_pinned_excerpt(session_factory
 
     provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(handle))
     command = claim_command(session_factory, "fixture", workflow=WORKFLOW)
-    assert process_repository_analysis(session_factory, command, "fixture", provider)
+    assert process_repository_analysis(
+        session_factory, command, "fixture", provider, authorize=lambda _run: None
+    )
     attempt = uuid4() if planning else command
     if planning:
         requests.clear()

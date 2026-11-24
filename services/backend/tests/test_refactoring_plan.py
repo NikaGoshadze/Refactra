@@ -10,7 +10,9 @@ import pytest
 from alembic import command
 from sqlalchemy import select
 
+import refactra.repository_analysis_worker as analysis_worker
 import refactra.repository_plan_worker as planner
+import refactra.run_access as run_access
 import refactra.worker as worker
 from refactra.analysis_context import prepare_analysis_context, save_analysis_context
 from refactra.analysis_request import BudgetExceeded
@@ -163,7 +165,12 @@ def analyze_fixture_run(session_factory, *, queue_plan=False):
     provider = OpenAIAnalysisProvider("fixture", httpx.MockTransport(mock_model))
     command = claim_command(session_factory, "fixture", workflow=WORKFLOW)
     assert process_repository_analysis(
-        session_factory, command, "fixture", provider, queue_plan=queue_plan
+        session_factory,
+        command,
+        "fixture",
+        provider,
+        queue_plan=queue_plan,
+        authorize=lambda _run: None,
     )
 
 
@@ -331,6 +338,7 @@ def test_workflow_worker_saves_initial_plan_without_a_manual_command(
             raise ValueError("Private authorization failure.")
 
     monkeypatch.setattr(planner, "authorize_plan", authorize)
+    monkeypatch.setattr(analysis_worker, "authorize_run_repository", lambda _run: None)
     monkeypatch.setattr(worker, "make_engine", lambda _: database)
     monkeypatch.setattr(worker, "OpenAIAnalysisProvider", lambda _: provider)
     monkeypatch.setattr(worker, "WORKER_LOCK", run.id.int >> 65)
@@ -492,7 +500,7 @@ def test_operator_plan_uses_saved_inputs_and_one_paid_receipt(
     def verify_permission(app, installation, repository, user):
         assert (installation, repository, user.user_id) == (77, 42, run.requested_by)
 
-    monkeypatch.setattr(planner, "require_github_write_access", verify_permission)
+    monkeypatch.setattr(run_access, "require_github_write_access", verify_permission)
     legacy_id = uuid5(run.id, "repository:initial-plan")
     attempt_id = uuid5(run.id, "repository:initial-plan:structured-v1")
     requests = []

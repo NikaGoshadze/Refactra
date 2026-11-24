@@ -77,6 +77,9 @@ from refactra.schemas import (
 from refactra.session_routes import is_trusted_mutation
 
 ANALYSIS_FAILURE_MESSAGES = {
+    "analysis_access_revoked": "The run owner no longer has access to this repository.",
+    "analysis_access_unavailable": "GitHub access could not be verified. Submit the run again.",
+    "analysis_access_unconfigured": "The worker's repository access settings are unavailable.",
     "analysis_budget_exceeded": "The run reached an analysis budget limit.",
     "analysis_input_invalid": "The saved input could not be analyzed.",
     "analysis_outcome_unknown": "The model request outcome could not be confirmed.",
