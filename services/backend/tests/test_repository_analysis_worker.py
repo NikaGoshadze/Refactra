@@ -5,6 +5,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import func, select
 
+from refactra import repository_analysis_worker as analysis_worker
 from refactra.analysis_context import save_analysis_context
 from refactra.github_app import GitHubAppError
 from refactra.models import ModelReservation, Run, RunAnalysisResult, RunCommand, RunEvent
@@ -16,6 +17,7 @@ from refactra.openai_analysis import (
 from refactra.repository_analysis_worker import (
     ACCESS_RETRY_ATTEMPTS,
     ANALYSIS_ACCESS_RETRY,
+    GENERATE_PLAN,
     WORKFLOW,
     enqueue_repository_analysis,
     process_repository_analysis,
@@ -193,6 +195,93 @@ def test_temporary_github_failure_retries_without_provider_calls(session_factory
             assert session.get(ModelReservation, command_id) is None
             assert session.get(Run, run_id).status == "FAILED"
             assert _stop_code(session) == "analysis_access_unavailable"
+
+
+class _Crash(BaseException):
+    """Simulate the worker process dying; not caught by worker error handling."""
+
+
+def _plan_commands(session, run_id):
+    return session.scalars(
+        select(RunCommand).where(RunCommand.run_id == run_id, RunCommand.kind == GENERATE_PLAN)
+    ).all()
+
+
+def test_crash_after_settlement_keeps_the_paid_result_and_one_successor(
+    session_factory, queued, monkeypatch
+):
+    run_id, command_id = queued
+    calls = []
+    real_execute = analysis_worker.execute_read_only_analysis
+
+    def execute_then_crash(*args, **kwargs):
+        real_execute(*args, **kwargs)
+        raise _Crash()
+
+    monkeypatch.setattr(analysis_worker, "execute_read_only_analysis", execute_then_crash)
+    assert claim_command(session_factory, "worker", workflow=WORKFLOW) == command_id
+    with pytest.raises(_Crash):
+        process_repository_analysis(
+            session_factory,
+            command_id,
+            "worker",
+            _recording_provider(calls),
+            queue_plan=True,
+            authorize=lambda _run: None,
+        )
+
+    assert calls == ["/v1/responses/input_tokens", "/v1/responses"]
+    assert claim_command(session_factory, "restart", workflow=WORKFLOW) is None
+    with session_factory() as session:
+        assert session.get(ModelReservation, command_id).settled_at is not None
+        assert session.get(RunAnalysisResult, run_id).reservation_id == command_id
+        assert session.get(Run, run_id).status == "NEEDS_HUMAN_REVIEW"
+        assert session.get(RunCommand, command_id).status == "DONE"
+        assert len(_plan_commands(session, run_id)) == 1
+        assert _stop_code(session) == "analysis_ready"
+
+
+def test_restart_advances_a_saved_result_without_resending(session_factory, queued):
+    run_id, command_id = queued
+    calls = []
+    provider = _recording_provider(calls)
+
+    def save_result_only(session, result):
+        # The result committed with settlement, but the command was never completed.
+        session.add(
+            RunAnalysisResult(
+                run_id=run_id,
+                reservation_id=command_id,
+                response_id=result.response_id,
+                analysis_text=result.text,
+            )
+        )
+
+    assert claim_command(session_factory, "old", workflow=WORKFLOW) == command_id
+    execute_read_only_analysis(
+        session_factory, run_id, command_id, provider, save_response=save_result_only
+    )
+    with session_factory.begin() as session:
+        session.get(RunCommand, command_id).lease_until = session.scalar(
+            select(func.now())
+        ) - timedelta(seconds=1)
+    assert claim_command(session_factory, "new", workflow=WORKFLOW) == command_id
+    assert process_repository_analysis(
+        session_factory,
+        command_id,
+        "new",
+        provider,
+        queue_plan=True,
+        authorize=lambda _run: pytest.fail("A saved result needs no new authorization."),
+    )
+
+    assert calls == ["/v1/responses/input_tokens", "/v1/responses"]
+    assert claim_command(session_factory, "new", workflow=WORKFLOW) is None
+    with session_factory() as session:
+        assert session.get(Run, run_id).status == "NEEDS_HUMAN_REVIEW"
+        assert session.get(RunCommand, command_id).status == "DONE"
+        assert len(_plan_commands(session, run_id)) == 1
+        assert _stop_code(session) == "analysis_ready"
 
 
 @pytest.mark.parametrize("settled", [True, False])

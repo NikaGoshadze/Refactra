@@ -240,7 +240,7 @@ After authorizing model use for the repository, an internal caller can queue a p
 
 Before its first model request, including token counting, the worker rechecks the run owner's allowlist entry and current GitHub write access. It therefore also needs the protected repository settings and the PEM path. Revoked access stops the run with `analysis_access_revoked`. If GitHub cannot verify access, the worker retries up to three times, 15 seconds apart, and then stops with `analysis_access_unavailable`. Missing settings stop it with `analysis_access_unconfigured`.
 
-Migration `0007_analysis_results` adds `run_analysis_results`. The worker saves the result as untrusted text and transitions the run to `NEEDS_HUMAN_REVIEW` in the same transaction. Budget receipts are committed before generation. If a restarted worker finds a receipt without a saved result, it records an unknown outcome or missing result and stops that run.
+Migration `0007_analysis_results` adds `run_analysis_results`. The worker saves the result as untrusted text, transitions the run to `NEEDS_HUMAN_REVIEW` and queues any plan command in the same transaction that settles the model usage, so a crash after the response cannot lose a paid result. Budget receipts are committed before generation. A restarted worker that finds a saved result advances the run from it without another request. If it finds a receipt without a saved result, it records an unknown outcome or missing result and stops that run.
 
 ## Protected analysis submission
 
