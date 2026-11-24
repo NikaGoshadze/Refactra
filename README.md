@@ -396,10 +396,12 @@ To see persistence directly, stop the worker with `docker compose stop worker`, 
 
 ## Checks
 
-Backend integration tests use real PostgreSQL and migrate a unique disposable schema per test. They never truncate the application tables:
+GitHub Actions ([ci.yml](.github/workflows/ci.yml)) runs on every pull request and push to `main`. The backend job runs Ruff and the full pytest suite against a PostgreSQL 17 service. The web job runs lint, build, typecheck and the proxy integration tests below. Docker-based validation tests stay opt-in and are skipped there.
+
+Backend integration tests use real PostgreSQL and migrate a unique disposable schema per test. They never truncate the application tables. The Compose `test` service builds a separate `refactra-backend:test` image that adds Git for the commit tests. The benchmark operator test runs only against a localhost database, so it is skipped in Compose:
 
 ```powershell
-docker compose --profile test run --rm test
+docker compose --profile test run --build --rm test
 docker compose run --rm api uv run --no-sync ruff check .
 docker compose run --rm api uv run --no-sync ruff format --check .
 ```
