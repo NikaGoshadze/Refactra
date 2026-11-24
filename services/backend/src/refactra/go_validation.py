@@ -28,7 +28,14 @@ def go_source_path(path: str) -> bool:
     return path.endswith(".go") or PurePosixPath(path).name == "go.mod"
 
 
-def go_invocation(root: Path, paths: list[str]) -> GoInvocation:
+def go_invocation(
+    root: Path, paths: list[str], deleted: frozenset[str] = frozenset()
+) -> GoInvocation:
+    """Build `go test` for the packages behind paths.
+
+    A deleted file tests its remaining package. When no Go files remain in that package,
+    the whole module is tested so code that imported it is still built.
+    """
     packages = sorted({PurePosixPath(path).parent for path in paths})
     modules = set()
     for package in packages:
@@ -49,10 +56,15 @@ def go_invocation(root: Path, paths: list[str]) -> GoInvocation:
     arguments = ["test", "-count=1", "-timeout=45s"]
     if not standalone:
         arguments.append("-mod=readonly")
-    if all(PurePosixPath(path).name == "go.mod" for path in paths):
+    go_files = [PurePosixPath(path) for path in paths if path.endswith(".go")]
+    removed_package = any(
+        path.as_posix() in deleted and not any(root.joinpath(*path.parent.parts).glob("*.go"))
+        for path in go_files
+    )
+    if removed_package or all(PurePosixPath(path).name == "go.mod" for path in paths):
         arguments.append("./...")
     else:
-        go_packages = sorted({PurePosixPath(path).parent for path in paths if path.endswith(".go")})
+        go_packages = sorted({path.parent for path in go_files})
         arguments.extend(
             "." if package == directory else f"./{package.relative_to(directory)}"
             for package in go_packages
