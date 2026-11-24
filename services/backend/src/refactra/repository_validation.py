@@ -10,11 +10,17 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
-from time import monotonic
+from time import monotonic, time
 from typing import TYPE_CHECKING
+from uuid import UUID
 
+from sqlalchemy import func, select
+from sqlalchemy.engine import make_url
+
+from refactra.config import Settings
 from refactra.diagnostics import workflow_log
 from refactra.go_validation import GO_ENV, GO_IMAGE, GO_TMPFS, go_invocation, go_source_path
+from refactra.models import RunCommand
 from refactra.python_dependency_cache import PythonLockError, pinned_python_requirements
 from refactra.python_test_support import (
     NO_ROUTE_REQUESTS,
@@ -48,6 +54,11 @@ USER = "10001:10001"
 TMPFS = "rw,noexec,nosuid,nodev,size=64m"
 SECURITY_OPTIONS = ["no-new-privileges", "seccomp=builtin"]
 _PYTHON_CHECKS = {"python.pytest", FLASK_CHECK}
+CONTAINER_LABEL = "org.refactra.validation"
+# The runner kills its own command after this many seconds, so a container started by a
+# worker that was killed still stops. It outlasts the worker's CHECK_TIMEOUT.
+CONTAINER_DEADLINE = CHECK_TIMEOUT + 60
+OPERATOR_COMMAND = "operator"
 
 
 class RepositoryValidationError(ValueError):
@@ -56,6 +67,84 @@ class RepositoryValidationError(ValueError):
 
 class ValidationCleanupError(RepositoryValidationError):
     """The isolated runner could not be removed after use."""
+
+
+@dataclass(frozen=True)
+class ContainerOwner:
+    """Labels that let a replacement worker find runners left by an interrupted attempt."""
+
+    instance: str
+    command: str
+    attempt: int
+
+
+def validation_instance() -> str:
+    """Identify this Refactra database so cleanup never touches another installation's runners."""
+    url = make_url(Settings.from_env().database_url)
+    return sha256(f"{url.host}:{url.port}/{url.database}".encode()).hexdigest()[:16]
+
+
+def operator_owner() -> ContainerOwner:
+    return ContainerOwner(validation_instance(), OPERATOR_COMMAND, 0)
+
+
+def reconcile_validation_containers(session_factory, instance: str | None = None) -> int:
+    """Remove this instance's runners whose attempt is no longer active or whose deadline passed.
+
+    A runner stays while its command is still claimed with the same attempt and an unexpired
+    lease, so an active attempt (including another worker's) keeps running. Containers without
+    this instance's labels are never listed.
+    """
+    instance = instance or validation_instance()
+    labels = ("command", "attempt", "deadline")
+    fields = "|".join(f'{{{{.Label "{CONTAINER_LABEL}.{name}"}}}}' for name in labels)
+    try:
+        listing = _docker(
+            "ps",
+            "--all",
+            "--filter",
+            f"label={CONTAINER_LABEL}=1",
+            "--filter",
+            f"label={CONTAINER_LABEL}.instance={instance}",
+            "--format",
+            f"{{{{.ID}}}}|{fields}",
+        )
+    except RepositoryValidationError:
+        workflow_log("validation_reconcile_skipped", warning=True, reason="docker_unavailable")
+        return 0
+    removed = 0
+    with session_factory() as session:
+        database_now = session.scalar(select(func.now()))
+        for line in filter(None, listing.splitlines()):
+            container, command, attempt, deadline = (line.split("|") + ["", "", ""])[:4]
+            try:
+                expired = int(deadline) <= time()
+            except ValueError:
+                expired = True
+            active = not expired and command == OPERATOR_COMMAND
+            if not expired and command != OPERATOR_COMMAND:
+                try:
+                    claim = session.get(RunCommand, UUID(command))
+                except ValueError:
+                    claim = None
+                active = (
+                    claim is not None
+                    and claim.status == "CLAIMED"
+                    and str(claim.attempts) == attempt
+                    and claim.lease_until > database_now
+                )
+            if active:
+                continue
+            try:
+                _docker("rm", "-f", container)
+                removed += 1
+            except RepositoryValidationError:
+                workflow_log(
+                    "validation_container_cleanup_failed", warning=True, container=container[:12]
+                )
+    if removed:
+        workflow_log("validation_containers_reconciled", removed=removed)
+    return removed
 
 
 @dataclass(frozen=True)
@@ -248,6 +337,7 @@ def _verify_isolation(info: dict, tmpfs: str = TMPFS) -> None:
         "MemorySwap": 2 * 1024**3,
         "PidsLimit": 128,
         "Tmpfs": {"/tmp": tmpfs},
+        "Init": True,
         "PidMode": "",
         "PortBindings": {},
     }
@@ -288,8 +378,13 @@ def _capture(container: str) -> tuple[bytes, str | None]:
 
 
 def _validate_check(
-    workspace: "ApprovedWorkspace", check: CandidateCheck, targets: list[str], image_id: str
+    workspace: "ApprovedWorkspace",
+    check: CandidateCheck,
+    targets: list[str],
+    image_id: str,
+    owner: ContainerOwner | None = None,
 ) -> ValidationResult:
+    owner = owner or operator_owner()
     entrypoint = "/app/.venv/bin/python"
     workdir, tmpfs = "/workspace", TMPFS
     environment = ["--env", "HOME=/tmp", "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1"]
@@ -349,10 +444,24 @@ def _validate_check(
         standalone_go = go.standalone
         for setting in (*GO_ENV, f"GO111MODULE={'off' if standalone_go else 'on'}"):
             environment.extend(("--env", setting))
+    labels = {
+        CONTAINER_LABEL: "1",
+        f"{CONTAINER_LABEL}.instance": owner.instance,
+        f"{CONTAINER_LABEL}.command": owner.command,
+        f"{CONTAINER_LABEL}.attempt": str(owner.attempt),
+        # Reconciliation may remove the runner after its own deadline plus a margin.
+        f"{CONTAINER_LABEL}.deadline": str(int(time()) + CONTAINER_DEADLINE + 30),
+    }
     container = _docker(
         "create",
         "--pull",
         "never",
+        "--init",
+        *(
+            argument
+            for name, value in labels.items()
+            for argument in ("--label", f"{name}={value}")
+        ),
         "--network",
         "none",
         "--read-only",
@@ -382,8 +491,12 @@ def _validate_check(
         workdir,
         *environment,
         "--entrypoint",
-        entrypoint,
+        "timeout",
         image_id,
+        "-s",
+        "KILL",
+        str(CONTAINER_DEADLINE),
+        entrypoint,
         *arguments,
     )
     try:
@@ -449,7 +562,9 @@ def _validate_check(
             raise ValidationCleanupError(str(error)) from error
 
 
-def validate_candidate(workspace: "ApprovedWorkspace") -> list[ValidationResult]:
+def validate_candidate(
+    workspace: "ApprovedWorkspace", owner: ContainerOwner | None = None
+) -> list[ValidationResult]:
     operation = approved_file_operation(workspace.changes, workspace.validation_checks)
     results = []
     image_id = ""
@@ -469,7 +584,7 @@ def validate_candidate(workspace: "ApprovedWorkspace") -> list[ValidationResult]
                     raise RepositoryValidationError(
                         "The offline Go validation image is unavailable."
                     ) from None
-                results.append(_validate_check(workspace, check, targets, runner))
+                results.append(_validate_check(workspace, check, targets, runner, owner))
                 continue
             if image_error:
                 raise RepositoryValidationError(image_error)
@@ -490,7 +605,7 @@ def validate_candidate(workspace: "ApprovedWorkspace") -> list[ValidationResult]
                         python_image_error = str(error)
                         raise RepositoryValidationError(python_image_error) from None
                 runner = python_image
-            results.append(_validate_check(workspace, check, targets, runner))
+            results.append(_validate_check(workspace, check, targets, runner, owner))
         except ValidationCleanupError:
             raise
         except RepositoryValidationError as error:

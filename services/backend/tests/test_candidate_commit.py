@@ -147,7 +147,8 @@ def test_worker_validates_generated_patch_and_recovers_commit_preparation(
             raise validation.RepositoryValidationError("Offline image missing.")
         return "fixture"
 
-    def validate(staged, check, targets, image_id):
+    def validate(staged, check, targets, image_id, owner):
+        assert owner.command == str(job) and owner.attempt >= 1
         assert (staged.root / "src/cart.py").read_text().strip() == "def cart(): return 2"
         calls.append(staged.base_sha)
         return ValidationResult(

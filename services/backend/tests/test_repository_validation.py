@@ -2,12 +2,16 @@ import json
 import os
 import subprocess
 import sys
+import time
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from sqlalchemy import func, select
 
 from refactra import repository_validation as validation
 from refactra.go_validation import go_invocation
+from refactra.models import Run, RunCommand
 from refactra.python_dependency_cache import PythonLockError, pinned_python_requirements
 from refactra.python_test_support import (
     PYTEST_ENTRY,
@@ -333,3 +337,169 @@ def test_failed_lock_preparation_leaves_patch_review_available(tmp_path, monkeyp
     checks = validation.validate_candidate(workspace)
     assert checks[0].status == "UNAVAILABLE" and "exact package versions" in checks[0].reason
     assert checks[1].status == "PASSED" and not validation.blocks_candidate(checks)
+
+
+def test_runners_are_labeled_for_reconciliation_and_stop_themselves(tmp_path, monkeypatch):
+    calls = []
+
+    def docker(*args, **_kwargs):
+        calls.append(args)
+        if args[0] == "create":
+            return "runner-id"
+        if args[0] == "inspect":
+            return json.dumps({"HostConfig": {"NetworkMode": "bridge"}, "Mounts": []})
+        return ""
+
+    monkeypatch.setattr(validation, "_docker", docker)
+    workspace = ApprovedWorkspace(tmp_path, "a" * 40, 1, "b" * 64, 0, ())
+    check = validation.CandidateCheck("typescript.tsc", ["tsconfig.json"], True)
+    owner = validation.ContainerOwner("instance-a", "command-1", 2)
+    with pytest.raises(validation.RepositoryValidationError, match="isolation"):
+        validation._validate_check(workspace, check, ["./tsconfig.json"], "sha256:image", owner)
+    create = calls[0]
+    assert create[0] == "create" and "--init" in create
+    labels = {create[index + 1] for index, item in enumerate(create) if item == "--label"}
+    prefix = validation.CONTAINER_LABEL
+    assert {
+        f"{prefix}=1",
+        f"{prefix}.instance=instance-a",
+        f"{prefix}.command=command-1",
+        f"{prefix}.attempt=2",
+    } <= labels
+    deadline = next(int(item.split("=")[1]) for item in labels if ".deadline=" in item)
+    assert deadline > time.time() + validation.CONTAINER_DEADLINE
+    image = create.index("sha256:image")
+    assert create[image - 2 : image] == ("--entrypoint", "timeout")
+    assert create[image + 1 : image + 5] == (
+        "-s",
+        "KILL",
+        str(validation.CONTAINER_DEADLINE),
+        "/usr/local/bin/node",
+    )
+    assert calls[-1] == ("rm", "-f", "runner-id")
+
+
+def _command(session, *, status, attempts, lease_seconds):
+    run = Run(task_text="Reconcile runners")
+    session.add(run)
+    session.flush()
+    now = session.scalar(select(func.now()))
+    command = RunCommand(
+        run_id=run.id,
+        kind="VALIDATE_CANDIDATE",
+        dedupe_key=f"validation:{run.id}",
+        status=status,
+        attempts=attempts,
+        claimed_by="worker" if status == "CLAIMED" else None,
+        lease_until=now + timedelta(seconds=lease_seconds) if status == "CLAIMED" else None,
+    )
+    session.add(command)
+    session.flush()
+    return str(command.id)
+
+
+def test_reconciliation_removes_only_inactive_runners_of_this_instance(
+    session_factory, monkeypatch
+):
+    with session_factory.begin() as session:
+        active = _command(session, status="CLAIMED", attempts=2, lease_seconds=60)
+        expired_lease = _command(session, status="CLAIMED", attempts=1, lease_seconds=-5)
+        finished = _command(session, status="DONE", attempts=1, lease_seconds=0)
+    future, past = int(time.time()) + 600, int(time.time()) - 5
+    listing = "\n".join(
+        [
+            f"keep-active|{active}|2|{future}",
+            f"keep-operator|operator|0|{future}",
+            f"old-attempt|{active}|1|{future}",
+            f"lease-expired|{expired_lease}|1|{future}",
+            f"finished|{finished}|1|{future}",
+            f"past-deadline|{active}|2|{past}",
+            "unlabeled-deadline|not-a-uuid|1|",
+        ]
+    )
+    calls = []
+
+    def docker(*args, **_kwargs):
+        calls.append(args)
+        return listing if args[0] == "ps" else ""
+
+    monkeypatch.setattr(validation, "_docker", docker)
+    assert validation.reconcile_validation_containers(session_factory, "instance-a") == 5
+    assert f"label={validation.CONTAINER_LABEL}.instance=instance-a" in calls[0]
+    removed = {args[2] for args in calls if args[:2] == ("rm", "-f")}
+    assert removed == {
+        "old-attempt",
+        "lease-expired",
+        "finished",
+        "past-deadline",
+        "unlabeled-deadline",
+    }
+
+
+def test_reconciliation_skips_quietly_without_docker(session_factory, monkeypatch):
+    def unavailable(*_args, **_kwargs):
+        raise validation.RepositoryValidationError("Docker is unavailable.")
+
+    monkeypatch.setattr(validation, "_docker", unavailable)
+    assert validation.reconcile_validation_containers(session_factory, "instance-a") == 0
+
+
+@pytest.mark.skipif(os.getenv("REFACTRA_TEST_PYTHON_DOCKER") != "1", reason="Requires Docker.")
+def test_reconciliation_removes_real_orphans_and_leaves_other_containers(session_factory):
+    with session_factory.begin() as session:
+        finished = _command(session, status="DONE", attempts=1, lease_seconds=0)
+        active = _command(session, status="CLAIMED", attempts=1, lease_seconds=120)
+    instance = f"test-{time.time_ns()}"
+    deadline = str(int(time.time()) + 600)
+
+    def start(name, command, attempt="1", labeled=True):
+        labels = []
+        if labeled:
+            prefix = validation.CONTAINER_LABEL
+            for key, value in {
+                prefix: "1",
+                f"{prefix}.instance": instance,
+                f"{prefix}.command": command,
+                f"{prefix}.attempt": attempt,
+                f"{prefix}.deadline": deadline,
+            }.items():
+                labels += ["--label", f"{key}={value}"]
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                name,
+                "--init",
+                "--network",
+                "none",
+                *labels,
+                "--entrypoint",
+                "sleep",
+                validation.IMAGE,
+                "300",
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    names = {
+        "orphan": f"{instance}-orphan",
+        "active": f"{instance}-active",
+        "unrelated": f"{instance}-unrelated",
+    }
+    try:
+        start(names["orphan"], finished)
+        start(names["active"], active)
+        start(names["unrelated"], finished, labeled=False)
+        assert validation.reconcile_validation_containers(session_factory, instance) == 1
+        running = subprocess.run(
+            ["docker", "ps", "-a", "--filter", f"name={instance}", "--format", "{{.Names}}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.split()
+        assert sorted(running) == sorted([names["active"], names["unrelated"]])
+    finally:
+        subprocess.run(["docker", "rm", "-f", *names.values()], capture_output=True)

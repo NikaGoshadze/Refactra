@@ -35,7 +35,13 @@ from refactra.repository_candidate import (
     candidate_validation_key,
     validation_command_key,
 )
-from refactra.repository_validation import ValidationResult, blocks_candidate, validate_candidate
+from refactra.repository_validation import (
+    ContainerOwner,
+    ValidationResult,
+    blocks_candidate,
+    validate_candidate,
+    validation_instance,
+)
 from refactra.repository_workspace import prepare_approved_workspace
 
 
@@ -158,7 +164,8 @@ def process_candidate_validation(
         if result is None:
             with prepare_approved_workspace(session_factory, run_id) as workspace:
                 diff = apply_candidate_patch(workspace, candidate)
-                checks = validate_candidate(workspace)
+                owner = ContainerOwner(validation_instance(), str(command_id), attempt)
+                checks = validate_candidate(workspace, owner)
             workflow_log(
                 "candidate_checks_finished",
                 run_id=run_id,

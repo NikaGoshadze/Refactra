@@ -31,6 +31,7 @@ from refactra.repository_analysis_worker import (
 )
 from refactra.repository_candidate import VALIDATE_CANDIDATE, process_repository_candidate
 from refactra.repository_plan_worker import process_initial_plan
+from refactra.repository_validation import reconcile_validation_containers
 from refactra.snapshot_preparation import PREPARE_SNAPSHOT, process_snapshot_preparation
 from refactra.worker_health import (
     HEARTBEAT_INTERVAL_SECONDS,
@@ -230,6 +231,8 @@ def main():
         if claimed_kind == APPLY_PLAN_APPROVAL:
             return process_repository_plan_approval(session_factory, command_id, worker_id)
         if claimed_kind == VALIDATE_CANDIDATE:
+            # Remove runners left by interrupted attempts before starting new ones.
+            reconcile_validation_containers(session_factory)
             return process_candidate_validation(
                 session_factory,
                 command_id,
@@ -262,6 +265,8 @@ def main():
             if not guard.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": WORKER_LOCK}):
                 raise SystemExit("Another Refactra worker holds the local execution slot.")
             record_heartbeat(session_factory, worker_id, mode, started=True)
+            if args.candidate_artifacts:
+                reconcile_validation_containers(session_factory)
             last_beat = monotonic()
             logger.info(json.dumps({"event": "worker_started", "mode": mode}))
             while not stopped.is_set():

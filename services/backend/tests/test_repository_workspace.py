@@ -387,7 +387,9 @@ def _exercise_validation_repair(session_factory, run_id, provider, monkeypatch, 
     succeeds = scenario == "validation_repair"
     checked = []
 
-    def checks(staged):
+    def checks(staged, owner):
+        # Each validation attempt labels its runners with its own command and attempt.
+        assert owner.command != "operator" and owner.attempt >= 1
         checked.append((staged.root / "tests/test_cart.py").read_text())
         failure = len(checked) == 1 or not succeeds
         return [
