@@ -4,8 +4,8 @@ COPY package.json package-lock.json ./
 COPY apps/web/package.json ./apps/web/package.json
 RUN npm ci --ignore-scripts --no-audit --no-fund
 
-FROM python:3.12.12-slim
-COPY --from=ghcr.io/astral-sh/uv:0.13.8 /uv /usr/local/bin/uv
+FROM python:3.12.16-slim
+COPY --from=ghcr.io/astral-sh/uv:0.13.9 /uv /usr/local/bin/uv
 COPY --from=typescript-tools /usr/local/bin/node /usr/local/bin/node
 COPY --from=typescript-tools /tools/node_modules/typescript /node_modules/typescript
 COPY --from=typescript-tools /tools/node_modules/@types/react /node_modules/@types/react
