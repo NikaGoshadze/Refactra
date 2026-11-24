@@ -330,6 +330,7 @@ Refactra prepares a separate image using only this lock and public PyPI wheels,
 then reuses it for the same lock and base runner image. Test execution stays offline.
 Without a lock, pytest uses the standard runner. If the locked image cannot be
 prepared, pytest is reported as unavailable and a passing patch can still reach draft review.
+Publication approval then requires a waiver for that check, as described below.
 
 Add `--save-result` to the same command to store a successful candidate, its diff, and its validation evidence in PostgreSQL. This requires migration `0011_candidate_results`. The command returns a result ID, revision, and checksum. Saving the same candidate and diff again returns the original result. A different passing candidate gets a new revision.
 
@@ -345,7 +346,11 @@ Use a trusted local clone that contains the pinned commit and a new output direc
 
 Add `--save-target` to save the verified commit and PR destination in PostgreSQL for publication review. This option requires migration `0012_publication_targets` and accepts an existing output directory when its receipt and Git ref match the recomputed commit. Repeating the command returns the same `publication_target_sha256`.
 
-Review the commit and branches in the saved result. After migration `0015_candidate_publication`, **Approve publication** records the exact target and queues publication. With the clone and artifact flags enabled, the candidate worker pushes the prepared commit and opens or recovers its draft PR. Earlier approvals can still use the operator commands below.
+Review the commit and branches in the saved result. After migration `0015_candidate_publication`, **Approve publication** records the exact target and queues publication.
+
+A required check that could not run, such as pytest without its locked dependencies, keeps the result reviewable but blocks publication approval. Enter a reason and select **Waive check** for each one first. The protected `POST /api/v1/runs/{run_id}/result/waivers` accepts `{result_id, result_sha256, check_index, reason}` from the run owner, with the trusted Origin and `X-Refactra-CSRF: 1`. A waiver applies only to that check in that exact result revision. A new result revision needs new waivers. Failed checks and optional checks cannot be waived, and waivers are locked once publication is approved. Saved results list their waivers under `publication_waivers`.
+
+With the clone and artifact flags enabled, the candidate worker pushes the prepared commit and opens or recovers its draft PR. Earlier approvals can still use the operator commands below.
 
 After approval, an operator can run `uv run python -m refactra.publication_branch <run-id> --artifact <prepared-directory>` from `services/backend`. Use the protected repository and database settings and an App installation with Contents read and write access for the selected repository. The command rechecks owner access and the pinned base, pushes the approved commit to its designated branch, and records the verified head in PostgreSQL. Repeating it with the same remote head returns the same receipt.
 
@@ -396,7 +401,7 @@ To see persistence directly, stop the worker with `docker compose stop worker`, 
 
 ## Checks
 
-GitHub Actions ([ci.yml](.github/workflows/ci.yml)) runs on every pull request and push to `main`. The backend job runs Ruff and the full pytest suite against a PostgreSQL 17 service. The web job runs lint, build, typecheck and the proxy integration tests below. Docker-based validation tests stay opt-in and are skipped there.
+GitHub Actions ([ci.yml](.github/workflows/ci.yml)) runs on every pull request and push to `main`. The backend job runs Ruff and the full pytest suite against a PostgreSQL 17 service. The web job runs lint, build, typecheck and the Playwright specs that use the isolated proxy fixture; `mock-run.spec.ts` needs the Compose stack. Docker-based validation tests stay opt-in and are skipped there.
 
 Backend integration tests use real PostgreSQL and migrate a unique disposable schema per test. They never truncate the application tables. The Compose `test` service builds a separate `refactra-backend:test` image that adds Git for the commit tests. The benchmark operator test runs only against a localhost database, so it is skipped in Compose:
 

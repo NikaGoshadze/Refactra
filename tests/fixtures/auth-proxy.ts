@@ -16,6 +16,7 @@ export const PLAN_PATH = `${RUN_PATH}/plan`;
 export const PLAN_APPROVAL_PATH = `${PLAN_PATH}/approve`;
 export const RESULT_PATH = `${RUN_PATH}/result`;
 export const PUBLICATION_APPROVAL_PATH = `${RESULT_PATH}/approve`;
+export const WAIVER_PATH = `${RESULT_PATH}/waivers`;
 export const REVISED_ARTIFACT = {
   id: "98c1fd19-7102-4250-a458-b9aa083db613", revision: 2, sha256: "c".repeat(64),
 };
@@ -126,7 +127,7 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
           setTimeout(() => response.end(JSON.stringify({ run_id: RUN_ID })), 5500);
         });
         return;
-      } else if ([PLAN_PATH, PLAN_APPROVAL_PATH, PUBLICATION_APPROVAL_PATH].includes(route) && request.method === "POST") {
+      } else if ([PLAN_PATH, PLAN_APPROVAL_PATH, PUBLICATION_APPROVAL_PATH, WAIVER_PATH].includes(route) && request.method === "POST") {
         request.setEncoding("utf8");
         call.body = "";
         request.on("data", (chunk) => { call.body += chunk; });
@@ -137,6 +138,16 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
           }
           if (!request.headers.cookie?.includes("refactra_session=fixture-session")) {
             response.writeHead(401).end(JSON.stringify({ error: { code: "authentication_required" } }));
+            return;
+          }
+          if (route === WAIVER_PATH) {
+            const { result_id, result_sha256, check_index, reason } = JSON.parse(call.body!);
+            if (result_id !== RESULT.id || result_sha256 !== RESULT.sha256) {
+              response.writeHead(409).end(JSON.stringify({ error: { code: "publication_waiver_conflict" } }));
+              return;
+            }
+            response.end(JSON.stringify({ result_id, result_sha256, check_index,
+              check_id: RESULT.validation[check_index].check_id, reason, waived_by: 12345 }));
             return;
           }
           if (route === PUBLICATION_APPROVAL_PATH) {

@@ -78,10 +78,13 @@ jobs:
         run: npm run typecheck
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
-      - name: Proxy integration tests
+      - name: Proxy and workflow UI tests
         # These start an isolated Next.js server against a simulated API; no Compose stack.
+        # mock-run.spec.ts needs the Compose stack and is not run here.
         run: >-
           npx playwright test
           tests/e2e/auth-proxy.spec.ts
           tests/e2e/repository-proxy.spec.ts
           tests/e2e/analysis-run-proxy.spec.ts
+          tests/e2e/analysis-run-form.spec.ts
+          tests/e2e/repository-connection.spec.ts

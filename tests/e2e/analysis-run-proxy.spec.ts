@@ -1,4 +1,4 @@
-import { PLAN, PLAN_APPROVAL_PATH, PLAN_PATH, PUBLICATION_APPROVAL_PATH, RESULT, RESULT_PATH, RUN_ID, RUN_PATH, SAVED_RUN, expect, test } from "../fixtures/auth-proxy";
+import { PLAN, PLAN_APPROVAL_PATH, PLAN_PATH, PUBLICATION_APPROVAL_PATH, RESULT, RESULT_PATH, RUN_ID, RUN_PATH, SAVED_RUN, WAIVER_PATH, expect, test } from "../fixtures/auth-proxy";
 
 const SUBMIT = "/api/v1/runs";
 const IDENTITY = "fd55f548-7593-46cc-ae08-9c651d1a2c3a";
@@ -46,6 +46,29 @@ for (const origin of [undefined, "https://untrusted.example"]) {
   });
 }
 
+test("check waivers forward the body, session, Origin and CSRF header", async ({ authProxy, request }) => {
+  const waiver = { result_id: RESULT.id, result_sha256: RESULT.sha256, check_index: 0, reason: "Reviewed manually." };
+  const response = await request.post(authProxy.origin + WAIVER_PATH, {
+    data: waiver,
+    headers: {
+      Cookie: `refactra_session=fixture-session; ${OTHER_COOKIES}`,
+      Authorization: "Bearer must-not-pass",
+      Origin: authProxy.origin,
+      "X-Refactra-CSRF": "1",
+    },
+  });
+  expect(response.status()).toBe(200);
+  expect(await response.json()).toEqual({ ...waiver, check_id: "python.pytest", waived_by: 12345 });
+  expect(response.headers()["cache-control"]).toBe("no-store");
+  const [call] = authProxy.calls;
+  expect([call.method, call.url]).toEqual(["POST", WAIVER_PATH]);
+  expect(JSON.parse(call.body!)).toEqual(waiver);
+  expect(call.headers.cookie).toBe("refactra_session=fixture-session");
+  expect(call.headers.authorization).toBeUndefined();
+  expect(call.headers.origin).toBe(authProxy.origin);
+  expect(call.headers["x-refactra-csrf"]).toBe("1");
+});
+
 test("status forwards the HTTPS session and returns uncached analysis", async ({ authProxy, request }) => {
   const response = await request.get(authProxy.origin + RUN_PATH, {
     headers: { Cookie: `__Host-refactra_session=fixture-session; ${OTHER_COOKIES}` },
@@ -85,6 +108,7 @@ for (const [method, route, status] of [
   ["GET", PLAN_APPROVAL_PATH, 404], ["POST", `${PLAN_APPROVAL_PATH}/extra`, 404],
   ["POST", RESULT_PATH, 404], ["GET", `${RESULT_PATH}/extra`, 404],
   ["GET", PUBLICATION_APPROVAL_PATH, 404], ["POST", `${PUBLICATION_APPROVAL_PATH}/extra`, 404],
+  ["GET", WAIVER_PATH, 404], ["POST", `${WAIVER_PATH}/extra`, 404],
   ["GET", `${RUN_PATH}/events`, 404], ["GET", `${SUBMIT}/${RUN_ID.replaceAll("-", "")}`, 404],
 ] as const) {
   test(`blocks ${method} ${route}`, async ({ authProxy, request }) => {

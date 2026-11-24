@@ -1,4 +1,4 @@
-import { PLAN, PLAN_APPROVAL_PATH, PLAN_PATH, PUBLICATION_APPROVAL_PATH, RESULT, RESULT_PATH, REVISED_ARTIFACT, RUN_ID, RUN_PATH, expect, test } from "../fixtures/auth-proxy";
+import { PLAN, PLAN_APPROVAL_PATH, PLAN_PATH, PUBLICATION_APPROVAL_PATH, RESULT, RESULT_PATH, REVISED_ARTIFACT, RUN_ID, RUN_PATH, WAIVER_PATH, expect, test } from "../fixtures/auth-proxy";
 
 const REPOSITORY_ID = 1001132861;
 const receipt = { run_id: RUN_ID, base_branch: "feature/cart", base_sha: "a".repeat(40) };
@@ -215,6 +215,36 @@ test("opens, revises, and approves a saved plan", async ({ page, authProxy }) =>
 
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(plan).toHaveCount(0);
+});
+
+test("an unavailable required check must be waived before publication approval", async ({ authProxy, page }) => {
+  const reason = "Lock image needs network; tested manually.";
+  const unavailable = { ...RESULT, publication_waivers: [], validation: [{ ...RESULT.validation[0],
+    status: "UNAVAILABLE", exit_code: null, output: "", reason: "The locked image could not be prepared." }] };
+  await page.route(`**${PLAN_PATH}`, (route) => route.fulfill({ json: { ...PLAN, approval: { revision: 1 } } }));
+  await page.route(`**${RESULT_PATH}?progress=true`, (route) => route.fulfill({
+    json: { status: "idle", message: null, result: unavailable },
+  }));
+  await page.getByText("Open a saved run", { exact: true }).click();
+  await page.getByLabel("Run ID", { exact: true }).fill(RUN_ID);
+  await page.getByRole("button", { name: "Open run", exact: true }).click();
+  const result = page.getByRole("region", { name: "Candidate result" });
+  const approve = result.getByRole("button", { name: "Approve publication" });
+  await expect(result.getByText("UNAVAILABLE · Required", { exact: false })).toBeVisible();
+  await expect(approve).toBeDisabled();
+  await expect(result.getByText("Waive each required check that could not run before approving publication.")).toBeVisible();
+  const waive = result.getByRole("button", { name: "Waive check 1" });
+  await expect(waive).toBeDisabled();
+  await result.getByLabel("Reason to publish without check 1").fill(`  ${reason}  `);
+  await waive.click();
+  await expect(result.getByText(`Waived by the owner: ${reason}`)).toBeVisible();
+  const call = authProxy.calls.findLast((item) => item.method === "POST" && item.url === WAIVER_PATH)!;
+  expect(JSON.parse(call.body!)).toEqual({
+    result_id: RESULT.id, result_sha256: RESULT.sha256, check_index: 0, reason,
+  });
+  expect(call.headers["x-refactra-csrf"]).toBe("1");
+  await expect(result.getByRole("button", { name: "Waive check 1" })).toHaveCount(0);
+  await expect(approve).toBeEnabled();
 });
 
 test("shows a worker failure when reopening an approved run", async ({ page }) => {

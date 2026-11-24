@@ -32,14 +32,18 @@ from refactra.models import (
     RunPublicationTarget,
 )
 from refactra.publication_target import (
+    MAX_WAIVER_REASON,
     PUBLISH_CANDIDATE,
     PublicationApproval,
     PublicationBranchRead,
     PublicationDraftRead,
     PublicationTargetError,
+    PublicationWaiver,
     approve_publication_target,
     load_publication_approval,
     load_publication_progress,
+    load_publication_waivers,
+    waive_publication_check,
 )
 from refactra.refactoring_plan import (
     APPLY_PLAN_APPROVAL,
@@ -138,6 +142,14 @@ class PublicationApprovalCreate(BaseModel):
     target_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class PublicationWaiverCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    result_id: UUID
+    result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    check_index: int = Field(ge=0, le=63)
+    reason: str = Field(min_length=1, max_length=MAX_WAIVER_REASON)
+
+
 class CandidateResultRead(ArtifactReference):
     run_id: UUID
     created_at: datetime
@@ -149,6 +161,7 @@ class CandidateResultRead(ArtifactReference):
     review: DiffReview | None = None
     publication_target: PublicationTargetRead | None
     publication_approval: PublicationApproval | None
+    publication_waivers: list[PublicationWaiver] = []
     publication: PublicationBranchRead | PublicationDraftRead | None
 
 
@@ -628,6 +641,7 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                     review=saved.get("review"),
                     publication_target=target,
                     publication_approval=approval,
+                    publication_waivers=load_publication_waivers(session, run_id, result),
                     publication=publication,
                 )
             except (ValueError, KeyError, TypeError):
@@ -672,6 +686,35 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
             )
         except PublicationTargetError as exc:
             return error(409, {"code": "publication_approval_conflict", "message": str(exc)})
+
+    @router.post("/runs/{run_id}/result/waivers", response_model=PublicationWaiver)
+    def waive_result_check(
+        run_id: UUID, body: PublicationWaiverCreate, request: Request, response: Response
+    ):
+        if not is_trusted_mutation(request, oauth):
+            return error(
+                403,
+                {"code": "csrf_rejected", "message": "Check waivers require a trusted origin."},
+            )
+        try:
+            repository_id = require_run_access(request, run_id)
+            with session_factory.begin() as session:
+                actor = RepositoryAccessPolicy.from_env().require_eligible_session(
+                    session, request.cookies.get(oauth.session_cookie_name), repository_id
+                )
+                waiver = waive_publication_check(
+                    session, run_id, **body.model_dump(), actor_id=actor.user_id
+                )
+            response.headers["Cache-Control"] = "no-store"
+            return waiver
+        except HTTPException as exc:
+            return (
+                error(404, RUN_NOT_FOUND)
+                if exc.status_code == 403
+                else error(exc.status_code, exc.detail)
+            )
+        except PublicationTargetError as exc:
+            return error(409, {"code": "publication_waiver_conflict", "message": str(exc)})
 
     @router.post("/runs/{run_id}/plan", response_model=RepositoryPlanRead)
     def revise_plan(
