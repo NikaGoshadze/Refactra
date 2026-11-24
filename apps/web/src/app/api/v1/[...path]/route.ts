@@ -8,6 +8,8 @@ const SESSION_COOKIES = new Set(["refactra_session", "__Host-refactra_session"])
 const AUTH_COOKIES = new Set([
   "refactra_oauth", "__Host-refactra_oauth", ...SESSION_COOKIES,
 ]);
+// The OAuth callback URL carries the authorization code and state; never send it as a referrer.
+const NO_REFERRER = { "Referrer-Policy": "no-referrer" };
 
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
@@ -58,7 +60,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       cache: "no-store", redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
     });
-    const responseHeaders = new Headers({ "Cache-Control": "no-store" });
+    const responseHeaders = new Headers({ "Cache-Control": "no-store", ...(isAuth ? NO_REFERRER : {}) });
     for (const name of ["Content-Type", "Location"]) {
       const value = upstream.headers.get(name);
       if (value !== null) responseHeaders.set(name, value);
@@ -70,7 +72,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       status: upstream.status, headers: responseHeaders,
     });
   } catch {
-    return NextResponse.json({ error: { code: "api_unavailable", message: "The local API is unavailable. Start the Compose stack, then retry." } }, { status: 503, headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ error: { code: "api_unavailable", message: "The local API is unavailable. Start the Compose stack, then retry." } }, { status: 503, headers: { "Cache-Control": "no-store", ...(isAuth ? NO_REFERRER : {}) } });
   }
 }
 
