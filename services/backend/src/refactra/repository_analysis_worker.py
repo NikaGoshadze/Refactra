@@ -80,15 +80,11 @@ def _finish(
                 analysis_text=result.text,
             )
         )
-        if queue_plan:
-            session.add(
-                RunCommand(
-                    run_id=run.id,
-                    kind=GENERATE_PLAN,
-                    dedupe_key=initial_plan_command_key(run.id),
-                )
-            )
     success = result is not None or code == "analysis_ready"
+    if success and queue_plan:
+        key = initial_plan_command_key(run.id)
+        if session.scalar(select(RunCommand.id).where(RunCommand.dedupe_key == key)) is None:
+            session.add(RunCommand(run_id=run.id, kind=GENERATE_PLAN, dedupe_key=key))
     run.status = "NEEDS_HUMAN_REVIEW" if success else "FAILED"
     run.version += 1
     run.updated_at = now
@@ -158,7 +154,8 @@ def process_repository_analysis(
         ):
             raise ValueError("Expected a queued repository analysis command.")
         if session.get(RunAnalysisResult, run_id) is not None:
-            _finish(session, command, run, now, code="analysis_ready")
+            # A saved result is authoritative; advance from it without another request.
+            _finish(session, command, run, now, code="analysis_ready", queue_plan=queue_plan)
             return True
         receipt = session.get(ModelReservation, command_id)
         if receipt is not None:
@@ -189,12 +186,39 @@ def process_repository_analysis(
         if command is None or command.attempts != attempt:
             raise ValueError("Repository analysis claim was lost before admission.")
 
-    result = None
-    try:
-        result = execute_read_only_analysis(
-            session_factory, run_id, command_id, provider, check_admission=check_admission
+    finished = False
+
+    def save_response(session, result):
+        # Runs in the usage settlement transaction, so a paid result cannot be lost.
+        nonlocal finished
+        command = _claimed_command(session, command_id, worker_id)
+        if command is None or command.attempts != attempt:
+            return  # A newer claim owns the run; usage is still settled.
+        run = session.get(Run, run_id, with_for_update=True)
+        _finish(
+            session,
+            command,
+            run,
+            session.scalar(select(func.now())),
+            code="analysis_ready",
+            result=result,
+            queue_plan=queue_plan,
         )
-        code = "analysis_ready"
+        finished = True
+
+    try:
+        execute_read_only_analysis(
+            session_factory,
+            run_id,
+            command_id,
+            provider,
+            check_admission=check_admission,
+            save_response=save_response,
+        )
+        if finished:
+            return True
+        # The claim changed before settlement; never report readiness without a saved result.
+        code = "analysis_result_missing"
     except BudgetExceeded:
         code = "analysis_budget_exceeded"
     except AnalysisProviderError:
@@ -212,15 +236,7 @@ def process_repository_analysis(
             if receipt is not None and receipt.settled_at is None:
                 code = "analysis_outcome_unknown"
         run = session.get(Run, run_id, with_for_update=True)
-        _finish(
-            session,
-            command,
-            run,
-            session.scalar(select(func.now())),
-            code=code,
-            result=result,
-            queue_plan=queue_plan,
-        )
+        _finish(session, command, run, session.scalar(select(func.now())), code=code)
         return True
 
 
