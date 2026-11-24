@@ -24,6 +24,65 @@ def passing_patch(*paths):
     )
 
 
+def test_saved_results_need_evidence_for_each_approved_go_check(session_factory, proposal):
+    run, _, context = prepare(session_factory)
+    with session_factory.begin() as session:
+        save_analysis_context(session, context)
+        enqueue_repository_analysis(session, run.id)
+    analyze_fixture_run(session_factory)
+    proposal["changes"] = [
+        {"path": "svc/api/handler.go", "action": "MODIFY", "intent": "Rename a helper."}
+    ]
+    proposal["validation_checks"] = [
+        {
+            "check_id": "go.test",
+            "paths": ["svc/report/report_test.go"],
+            "required": True,
+            "criteria_ids": ["AC-1"],
+        }
+    ]
+    with session_factory.begin() as session:
+        plan = save_refactoring_plan(session, run.id, proposal, expected_revision=0)
+        approve_refactoring_plan(
+            session,
+            run.id,
+            plan_id=plan.id,
+            revision=plan.revision,
+            sha256=plan.sha256,
+            actor_id=run.requested_by,
+        )
+
+    candidate = CandidatePatch(
+        base_sha=run.base_sha,
+        plan_sha256=plan.sha256,
+        edits=[{"path": "svc/api/handler.go", "action": "MODIFY", "content": "package api\n"}],
+    )
+
+    def go_result(path):
+        return ValidationResult("go.test", [path], True, "PASSED", 0, 10, "ok", None, "fixture")
+
+    approved = go_result("svc/report/report_test.go")
+    inferred = go_result("svc/api/handler.go")
+    patch_check = passing_patch("svc/api/handler.go")
+    diff = (
+        b"--- a/svc/api/handler.go\n+++ b/svc/api/handler.go\n@@ -1 +1 @@\n"
+        b"-package old\n+package api\n"
+    )
+    with session_factory.begin() as session:
+        for missing in ([inferred, patch_check], [approved, patch_check]):
+            with pytest.raises(CandidateResultError, match="required checks"):
+                save_validated_candidate(session, run.id, candidate, diff, missing)
+        saved = save_validated_candidate(
+            session, run.id, candidate, diff, [approved, inferred, patch_check]
+        )
+        evidence = json.loads(saved.document)["validation"]
+        assert [(item["check_id"], item["paths"]) for item in evidence] == [
+            ("go.test", ["svc/report/report_test.go"]),
+            ("go.test", ["svc/api/handler.go"]),
+            ("repository.patch", ["svc/api/handler.go"]),
+        ]
+
+
 def test_candidate_results_bind_passing_checks_to_immutable_revisions(session_factory, proposal):
     run, _, context = prepare(session_factory)
     with session_factory.begin() as session:

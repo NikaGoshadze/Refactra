@@ -80,16 +80,26 @@ def candidate_checks(
 ) -> list[CandidateCheck]:
     if approved_file_operation(changes, checks) == "asset_replace":
         return [CandidateCheck(ASSET_CHECK, [changes[0].path], True)]
+    # Keep every approved check, including go.test, with its approved paths and required flag.
     result = [
         CandidateCheck(check.check_id, check.paths, check.required)
         for check in checks
-        if check.check_id not in {PATCH_CHECK, GO_CHECK}
+        if check.check_id != PATCH_CHECK
     ]
-    go_paths = [
-        edit.path for edit in changes if edit.action != "DELETE" and go_source_path(edit.path)
+    approved_packages = {
+        PurePosixPath(path).parent
+        for check in checks
+        if check.check_id == GO_CHECK
+        for path in check.paths
+    }
+    # Infer a separate check for Go edits, including deletions, outside the approved packages.
+    inferred = [
+        edit.path
+        for edit in changes
+        if go_source_path(edit.path) and PurePosixPath(edit.path).parent not in approved_packages
     ]
-    if go_paths:
-        result.append(CandidateCheck(GO_CHECK, go_paths, True))
+    if inferred:
+        result.append(CandidateCheck(GO_CHECK, inferred, True))
     return [*result, CandidateCheck(PATCH_CHECK, [edit.path for edit in changes], True)]
 
 
@@ -175,6 +185,10 @@ def _locked_python_image(lock: bytes, base_id: str) -> str:
     raise RepositoryValidationError("The prepared Python image could not be verified.")
 
 
+def _deleted_paths(workspace: "ApprovedWorkspace") -> frozenset[str]:
+    return frozenset(edit.path for edit in workspace.changes if edit.action == "DELETE")
+
+
 def _targets(workspace: "ApprovedWorkspace", check: CandidateCheck) -> list[str]:
     if check.check_id == TYPESCRIPT_CHECK:
         if len(check.paths) != 1 or not is_typescript_config(check.paths[0]):
@@ -199,7 +213,10 @@ def _targets(workspace: "ApprovedWorkspace", check: CandidateCheck) -> list[str]
     else:
         raise RepositoryValidationError("Refactra has no runner for this check.")
     root = workspace.root.resolve(strict=True)
+    deleted = _deleted_paths(workspace)
     for path in check.paths:
+        if check.check_id == GO_CHECK and path in deleted:
+            continue  # The runner tests the deleted file's package or module instead.
         target = root.joinpath(*PurePosixPath(path).parts)
         if (
             (check.check_id in _PYTHON_CHECKS and target.suffix != ".py")
@@ -322,7 +339,9 @@ def _validate_check(
         ]
     elif check.check_id == GO_CHECK:
         try:
-            go = go_invocation(workspace.root.resolve(), check.paths)
+            go = go_invocation(
+                workspace.root.resolve(), check.paths, deleted=_deleted_paths(workspace)
+            )
         except ValueError as error:
             raise RepositoryValidationError(str(error)) from None
         entrypoint = "/usr/local/go/bin/go"
