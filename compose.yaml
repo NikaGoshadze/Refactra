@@ -5,6 +5,7 @@ x-backend: &backend
   build:
     context: .
     dockerfile: services/backend/Dockerfile
+    target: runtime
   environment: &backend-environment
     REFACTRA_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-refactra}:${POSTGRES_PASSWORD:-refactra_local}@postgres:5432/${POSTGRES_DB:-refactra}
     REFACTRA_ENABLE_MOCK: ${REFACTRA_ENABLE_MOCK:-true}
@@ -99,6 +100,11 @@ services:
 
   test:
     <<: *backend
+    image: refactra-backend:test
+    build:
+      context: .
+      dockerfile: services/backend/Dockerfile
+      target: test
     profiles: [test]
     environment:
       REFACTRA_TEST_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-refactra}:${POSTGRES_PASSWORD:-refactra_local}@postgres:5432/${POSTGRES_DB:-refactra}

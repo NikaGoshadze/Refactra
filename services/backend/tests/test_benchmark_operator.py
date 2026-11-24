@@ -103,6 +103,9 @@ def test_explicit_run_is_required_and_failures_do_not_print_credentials(
 def test_operator_migrates_isolated_schema_and_resume_does_not_resend(
     database, tmp_path, monkeypatch, capsys
 ):
+    if database.url.host not in {"localhost", "127.0.0.1", "::1"}:
+        # The operator refuses non-local databases by design, e.g. the Compose `postgres` host.
+        pytest.skip("The benchmark operator only runs against a localhost PostgreSQL URL.")
     schema, calls = f"refactra_test_cli_{uuid4().hex}", []
     adapters = providers(calls)
     monkeypatch.setattr(operator, "SCHEMA", schema)

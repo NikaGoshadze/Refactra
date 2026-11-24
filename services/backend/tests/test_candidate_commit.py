@@ -52,6 +52,7 @@ from refactra.repository_analysis_worker import (
 )
 from refactra.repository_candidate import (
     VALIDATE_CANDIDATE,
+    VALIDATION_REPAIR_EVENT,
     generate_candidate,
     process_repository_candidate,
 )
@@ -191,7 +192,8 @@ def test_worker_validates_generated_patch_and_recovers_commit_preparation(
         result = session.scalar(
             select(RunCandidateResult).where(RunCandidateResult.run_id == run.id)
         )
-        assert session.get(RunCommand, job).status == ("DONE" if can_review else "FAILED")
+        # A first failed check queues one repair attempt, so the validation job completes too.
+        assert session.get(RunCommand, job).status == "DONE"
         if can_review:
             checks = json.loads(result.document)["validation"]
             assert [(check["check_id"], check["status"]) for check in checks] == [
@@ -210,6 +212,12 @@ def test_worker_validates_generated_patch_and_recovers_commit_preparation(
         else:
             assert result is None
             assert session.scalar(select(RunPublicationTarget)) is None
+            repair = session.scalar(
+                select(RunEvent).where(RunEvent.event_type == VALIDATION_REPAIR_EVENT)
+            )
+            assert repair.payload["validation_command_id"] == str(job)
+            repair_job = session.get(RunCommand, UUID(repair.payload["command_id"]))
+            assert (repair_job.kind, repair_job.status) == (GENERATE_CANDIDATE, "PENDING")
 
 
 @pytest.fixture

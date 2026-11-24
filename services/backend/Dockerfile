@@ -4,7 +4,7 @@ COPY package.json package-lock.json ./
 COPY apps/web/package.json ./apps/web/package.json
 RUN npm ci --ignore-scripts --no-audit --no-fund
 
-FROM python:3.12.16-slim
+FROM python:3.12.16-slim AS runtime
 COPY --from=ghcr.io/astral-sh/uv:0.13.9 /uv /usr/local/bin/uv
 COPY --from=typescript-tools /usr/local/bin/node /usr/local/bin/node
 COPY --from=typescript-tools /tools/node_modules/typescript /node_modules/typescript
@@ -19,3 +19,9 @@ COPY services/backend/ ./
 RUN uv sync --frozen --group validation && useradd --no-log-init --create-home --uid 10001 refactra && chown refactra:refactra /app
 USER refactra
 CMD ["uv", "run", "--no-sync", "uvicorn", "refactra.api:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# Test-only image: candidate commit tests need git. Compose builds `runtime` for the services.
+FROM runtime AS test
+USER root
+RUN apt-get update && apt-get install --yes --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+USER refactra
