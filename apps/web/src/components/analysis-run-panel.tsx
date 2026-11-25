@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { SavedPlanPanel } from "@/components/saved-plan-panel";
 import { request } from "@/lib/api";
+import { nextUnchanged, pollDelay } from "@/lib/polling";
 
 type Receipt = { run_id: string; base_branch: string; base_sha: string };
 const RUN_ID_PATTERN = "[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}";
@@ -67,6 +68,8 @@ export function AnalysisRunPanel({ repositoryId, defaultBranch }: {
     if (!runId) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
+    let previous: string | null = null;
+    let unchanged = 0;
     async function poll() {
       try {
         const current = await request<AnalysisRun>(`runs/${runId}`, {
@@ -78,7 +81,11 @@ export function AnalysisRunPanel({ repositoryId, defaultBranch }: {
           return;
         }
         setRun(current);
-        if (isActive(current.status)) timer = setTimeout(poll, 5000);
+        // Poll every 5 s while the status changes, backing off to 15 s while it stays the same.
+        const signature = JSON.stringify(current);
+        unchanged = nextUnchanged(previous, signature, unchanged);
+        previous = signature;
+        if (isActive(current.status)) timer = setTimeout(poll, pollDelay(5000, unchanged));
       } catch (error) {
         if (!controller.signal.aborted) setStatusError(
           errorMessage(error, "Run status check timed out.", "Could not check run status."),

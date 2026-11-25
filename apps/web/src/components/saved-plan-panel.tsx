@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError, request } from "@/lib/api";
+import { nextUnchanged, pollDelay } from "@/lib/polling";
 import { CandidateResultPanel } from "./candidate-result-panel";
 
 type ApprovalReceipt = { revision: number };
@@ -82,9 +83,16 @@ export function SavedPlanPanel({ runId }: { runId: string }) {
     }
   }, [runId]);
 
+  const lastState = useRef<string | null>(null);
+  const unchangedPolls = useRef(0);
   useEffect(() => {
     if (state.status !== "idle" && state.status !== "pending" && !revising) return;
-    const timer = window.setTimeout(() => void loadPlan(revising), state.status === "idle" ? 0 : 2500);
+    // Poll every 2.5 s while the plan changes, backing off to 15 s while it stays the same.
+    const signature = JSON.stringify(state);
+    unchangedPolls.current = nextUnchanged(lastState.current, signature, unchangedPolls.current);
+    lastState.current = signature;
+    const delay = state.status === "idle" ? 0 : pollDelay(2500, unchangedPolls.current);
+    const timer = window.setTimeout(() => void loadPlan(revising), delay);
     return () => window.clearTimeout(timer);
   }, [loadPlan, revising, state]);
 

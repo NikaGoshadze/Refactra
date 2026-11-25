@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { request } from "@/lib/api";
+import { nextUnchanged, pollDelay } from "@/lib/polling";
 
 type PublicationApproval = { result_revision: number };
 type PublicationWaiver = { check_index: number; check_id: string; reason: string };
@@ -61,6 +62,8 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
   const [waiving, setWaiving] = useState<number | null>(null);
   const [publisherAvailable, setPublisherAvailable] = useState(true);
   const pending = useRef<AbortController | null>(null);
+  const lastResponse = useRef<string | null>(null);
+  const unchanged = useRef(0);
   const loadResult = useCallback(async () => {
     if (pending.current) return;
     const controller = new AbortController();
@@ -72,7 +75,12 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
       const saved = await request<CandidateProgress>(`runs/${runId}/result?progress=true`, {
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(65000)]),
       });
-      if (!controller.signal.aborted) setProgress(saved);
+      if (!controller.signal.aborted) {
+        const signature = JSON.stringify(saved);
+        unchanged.current = nextUnchanged(lastResponse.current, signature, unchanged.current);
+        lastResponse.current = signature;
+        setProgress(saved);
+      }
     } catch (error) {
       if (controller.signal.aborted) return;
       setLoadError(error instanceof DOMException && error.name === "TimeoutError"
@@ -106,15 +114,20 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
   useEffect(() => {
     if (!status || status === "idle" || status === "failed" || loadError || approving) return;
     const started = Date.now();
-    const timer = window.setInterval(() => {
-      if (pending.current) return;
-      if (Date.now() - started >= 180_000) {
-        setLoadError("Still waiting for the worker. Refresh to check again.");
-      } else {
-        void loadResult();
-      }
-    }, 4000);
-    return () => window.clearInterval(timer);
+    let timer: number;
+    // Poll every 4 s while progress changes, backing off to 15 s while it stays the same.
+    const schedule = () => {
+      timer = window.setTimeout(async () => {
+        if (Date.now() - started >= 180_000) {
+          setLoadError("Still waiting for the worker. Refresh to check again.");
+          return;
+        }
+        if (!pending.current) await loadResult();
+        schedule();
+      }, pollDelay(4000, unchanged.current));
+    };
+    schedule();
+    return () => window.clearTimeout(timer);
   }, [status, loadError, approving, loadResult]);
 
   async function approvePublication(result: CandidateResult) {

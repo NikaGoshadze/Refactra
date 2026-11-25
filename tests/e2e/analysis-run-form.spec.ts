@@ -263,6 +263,30 @@ test("candidate review explains when no publication worker is running", async ({
   await expect(result.getByRole("button", { name: "Approve publication" })).toBeEnabled();
 });
 
+test("candidate polling backs off while progress stays the same", async ({ page }) => {
+  await page.clock.install();
+  await page.reload();
+  await page.getByRole("button", { name: "Check repository access" }).click();
+  let polls = 0;
+  await page.route(`**${PLAN_PATH}`, (route) => route.fulfill({ json: { ...PLAN, approval: { revision: 1 } } }));
+  await page.route(`**${RESULT_PATH}?progress=true`, (route) => {
+    polls += 1;
+    return route.fulfill({ json: { status: "validating", message: null, result: null } });
+  });
+  await page.getByText("Open a saved run", { exact: true }).click();
+  await page.getByLabel("Run ID", { exact: true }).fill(RUN_ID);
+  await page.getByRole("button", { name: "Open run", exact: true }).click();
+  const result = page.getByRole("region", { name: "Candidate result" });
+  await expect(result.getByRole("status")).toHaveText("Running validation checks.");
+  for (let second = 0; second < 60; second += 1) {
+    await page.clock.runFor(1000);
+    await page.waitForTimeout(25); // Let each poll's response arrive before advancing.
+  }
+  // A fixed 4 s interval would poll about 15 times in 60 s; backoff keeps it near 5.
+  expect(polls).toBeGreaterThanOrEqual(4);
+  expect(polls).toBeLessThanOrEqual(8);
+});
+
 test("shows a worker failure when reopening an approved run", async ({ page }) => {
   await page.route(`**${PLAN_PATH}`, (route) => route.fulfill({
     json: { ...PLAN, approval: { revision: 1 } },

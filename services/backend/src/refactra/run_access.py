@@ -1,8 +1,12 @@
 """One repository authorization policy for browser sessions and queued run owners."""
 
 import os
+import threading
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
+from time import monotonic
 
 import httpx
 from fastapi import HTTPException
@@ -28,6 +32,42 @@ class RepositoryGrant:
     token: InstallationToken
 
 
+class ReadAccessCache:
+    """Reuse a recent positive GitHub permission check for read-only polling.
+
+    Concurrent checks for the same key wait for one GitHub round trip. Entries expire after
+    `ttl_seconds` and are never used once the token is within five minutes of expiry.
+    Denials are never cached.
+    """
+
+    TOKEN_MARGIN = timedelta(minutes=5)
+
+    def __init__(self, ttl_seconds: float = 30.0, clock=monotonic):
+        self.ttl_seconds = ttl_seconds
+        self._clock = clock
+        self._entries: dict[tuple, tuple[float, RepositoryGrant]] = {}
+        self._locks: dict[tuple, threading.Lock] = {}
+        self._guard = threading.Lock()
+
+    def get_or_check(self, key: tuple, check) -> RepositoryGrant:
+        with self._guard:
+            lock = self._locks.setdefault(key, threading.Lock())
+        with lock:
+            now = self._clock()
+            cached = self._entries.get(key)
+            if (
+                cached is not None
+                and cached[0] > now
+                and cached[1].token.expires_at - datetime.now(UTC) > self.TOKEN_MARGIN
+            ):
+                return cached[1]
+            grant = check()
+            with self._guard:
+                self._entries = {k: v for k, v in self._entries.items() if v[0] > now}
+                self._entries[key] = (now + self.ttl_seconds, grant)
+            return grant
+
+
 class RepositoryAuthorizer:
     """Check local eligibility, then current GitHub write permission, for one repository.
 
@@ -38,8 +78,14 @@ class RepositoryAuthorizer:
     access, and KeyError, OSError or ValueError for unusable settings.
     """
 
-    def __init__(self, *, transport: httpx.BaseTransport | None = None):
+    def __init__(
+        self,
+        *,
+        transport: httpx.BaseTransport | None = None,
+        read_cache: ReadAccessCache | None = None,
+    ):
         self.transport = transport
+        self.read_cache = read_cache or ReadAccessCache()
 
     @staticmethod
     def _installation_id() -> int:
@@ -62,17 +108,31 @@ class RepositoryAuthorizer:
         repository_id: int,
         *,
         expected_installation: int | None = None,
+        reuse: bool = False,
     ) -> RepositoryGrant:
-        """Authorize a signed-in browser user; the local policy runs before credentials load."""
+        """Authorize a signed-in browser user; the local policy runs before credentials load.
+
+        With `reuse`, for read-only requests only, a recent positive GitHub check for the same
+        session, repository and installation may be reused. The local session and allowlist
+        check still runs on every call, so sign-out and local revocation apply at once.
+        """
         policy = RepositoryAccessPolicy.from_env()
         with session_factory() as session:
             identity = policy.require_eligible_session(session, session_token, repository_id)
         installation_id = self._installation_id()
         if expected_installation is not None and installation_id != expected_installation:
             raise HTTPException(403, "Repository installation changed.")
-        app = self._app()
-        token = require_github_write_access(app, installation_id, repository_id, identity)
-        return RepositoryGrant(identity, installation_id, app, token)
+
+        def check() -> RepositoryGrant:
+            app = self._app()
+            token = require_github_write_access(app, installation_id, repository_id, identity)
+            return RepositoryGrant(identity, installation_id, app, token)
+
+        if not reuse:
+            return check()
+        session_key = sha256((session_token or "").encode()).hexdigest()
+        key = (identity.user_id, repository_id, installation_id, session_key)
+        return self.read_cache.get_or_check(key, check)
 
     def for_run(self, run: Run) -> RepositoryGrant:
         """Recheck a queued run's owner, repository and installation, then GitHub permission."""

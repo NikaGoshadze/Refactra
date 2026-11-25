@@ -171,6 +171,33 @@ def test_authorized_endpoint_returns_only_safe_metadata(browser):
     assert "fixture-secret" not in response.text and "fixture-private" not in response.text
 
 
+def test_polling_reuses_a_recent_check_but_writes_and_sign_out_do_not(browser, session_factory):
+    client, calls, switches, token = browser
+    url = submit(client).headers["Location"]
+    permission = "/repos/fixture/example/collaborators/current-login/permission"
+    calls.clear()
+    for path in (url, f"{url}/plan", f"{url}/result?progress=true", url):
+        assert client.get(path).status_code in {200, 404}
+    assert calls.count(permission) == 1  # Four polls, one GitHub permission check.
+
+    # GitHub revocation reaches writes at once; reads may reuse the check for up to 30 s.
+    switches["non_writer"] = True
+    approval = {"plan_id": str(uuid4()), "revision": 1, "sha256": "a" * 64}
+    write = client.post(
+        f"{url}/plan/approve",
+        json=approval,
+        headers={"Origin": "https://refactra.example", "X-Refactra-CSRF": "1"},
+    )
+    assert write.status_code == 404 and calls.count(permission) == 2
+    assert client.get(url).status_code == 200 and calls.count(permission) == 2
+
+    # Local sign-out applies immediately, even with a cached GitHub check.
+    with session_factory.begin() as session:
+        revoke_session(session, token)
+    assert client.get(url).status_code == 401
+    assert calls.count(permission) == 2
+
+
 def test_configured_repository_is_returned_only_to_eligible_users(browser, monkeypatch):
     client, calls, _, _ = browser
     by_id = client.get("/api/v1/repositories/42").json()
