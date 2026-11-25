@@ -1,9 +1,7 @@
 """Protected repository metadata and saved workflow artifacts."""
 
 import json
-import os
 from datetime import datetime
-from pathlib import Path
 from typing import Annotated, Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -17,9 +15,8 @@ from sqlalchemy.orm import Session
 
 from refactra.auth_sessions import resolve_session
 from refactra.diff_review import DiffReview
-from refactra.github_app import GitHubAppClient, GitHubAppError
+from refactra.github_app import GitHubAppError
 from refactra.github_auth import GitHubOAuthConfig
-from refactra.github_repository_access import require_github_write_access
 from refactra.models import (
     Run,
     RunAnalysisContext,
@@ -69,6 +66,7 @@ from refactra.repository_candidate import VALIDATE_CANDIDATE
 from refactra.repository_revision import resolve_revision
 from refactra.repository_runs import create_repository_run
 from refactra.repository_validation import ValidationResult
+from refactra.run_access import RepositoryAuthorizer, RepositoryGrant
 from refactra.schemas import (
     RepositoryRunCreate,
     RepositoryRunRead,
@@ -297,31 +295,26 @@ def _plan_response(
     )
 
 
-def create_repository_router(session_factory, *, enable_analysis=False) -> APIRouter:
+def create_repository_router(
+    session_factory, *, enable_analysis=False, authorizer: RepositoryAuthorizer | None = None
+) -> APIRouter:
     router = APIRouter(prefix="/api/v1", tags=["Repositories"])
     oauth = GitHubOAuthConfig.from_env()
+    authorizer = authorizer or RepositoryAuthorizer()
 
     def error(status, detail):
         return JSONResponse(
             status_code=status, content={"error": detail}, headers={"Cache-Control": "no-store"}
         )
 
-    def authorize(request, repository_id, *, expected_installation=None):
+    def authorize(request, repository_id, *, expected_installation=None) -> RepositoryGrant:
+        # The shared authorizer decides; this router only maps its errors to HTTP responses.
         try:
-            policy = RepositoryAccessPolicy.from_env()
-            with session_factory() as session:
-                identity = policy.require_eligible_session(
-                    session, request.cookies.get(oauth.session_cookie_name), repository_id
-                )
-            installation_id = int(os.environ["REFACTRA_GITHUB_INSTALLATION_ID"])
-            client_id = os.environ["REFACTRA_GITHUB_CLIENT_ID"].strip()
-            if installation_id <= 0 or not client_id:
-                raise ValueError("Invalid App configuration")
-            if expected_installation is not None and installation_id != expected_installation:
-                raise HTTPException(403, "Repository installation changed.")
-            app = GitHubAppClient(
-                client_id,
-                Path(os.environ["REFACTRA_GITHUB_PRIVATE_KEY_PATH"]).read_bytes(),
+            return authorizer.for_session(
+                session_factory,
+                request.cookies.get(oauth.session_cookie_name),
+                repository_id,
+                expected_installation=expected_installation,
             )
         except (OSError, ValueError, KeyError):
             raise HTTPException(
@@ -331,21 +324,19 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                     "message": "Repository access configuration is unavailable.",
                 },
             ) from None
-        token = require_github_write_access(app, installation_id, repository_id, identity)
-        return identity, installation_id, token, app.transport
 
     @router.get("/repositories/{repository_id}", response_model=RepositoryRead)
     def repository(repository_id: int, request: Request, response: Response):
         response.headers["Cache-Control"] = "no-store"
         try:
-            _, _, token, transport = authorize(request, repository_id)
+            grant = authorize(request, repository_id)
             with httpx.Client(
-                timeout=10.0, follow_redirects=False, trust_env=False, transport=transport
+                timeout=10.0, follow_redirects=False, trust_env=False, transport=grant.app.transport
             ) as client:
                 result = client.get(
                     f"https://api.github.com/repositories/{repository_id}",
                     headers={
-                        "Authorization": f"Bearer {token.value}",
+                        "Authorization": f"Bearer {grant.token.value}",
                         "Accept": "application/vnd.github+json",
                         "X-GitHub-Api-Version": "2026-03-10",
                     },
@@ -381,7 +372,9 @@ def create_repository_router(session_factory, *, enable_analysis=False) -> APIRo
                 403, {"code": "csrf_rejected", "message": "Submission requires a trusted origin."}
             )
         try:
-            identity, installation_id, token, transport = authorize(request, body.repository_id)
+            grant = authorize(request, body.repository_id)
+            identity, installation_id = grant.identity, grant.installation_id
+            token, transport = grant.token, grant.app.transport
             run_id = uuid5(NAMESPACE_URL, f"refactra:analysis:{identity.user_id}:{idempotency_key}")
             with session_factory() as session:
                 run = session.get(Run, run_id)
