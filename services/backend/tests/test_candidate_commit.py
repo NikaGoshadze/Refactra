@@ -23,6 +23,7 @@ from refactra.candidate_commit import CandidateCommitError, prepare_candidate_co
 from refactra.candidate_patch import CandidatePatch, CandidatePatchError, apply_candidate_patch
 from refactra.candidate_results import save_validated_candidate
 from refactra.models import (
+    Run,
     RunCandidateResult,
     RunCommand,
     RunEvent,
@@ -871,6 +872,9 @@ def check_draft_publication(
     wrong_head = True
 
     def handler(request):
+        # GitHub calls must not hold the run row; NOWAIT fails at once if they did.
+        with session_factory.begin() as session:
+            session.execute(select(Run.id).where(Run.id == run.id).with_for_update(nowait=True))
         assert request.url.host == "api.github.com"
         assert request.url.path == "/repos/fixture/repo/pulls"
         assert request.headers["authorization"] == "Bearer fixture-pr-token"
