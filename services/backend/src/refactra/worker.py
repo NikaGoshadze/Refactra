@@ -242,7 +242,11 @@ def main():
             )
         if claimed_kind == PUBLISH_CANDIDATE:
             return process_approved_publication(
-                session_factory, command_id, worker_id, artifacts=args.candidate_artifacts
+                session_factory,
+                command_id,
+                worker_id,
+                artifacts=args.candidate_artifacts,
+                source=args.candidate_source,
             )
         if claimed_kind == GENERATE_CANDIDATE:
             return process_repository_candidate(session_factory, command_id, worker_id, provider)

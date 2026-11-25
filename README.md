@@ -375,6 +375,8 @@ With the clone and artifact flags enabled, the candidate worker pushes the prepa
 
 After approval, an operator can run `uv run python -m refactra.publication_branch <run-id> --artifact <prepared-directory>` from `services/backend`. Use the protected repository and database settings and an App installation with Contents read and write access for the selected repository. The command rechecks owner access and the pinned base, pushes the approved commit to its designated branch, and records the verified head in PostgreSQL. Repeating it with the same remote head returns the same receipt.
 
+The prepared commit does not have to survive on the original worker's disk. If `<prepared-directory>/repository.git` is missing, the worker, or the command with `--source <local-clone>`, rebuilds it from the clone at the pinned base and the saved, reviewed diff. The commit is deterministic: it has a fixed author and the result's timestamp. Publication continues only if the rebuilt commit SHA equals the approved target's, and a mismatch is never written to the artifact path.
+
 Run `uv run python -m refactra.publication_pr <run-id>` after the branch push. The App also needs Pull requests read and write access on the selected repository. Refactra checks the remote base and head, opens or recovers the matching draft PR, and records its URL in PostgreSQL.
 
 Select **Refresh saved result** in the browser to see whether the branch was pushed and open the draft PR once its link is recorded.

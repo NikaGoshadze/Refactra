@@ -11,9 +11,10 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
-from refactra.candidate_commit import CandidateCommitError, _git
+from refactra.candidate_commit import CandidateCommitError, _git, prepare_candidate_commit
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
+from refactra.diagnostics import workflow_log
 from refactra.github_app import GitHubAppError
 from refactra.models import Run, RunCandidateResult, RunEvent, RunPublicationTarget
 from refactra.publication_target import (
@@ -65,11 +66,42 @@ def load_approved_target(session, run_id: UUID):
     return run, target.sha256, commit, head, result
 
 
-def push_approved_branch(session_factory, run_id: UUID, artifact: Path) -> dict:
+def rebuild_publication_artifact(
+    session_factory, run_id: UUID, revision: int, commit: str, source: Path | None, artifact: Path
+) -> None:
+    """Recreate a missing prepared commit from the pinned clone and saved diff, then verify it.
+
+    The commit is deterministic (fixed author and the result's timestamp), so the rebuilt SHA
+    must equal the approved target's. A mismatch never lands at the artifact path.
+    """
+    if source is None:
+        raise PublicationTargetError(
+            "The prepared commit is missing and no source clone is configured to rebuild it."
+        )
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix="refactra-rebuild-", dir=artifact.parent) as directory:
+        staging = Path(directory) / "artifact"
+        receipt = prepare_candidate_commit(session_factory, run_id, revision, source, staging)
+        if receipt["commit_sha"] != commit:
+            raise PublicationTargetError(
+                "The rebuilt commit does not match the approved publication target."
+            )
+        staging.rename(artifact)
+    workflow_log("publication_artifact_rebuilt", run_id=run_id, commit_sha=commit)
+
+
+def push_approved_branch(
+    session_factory, run_id: UUID, artifact: Path, *, source: Path | None = None
+) -> dict:
+    """Push the approved commit, rebuilding its artifact from `source` if it is missing."""
     with session_factory() as session:
-        run, target_sha, commit, head, _ = load_approved_target(session, run_id)
+        run, target_sha, commit, head, result = load_approved_target(session, run_id)
     app, reader = authorize_run_repository(run)
-    source = (artifact / "repository.git").resolve(strict=True)
+    if not (artifact / "repository.git").is_dir():
+        rebuild_publication_artifact(
+            session_factory, run_id, result.revision, commit, source, artifact
+        )
+    prepared = (artifact / "repository.git").resolve(strict=True)
     with TemporaryDirectory(prefix="refactra-push-") as directory:
         repository = Path(directory) / "push.git"
         _git(repository, "init", "--bare", "--template=", "--object-format=sha1")
@@ -81,7 +113,7 @@ def push_approved_branch(session_factory, run_id: UUID, artifact: Path) -> dict:
             "--no-recurse-submodules",
             "--no-write-fetch-head",
             "--",
-            str(source),
+            str(prepared),
             commit,
         )
         parents = _git(repository, "show", "-s", "--format=%P", commit).strip().decode()
@@ -135,10 +167,16 @@ def main() -> None:
     parser.add_argument(
         "--artifact", type=Path, required=True, help="Prepared candidate directory."
     )
+    parser.add_argument(
+        "--source", type=Path, help="Local clone used to rebuild a missing prepared commit."
+    )
     args = parser.parse_args()
     engine = make_engine(Settings.from_env().database_url)
     try:
-        print(json.dumps(push_approved_branch(sessions(engine), args.run_id, args.artifact)))
+        receipt = push_approved_branch(
+            sessions(engine), args.run_id, args.artifact, source=args.source
+        )
+        print(json.dumps(receipt))
     except (PublicationTargetError, CandidateCommitError, GitHubAppError) as error:
         raise SystemExit(str(error)) from None
     except (HTTPException, OSError, SQLAlchemyError, ValueError, KeyError, TypeError):
