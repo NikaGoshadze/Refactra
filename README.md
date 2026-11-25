@@ -450,7 +450,7 @@ To see persistence directly, stop the worker with `docker compose stop worker`, 
 
 ## Checks
 
-GitHub Actions ([ci.yml](.github/workflows/ci.yml)) runs on every pull request and push to `main`. The backend job runs Ruff and the full pytest suite against a PostgreSQL 17 service. The web job runs lint, build, typecheck and the Playwright specs that use the isolated proxy fixture; `mock-run.spec.ts` needs the Compose stack. Docker-based validation tests stay opt-in and are skipped there.
+GitHub Actions ([ci.yml](.github/workflows/ci.yml)) runs on every pull request and push to `main`. The backend job runs Ruff and the full pytest suite against a PostgreSQL 17 service. The web job runs lint, build, typecheck and the Playwright specs that use the isolated proxy fixture. A docker job starts the Compose stack and checks readiness and the worker heartbeat. It then runs the Docker-gated validation tests against the built `refactra-backend:local` image, failing if any of them is skipped, and finishes with the full-stack `mock-run.spec.ts` browser test.
 
 Backend integration tests use real PostgreSQL and migrate a unique disposable schema per test. They never truncate the application tables. The Compose `test` service builds a separate `refactra-backend:test` image that adds Git for the commit tests. The benchmark operator test runs only against a localhost database, so it is skipped in Compose:
 
