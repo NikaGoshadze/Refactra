@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import stat
 import subprocess
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -36,6 +37,7 @@ from refactra.publication_target import (
     PublicationTargetError,
     approve_publication_target,
     save_publication_target,
+    waive_publication_check,
 )
 from refactra.refactoring_plan import (
     APPLY_PLAN_APPROVAL,
@@ -68,6 +70,11 @@ from .test_candidate_results import passing_patch
 from .test_openai_analysis import response
 from .test_refactoring_plan import analyze_fixture_run
 from .test_refactoring_plan import proposal as proposal
+
+
+def _make_writable_and_retry(function, path, _error):
+    os.chmod(path, stat.S_IWRITE)
+    function(path)
 
 
 def git(directory, *args):
@@ -600,7 +607,8 @@ def test_typescript_feature_discovery_through_review_and_draft(
             select(RunCandidateResult).where(RunCandidateResult.run_id == run.id)
         )
         if not passes:
-            assert result is None and session.get(RunCommand, job).status == "FAILED"
+            # A first failed check queues one repair attempt instead of failing the job (#99).
+            assert result is None and session.get(RunCommand, job).status == "DONE"
             return
         assert result is not None
         report = json.loads(result.document)
@@ -614,6 +622,17 @@ def test_typescript_feature_discovery_through_review_and_draft(
     receipt = prepare_candidate_commit(
         session_factory, run.id, 1, source, artifact, save_target=True
     )
+    with session_factory.begin() as session:
+        # The owner waives the required check that has no runner before approving (#105).
+        waive_publication_check(
+            session,
+            run.id,
+            result_id=result.id,
+            result_sha256=result.sha256,
+            check_index=1,
+            reason="No Vitest runner yet; reviewed the component manually.",
+            actor_id=run.requested_by,
+        )
     check_branch_publication(
         session_factory,
         run,
@@ -815,7 +834,7 @@ def check_branch_publication(
     current_base = run.base_sha
     # A replacement host has no prepared artifact; it must rebuild and verify the commit.
     original_receipt = (artifact / "receipt.json").read_text()
-    shutil.rmtree(artifact)
+    shutil.rmtree(artifact, onexc=_make_writable_and_retry)  # Git objects are read-only.
     with pytest.raises(PublicationTargetError, match="no source clone"):
         push(session_factory, run.id, artifact)
     real_prepare = publication.prepare_candidate_commit

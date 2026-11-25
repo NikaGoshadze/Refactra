@@ -309,6 +309,7 @@ def test_runners_are_labeled_for_reconciliation_and_stop_themselves(tmp_path, mo
     deadline = next(int(item.split("=")[1]) for item in labels if ".deadline=" in item)
     assert deadline > time.time() + validation.CONTAINER_DEADLINE
     image = create.index("sha256:image")
+    assert create[-4:-2] == ("--ignoreDeprecations", "6.0")
     assert create[image - 2 : image] == ("--entrypoint", "timeout")
     assert create[image + 1 : image + 5] == (
         "-s",
@@ -443,3 +444,28 @@ def test_reconciliation_removes_real_orphans_and_leaves_other_containers(session
         assert sorted(running) == sorted([names["active"], names["unrelated"]])
     finally:
         subprocess.run(["docker", "rm", "-f", *names.values()], capture_output=True)
+
+
+@pytest.mark.skipif(
+    os.getenv("REFACTRA_TEST_TYPESCRIPT_DOCKER") != "1",
+    reason="Requires a rebuilt local backend image and Docker.",
+)
+@pytest.mark.parametrize(
+    ("source", "expected"), [("number = 2", "PASSED"), ("number = 'two'", "FAILED")]
+)
+def test_typescript_checks_ignore_deprecated_tsconfig_options(tmp_path, source, expected):
+    # An older tsconfig that TypeScript 6 would otherwise reject before checking any code.
+    (tmp_path / "tsconfig.json").write_text(
+        '{"compilerOptions": {"target": "ES5", "moduleResolution": "node", "baseUrl": ".",'
+        ' "strict": true}, "include": ["cart.ts"]}'
+    )
+    (tmp_path / "cart.ts").write_text(f"export const total: {source};\n")
+    change = ProposedChange(path="cart.ts", action="MODIFY", intent="Update the total.")
+    check = ValidationCheck(
+        check_id="typescript.tsc", paths=["tsconfig.json"], required=True, criteria_ids=["AC1"]
+    )
+    workspace = ApprovedWorkspace(tmp_path, "a" * 40, 1, "b" * 64, 2, (change,), (check,))
+    result, baseline = validation.validate_candidate(workspace)
+    assert result.status == expected, result.output
+    assert "TS5107" not in result.output and "TS5101" not in result.output
+    assert baseline.status == "PASSED"
