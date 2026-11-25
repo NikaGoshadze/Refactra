@@ -168,7 +168,12 @@ def open_approved_draft(session_factory, run_id: UUID) -> dict:
 
 
 def process_approved_publication(
-    session_factory, command_id: UUID, worker_id: str, *, artifacts: Path
+    session_factory,
+    command_id: UUID,
+    worker_id: str,
+    *,
+    artifacts: Path,
+    source: Path | None = None,
 ) -> bool:
     with session_factory.begin() as session:
         command = _claimed_command(session, command_id, worker_id)
@@ -189,7 +194,7 @@ def process_approved_publication(
             if pushed is None:
                 code = "publication_push_failed"
                 artifact = artifacts / f"{run_id}-r{approval.result_revision}"
-                push_approved_branch(session_factory, run_id, artifact)
+                push_approved_branch(session_factory, run_id, artifact, source=source)
             code = "publication_draft_failed"
             open_approved_draft(session_factory, run_id)
             success = True

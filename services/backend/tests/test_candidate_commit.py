@@ -812,7 +812,23 @@ def check_branch_publication(
         push(session_factory, run.id, artifact)
     assert not requested_scope
     current_base = run.base_sha
-    pushed = push(session_factory, run.id, artifact)
+    # A replacement host has no prepared artifact; it must rebuild and verify the commit.
+    original_receipt = (artifact / "receipt.json").read_text()
+    shutil.rmtree(artifact)
+    with pytest.raises(PublicationTargetError, match="no source clone"):
+        push(session_factory, run.id, artifact)
+    real_prepare = publication.prepare_candidate_commit
+
+    def mismatched(*args, **kwargs):
+        return {**real_prepare(*args, **kwargs), "commit_sha": "0" * 40}
+
+    monkeypatch.setattr(publication, "prepare_candidate_commit", mismatched)
+    with pytest.raises(PublicationTargetError, match="does not match the approved"):
+        push(session_factory, run.id, artifact, source=source)
+    assert not artifact.exists()
+    monkeypatch.setattr(publication, "prepare_candidate_commit", real_prepare)
+    pushed = push(session_factory, run.id, artifact, source=source)
+    assert (artifact / "receipt.json").read_text() == original_receipt
     assert push(session_factory, run.id, artifact) == pushed
     assert requested_scope == [(run.github_installation_id, run.github_repository_id)] * 2
     assert pushed["commit_sha"] == commit
