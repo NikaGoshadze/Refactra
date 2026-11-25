@@ -59,6 +59,7 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const [waiverReasons, setWaiverReasons] = useState<Record<number, string>>({});
   const [waiving, setWaiving] = useState<number | null>(null);
+  const [publisherAvailable, setPublisherAvailable] = useState(true);
   const pending = useRef<AbortController | null>(null);
   const loadResult = useCallback(async () => {
     if (pending.current) return;
@@ -90,6 +91,16 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
       pending.current?.abort();
     };
   }, [loadResult]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    request<{ publication_worker_available?: boolean }>("capabilities", {
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(7000)]),
+    }).then((capabilities) => {
+      if (!controller.signal.aborted) setPublisherAvailable(capabilities.publication_worker_available !== false);
+    }).catch(() => undefined); // The notice is advisory; approval itself is unaffected.
+    return () => controller.abort();
+  }, []);
 
   const status = progress?.status;
   useEffect(() => {
@@ -253,6 +264,7 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
         ) : target ? <>
           <p role="status">Candidate ready for review.</p>
           {unwaived > 0 && <p>Waive each required check that could not run before approving publication.</p>}
+          {!publisherAvailable && <p>No publication worker is running. An approval waits in the queue until one starts.</p>}
           <button className="repository-check" type="button" onClick={() => approvePublication(result)} disabled={loading || approving || waiving !== null || unwaived > 0 || Boolean(loadError)}>
             {approving ? "Recording approval…" : "Approve publication"}
           </button>

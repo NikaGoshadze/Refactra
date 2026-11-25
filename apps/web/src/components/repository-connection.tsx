@@ -5,8 +5,6 @@ import { AnalysisRunPanel } from "@/components/analysis-run-panel";
 import { AuthControls } from "@/components/auth-controls";
 import { request, type SessionStatus } from "@/lib/api";
 
-// The first UI slice targets the controlled fixture selected for local testing.
-const REPOSITORY_ID = 1001132861;
 type Repository = { repository_id: number; full_name: string; default_branch: string; access: "read-only" };
 type Connection = { status: "idle" } | { status: "verified"; repository: Repository }
   | { status: "error"; message: string };
@@ -23,7 +21,8 @@ function RepositoryPanel({ authenticated }: { authenticated: boolean }) {
     pending.current = controller;
     setChecking(true);
     try {
-      const repository = await request<Repository>(`repositories/${REPOSITORY_ID}`, {
+      // The API returns the operator-configured repository once access is verified.
+      const repository = await request<Repository>("repository", {
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(65000)]),
       });
       if (!controller.signal.aborted) setConnection({ status: "verified", repository });
@@ -44,7 +43,8 @@ function RepositoryPanel({ authenticated }: { authenticated: boolean }) {
     <section className="repository-card" aria-labelledby="repository-title">
       <div className="repository-heading">
         <div><p className="eyebrow">GITHUB CONNECTION</p><h2 id="repository-title">Repository connection</h2>
-          <p className="repository-target">NikaGoshadze/AI-Hub</p></div>
+          <p className="repository-target">{connection.status === "verified"
+            ? connection.repository.full_name : "Configured repository"}</p></div>
         <button className="repository-check" type="button" onClick={checkAccess}
           disabled={!authenticated || checking}>
           {checking ? "Checking access…" : connection.status === "error" ? "Retry connection" : "Check repository access"}

@@ -126,3 +126,32 @@ def test_repeatedly_interrupted_commands_are_failed_instead_of_reclaimed(session
         assert session.get(RunCommand, command_id).status == "FAILED"
         assert session.get(Run, run_id).status == "FAILED"
         assert stop_codes(session, run_id) == ["command_attempts_exhausted"]
+
+
+def test_capabilities_report_which_actions_a_running_worker_can_take(client, session_factory):
+    def capabilities():
+        body = client.get("/api/v1/capabilities").json()
+        return (
+            body["approvals_enabled"],
+            body["analysis_worker_available"],
+            body["publication_worker_available"],
+        )
+
+    assert capabilities() == (True, False, False)
+    for mode, analysis, publication in [
+        ("mock", False, False),
+        ("repository_analysis", True, False),
+        ("repository_candidate", False, False),
+        ("repository_publication", False, True),
+        ("repository_workflow", True, True),
+    ]:
+        record_heartbeat(session_factory, "worker-a", mode, started=True)
+        assert capabilities() == (True, analysis, publication), mode
+    with session_factory.begin() as session:
+        beat = session.get(WorkerHeartbeat, HEARTBEAT_SLOT)
+        beat.beat_at = session.scalar(select(func.now())) - timedelta(minutes=2)
+    assert capabilities() == (True, False, False)  # A stale worker can take no action.
+    assert client.get("/api/v1/capabilities").json()["worker"] == {
+        "status": "stale",
+        "mode": "repository_workflow",
+    }

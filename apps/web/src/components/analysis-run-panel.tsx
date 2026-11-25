@@ -30,6 +30,7 @@ export function AnalysisRunPanel({ repositoryId, defaultBranch }: {
   repositoryId: number; defaultBranch: string;
 }) {
   const [available, setAvailable] = useState<boolean | null>(null);
+  const [workerAvailable, setWorkerAvailable] = useState(true);
   const [capabilityError, setCapabilityError] = useState<string | null>(null);
   const [branch, setBranch] = useState(defaultBranch);
   const [task, setTask] = useState("");
@@ -47,10 +48,12 @@ export function AnalysisRunPanel({ repositoryId, defaultBranch }: {
 
   useEffect(() => {
     const controller = new AbortController();
-    request<{ repository_analysis_enabled: boolean }>("capabilities", {
+    request<{ repository_analysis_enabled: boolean; analysis_worker_available?: boolean }>("capabilities", {
       signal: AbortSignal.any([controller.signal, AbortSignal.timeout(7000)]),
     }).then((capabilities) => {
-      if (!controller.signal.aborted) setAvailable(capabilities.repository_analysis_enabled === true);
+      if (controller.signal.aborted) return;
+      setAvailable(capabilities.repository_analysis_enabled === true);
+      setWorkerAvailable(capabilities.analysis_worker_available !== false);
     }).catch((error: unknown) => {
       if (!controller.signal.aborted) setCapabilityError(
         errorMessage(error, "Analysis availability check timed out.", "Could not check analysis availability."),
@@ -138,6 +141,9 @@ export function AnalysisRunPanel({ repositoryId, defaultBranch }: {
         : available === null ? <p role="status">Checking analysis availability…</p>
         : !available ? <p>Repository analysis is disabled.</p>
         : <form onSubmit={submit}>
+          {!workerAvailable && <p role="status">
+            No analysis worker is running. Submitted runs wait in the queue until one starts.
+          </p>}
           <label htmlFor="analysis-branch">Base branch</label>
           <input id="analysis-branch" value={branch} maxLength={255} required disabled={busy || tracking}
             onChange={(event) => setBranch(event.target.value)} />

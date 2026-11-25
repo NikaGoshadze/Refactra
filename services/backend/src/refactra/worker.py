@@ -215,7 +215,14 @@ def main():
     if args.repository_analysis:
         kinds = [PREPARE_SNAPSHOT, "START"]
     if args.repository_candidate or args.repository_workflow:
-        mode = "repository_workflow" if args.repository_workflow else "repository_candidate"
+        # A candidate worker with an artifact directory also validates and publishes.
+        mode = (
+            "repository_workflow"
+            if args.repository_workflow
+            else "repository_publication"
+            if args.candidate_artifacts
+            else "repository_candidate"
+        )
         kinds = [GENERATE_CANDIDATE]
         if args.candidate_artifacts:
             kinds.extend((VALIDATE_CANDIDATE, PUBLISH_CANDIDATE))

@@ -325,6 +325,23 @@ def create_repository_router(
                 },
             ) from None
 
+    @router.get("/repository", response_model=RepositoryRead)
+    def configured_repository(request: Request, response: Response):
+        """The operator-configured repository, returned only to an eligible signed-in user."""
+        try:
+            repository_id = RepositoryAccessPolicy.from_env().repository_id
+        except ValueError:
+            repository_id = None
+        if repository_id is None:
+            return error(
+                503,
+                {
+                    "code": "repository_access_unconfigured",
+                    "message": "Repository access configuration is unavailable.",
+                },
+            )
+        return repository(repository_id, request, response)
+
     @router.get("/repositories/{repository_id}", response_model=RepositoryRead)
     def repository(repository_id: int, request: Request, response: Response):
         response.headers["Cache-Control"] = "no-store"

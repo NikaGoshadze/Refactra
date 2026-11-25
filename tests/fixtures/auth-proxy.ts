@@ -98,8 +98,9 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
           return;
         }
         response.writeHead(204, { "Set-Cookie": [CLEAR_SESSION, CLEAR_OAUTH] });
-      } else if (/^\/api\/v1\/repositories\/[1-9][0-9]*$/.test(route)) {
-        const id = Number(route.split("/").at(-1));
+      } else if (route === "/api/v1/repository" || /^\/api\/v1\/repositories\/[1-9][0-9]*$/.test(route)) {
+        // The configured-repository route resolves to the fixture's configured ID.
+        const id = route === "/api/v1/repository" ? 1001132861 : Number(route.split("/").at(-1));
         if (id === 47) { request.socket.destroy(); return; }
         const authenticated = request.headers.cookie?.includes("refactra_session=fixture-session") ?? false;
         const statuses: Record<number, number> = { 43: 403, 44: 502, 45: 503 };

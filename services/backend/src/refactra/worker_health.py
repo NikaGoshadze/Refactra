@@ -17,6 +17,9 @@ STALLED_QUEUE_SECONDS = 300
 # Reclaims beyond this mean the command keeps interrupting its worker (for example, a hard kill).
 MAX_COMMAND_ATTEMPTS = 5
 ANALYSIS_STATES = {"CREATED", "ANALYZING"}
+# Worker modes that prepare and analyze repository runs, and those that can publish drafts.
+ANALYSIS_WORKER_MODES = {"repository_analysis", "repository_workflow"}
+PUBLICATION_WORKER_MODES = {"repository_workflow", "repository_publication"}
 
 
 def record_heartbeat(session_factory, worker_id: str, mode: str, *, started: bool = False):
