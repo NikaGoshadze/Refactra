@@ -203,7 +203,8 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
     origin = `http://127.0.0.1:${webPort}`;
     const web = spawn(process.execPath, [require.resolve("next/dist/bin/next"), "start", "--hostname", "127.0.0.1", "--port", String(webPort)], {
       cwd: path.resolve(__dirname, "../../apps/web"), windowsHide: true,
-      env: { ...process.env, REFACTRA_API_URL: `http://127.0.0.1:${apiPort}`, NEXT_TELEMETRY_DISABLED: "1" },
+      env: { ...process.env, REFACTRA_API_URL: `http://127.0.0.1:${apiPort}`, NEXT_TELEMETRY_DISABLED: "1",
+        REFACTRA_PROXY_BODY_TIMEOUT_MS: "1000" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let logs = "";

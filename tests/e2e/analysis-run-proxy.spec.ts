@@ -46,6 +46,63 @@ for (const origin of [undefined, "https://untrusted.example"]) {
   });
 }
 
+const WRITE_HEADERS = { "Content-Type": "application/json", "X-Refactra-CSRF": "1" };
+
+function streamed(chunks: string[], gapMs = 0) {
+  const encoder = new TextEncoder();
+  let first = true;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const next = chunks.shift();
+      if (next === undefined) return controller.close();
+      // The first chunk starts the request; later chunks arrive after the gap.
+      if (gapMs && !first) await new Promise((resolve) => setTimeout(resolve, gapMs));
+      first = false;
+      controller.enqueue(encoder.encode(next));
+    },
+  });
+}
+
+async function postStream(url: string, body: ReadableStream<Uint8Array>) {
+  // A streamed body has no Content-Length, like a chunked upload.
+  return fetch(url, { method: "POST", body, duplex: "half", headers: WRITE_HEADERS } as RequestInit);
+}
+
+test("an oversized submission is rejected before reaching the API", async ({ authProxy, request }) => {
+  const response = await request.post(authProxy.origin + SUBMIT, {
+    data: JSON.stringify({ task_text: "x".repeat(17 * 1024) }), headers: { ...WRITE_HEADERS, Origin: authProxy.origin },
+  });
+  expect(response.status()).toBe(413);
+  expect((await response.json()).error.code).toBe("request_too_large");
+  expect(response.headers()["cache-control"]).toBe("no-store");
+  expect(authProxy.calls).toHaveLength(0);
+});
+
+test("a chunked body without Content-Length is still bounded", async ({ authProxy }) => {
+  const response = await postStream(authProxy.origin + SUBMIT, streamed(Array(5).fill("x".repeat(8192))));
+  expect(response.status).toBe(413);
+  expect(authProxy.calls).toHaveLength(0);
+});
+
+test("a slow body is cut off at the read deadline", async ({ authProxy }) => {
+  const started = Date.now();
+  const response = await postStream(authProxy.origin + SUBMIT, streamed(['{"repository_id": 42,', '"task_text": "late"}'], 2500));
+  expect(response.status).toBe(408);
+  expect((await response.json()).error.code).toBe("request_timeout");
+  expect(Date.now() - started).toBeLessThan(2500);
+  expect(authProxy.calls).toHaveLength(0);
+});
+
+test("a large plan edit within its limit still reaches the API", async ({ authProxy, request }) => {
+  const proposal = { ...PLAN.content, summary: "x".repeat(40 * 1024) };
+  const response = await request.post(authProxy.origin + PLAN_PATH, {
+    data: { expected_revision: 1, proposal },
+    headers: { ...WRITE_HEADERS, Origin: authProxy.origin, Cookie: "refactra_session=fixture-session" },
+  });
+  expect(response.status()).toBe(200);
+  expect(authProxy.calls).toHaveLength(1);
+});
+
 test("check waivers forward the body, session, Origin and CSRF header", async ({ authProxy, request }) => {
   const waiver = { result_id: RESULT.id, result_sha256: RESULT.sha256, check_index: 0, reason: "Reviewed manually." };
   const response = await request.post(authProxy.origin + WAIVER_PATH, {
