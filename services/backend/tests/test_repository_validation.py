@@ -119,8 +119,14 @@ def test_declared_imports_include_nested_manifest_and_exclude_local_modules(tmp_
     }
 
 
+def runner_readable(path):
+    """Let the non-root runner read a test workspace; pytest creates it 0700 on Linux."""
+    path.chmod(0o755)
+
+
 @pytest.mark.skipif(os.getenv("REFACTRA_TEST_PYTHON_DOCKER") != "1", reason="Requires Docker.")
 def test_cached_web_dependencies_run_inside_the_offline_container(tmp_path):
+    runner_readable(tmp_path)
     path = "test_web.py"
     (tmp_path / path).write_text(
         "from dotenv import dotenv_values\n"
@@ -144,6 +150,7 @@ def test_cached_web_dependencies_run_inside_the_offline_container(tmp_path):
     [("fixed", "PASSED"), ("wrong_type", "FAILED"), ("helper_only", "UNAVAILABLE")],
 )
 def test_flask_smoke_checks_a_changed_route_with_fake_dependencies(tmp_path, mode, expected):
+    runner_readable(tmp_path)
     argument = "search" if mode == "wrong_type" else "store"
     (tmp_path / "web_app.py").write_text(
         "from flask import Flask, request\n"
@@ -454,6 +461,7 @@ def test_reconciliation_removes_real_orphans_and_leaves_other_containers(session
     ("source", "expected"), [("number = 2", "PASSED"), ("number = 'two'", "FAILED")]
 )
 def test_typescript_checks_ignore_deprecated_tsconfig_options(tmp_path, source, expected):
+    runner_readable(tmp_path)
     # An older tsconfig that TypeScript 6 would otherwise reject before checking any code.
     (tmp_path / "tsconfig.json").write_text(
         '{"compilerOptions": {"target": "ES5", "moduleResolution": "node", "baseUrl": ".",'
