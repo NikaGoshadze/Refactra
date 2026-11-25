@@ -15,6 +15,7 @@ from itsdangerous import BadData, URLSafeTimedSerializer
 from sqlalchemy.exc import SQLAlchemyError
 
 from refactra.auth_sessions import SESSION_TTL, GitHubIdentity, issue_session, revoke_session
+from refactra.diagnostics import database_error_details, workflow_log
 
 OAUTH_TTL_SECONDS = 600
 CALLBACK_PATH = "/api/v1/auth/github/callback"
@@ -253,12 +254,22 @@ def create_github_auth_router(
             )
         except HTTPException as exc:
             response = JSONResponse({"error": exc.detail}, status_code=exc.status_code)
-        except SQLAlchemyError:
+        except SQLAlchemyError as error:
+            request_id = getattr(request.state, "request_id", None)
+            workflow_log(
+                "database_error",
+                warning=True,
+                request_id=request_id,
+                method=request.method,
+                route=CALLBACK_PATH,
+                **database_error_details(error),
+            )
             response = JSONResponse(
                 {
                     "error": {
                         "code": "database_unavailable",
                         "message": "The session could not be saved. Start again.",
+                        "request_id": request_id,
                     }
                 },
                 status_code=503,

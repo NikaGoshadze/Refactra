@@ -17,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from refactra.candidate_validation_worker import process_candidate_validation
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
+from refactra.diagnostics import database_error_details
 from refactra.models import Run, RunCommand, RunEvent
 from refactra.openai_analysis import OpenAIAnalysisProvider
 from refactra.publication_pr import process_approved_publication
@@ -330,7 +331,7 @@ def main():
                 {
                     "event": "worker_stopped",
                     "reason": "database_error",
-                    "error_type": type(error).__name__,
+                    **database_error_details(error),
                     "message": "Check the database; a supervised worker restarts automatically.",
                 }
             )
