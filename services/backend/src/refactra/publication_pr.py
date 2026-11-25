@@ -120,50 +120,56 @@ def open_approved_draft(session_factory, run_id: UUID) -> dict:
     ):
         raise PublicationTargetError("Push the approved branch before opening its draft PR.")
     app, reader = authorize_run_repository(run)
-    with session_factory.begin() as session:
-        # Serialize draft creation and its receipt for this run.
-        session.get(Run, run_id, with_for_update=True)
-        receipt = _publication_event(session, run_id, PUBLICATION_PR_OPENED)
-        if receipt is not None:
-            if any(receipt.get(key) != value for key, value in branch.items()):
-                raise PublicationTargetError(
-                    "The recorded pull request does not match the approved branch."
-                )
-            return receipt
+    with session_factory() as session:
+        recorded = _publication_event(session, run_id, PUBLICATION_PR_OPENED)
+    if recorded is not None:
+        return _matching_receipt(recorded, branch)
 
-        base = resolve_revision(reader, base_branch=run.base_branch, transport=app.transport)
-        tip = resolve_revision(reader, base_branch=head, transport=app.transport)
-        if (base.full_name, tip.full_name, base.commit_sha, tip.commit_sha) != (
-            branch["repository"],
-            branch["repository"],
-            run.base_sha,
-            commit,
-        ):
-            raise PublicationTargetError(
-                "The GitHub branches no longer match the approved commits."
-            )
-        writer = app.mint_pull_request_token(run.github_installation_id, run.github_repository_id)
-        with httpx.Client(
-            base_url="https://api.github.com",
-            timeout=10.0,
-            follow_redirects=False,
-            trust_env=False,
-            transport=app.transport,
-            headers={
-                "Authorization": f"Bearer {writer.value}",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2026-03-10",
-            },
-        ) as client:
-            number = _open_or_find_draft(
-                client, base.full_name, run, head, commit, validation_warnings
-            )
-        receipt = {
-            **branch,
-            "pull_request_number": number,
-            "pull_request_url": f"https://github.com/{base.full_name}/pull/{number}",
-        }
+    # GitHub calls run with no database transaction or row lock held. A retry after an
+    # ambiguous response finds the existing draft before creating one.
+    base = resolve_revision(reader, base_branch=run.base_branch, transport=app.transport)
+    tip = resolve_revision(reader, base_branch=head, transport=app.transport)
+    if (base.full_name, tip.full_name, base.commit_sha, tip.commit_sha) != (
+        branch["repository"],
+        branch["repository"],
+        run.base_sha,
+        commit,
+    ):
+        raise PublicationTargetError("The GitHub branches no longer match the approved commits.")
+    writer = app.mint_pull_request_token(run.github_installation_id, run.github_repository_id)
+    with httpx.Client(
+        base_url="https://api.github.com",
+        timeout=10.0,
+        follow_redirects=False,
+        trust_env=False,
+        transport=app.transport,
+        headers={
+            "Authorization": f"Bearer {writer.value}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2026-03-10",
+        },
+    ) as client:
+        number = _open_or_find_draft(client, base.full_name, run, head, commit, validation_warnings)
+    receipt = {
+        **branch,
+        "pull_request_number": number,
+        "pull_request_url": f"https://github.com/{base.full_name}/pull/{number}",
+    }
+    with session_factory.begin() as session:
+        # Lock only to record the verified outcome once.
+        session.get(Run, run_id, with_for_update=True)
+        recorded = _publication_event(session, run_id, PUBLICATION_PR_OPENED)
+        if recorded is not None:
+            return _matching_receipt(recorded, branch)
         session.add(RunEvent(run_id=run_id, event_type=PUBLICATION_PR_OPENED, payload=receipt))
+    return receipt
+
+
+def _matching_receipt(receipt: dict, branch: dict) -> dict:
+    if any(receipt.get(key) != value for key, value in branch.items()):
+        raise PublicationTargetError(
+            "The recorded pull request does not match the approved branch."
+        )
     return receipt
 
 
