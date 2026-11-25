@@ -317,6 +317,19 @@ This mode queues planning for analyses it completes. Use the operator command be
 
 Leases are not renewed during long commands, and the advisory lock keeps exactly one worker running. Renewable leases and ownership checks around external side effects are required before running a second worker.
 
+## Database error diagnostics
+
+Every API response carries an `X-Request-ID` header. A safe incoming `X-Request-ID` (8–64 letters, digits, `.`, `_` or `-`) is reused; otherwise one is generated. When a request fails on a database error, the API logs a `database_error` event with the request ID, method, route template (for example `/api/v1/runs/{run_id}`), exception class, a category and the PostgreSQL SQLSTATE code. The same request ID appears in the error response.
+
+| Category | Cause | Response |
+|---|---|---|
+| `connectivity` | Connection refused or lost, server shutting down or out of resources | 503 `database_unavailable` |
+| `concurrency` | Deadlock, serialization failure or lock not available | 503 `database_unavailable` |
+| `integrity`, `data`, `programming` | Constraint violation, invalid value, SQL or schema bug | 500 `database_error` |
+| `database` | Anything else | 503 `database_unavailable` |
+
+Logs never include the error message, SQL text, bound parameters or the database URL, which can contain data or credentials. The OAuth callback and the worker's `worker_stopped` event record the same details.
+
 ## Refactoring plan checkpoint
 
 Migration `0008_run_plans` adds plan revisions. After a run has saved analysis, an internal caller can pass a structured proposal to `save_refactoring_plan`. The server binds it to that run and commit. PostgreSQL stores the exact JSON bytes, bounded to 64 KiB, and checks their SHA-256 hash. An identical retry returns the current revision. A changed proposal appends a revision only when the caller's expected revision still matches. A saved proposal is untrusted input for human review.

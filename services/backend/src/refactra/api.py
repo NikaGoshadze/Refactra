@@ -1,9 +1,10 @@
+import re
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Annotated
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from fastapi import FastAPI, Header, HTTPException, Query, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy import Engine, select, text
@@ -12,6 +13,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from refactra.access_logs import install_auth_query_redaction
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
+from refactra.diagnostics import database_error_details, workflow_log
 from refactra.github_auth import create_github_auth_router
 from refactra.models import Run, RunCommand, RunEvent
 from refactra.repository_routes import create_repository_router
@@ -23,6 +25,8 @@ from refactra.worker_health import (
     PUBLICATION_WORKER_MODES,
     worker_status,
 )
+
+REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{8,64}")
 
 
 def create_app(
@@ -80,16 +84,38 @@ def create_app(
             },
         )
 
+    @app.middleware("http")
+    async def request_id(request: Request, call_next):
+        # Correlates a response with its log events; supplied IDs must be log-safe.
+        supplied = request.headers.get("X-Request-ID", "")
+        request.state.request_id = supplied if REQUEST_ID.fullmatch(supplied) else uuid4().hex
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request.state.request_id
+        return response
+
     @app.exception_handler(SQLAlchemyError)
-    async def database_error(_, exc: SQLAlchemyError):
+    async def database_error(request: Request, exc: SQLAlchemyError):
+        details = database_error_details(exc)
+        request_id = getattr(request.state, "request_id", None)
+        route = request.scope.get("route")
+        workflow_log(
+            "database_error",
+            warning=True,
+            request_id=request_id,
+            method=request.method,
+            route=getattr(route, "path", None),
+            **details,
+        )
+        if details["category"] in {"integrity", "data", "programming"}:
+            # A bug or invalid data; retrying will not help.
+            status, code = 500, "database_error"
+            message = "The request failed on a database error. Report the request ID."
+        else:
+            status, code = 503, "database_unavailable"
+            message = "The database is unavailable or busy. Retry shortly."
         return JSONResponse(
-            status_code=503,
-            content={
-                "error": {
-                    "code": "database_unavailable",
-                    "message": "The database or schema is unavailable. Check local service logs.",
-                }
-            },
+            status_code=status,
+            content={"error": {"code": code, "message": message, "request_id": request_id}},
         )
 
     def require_mock():
