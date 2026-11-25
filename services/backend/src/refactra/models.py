@@ -245,6 +245,8 @@ class RunCommand(Base):
             "created_at",
             postgresql_where=text("status IN ('PENDING', 'CLAIMED')"),
         ),
+        # Per-run command history read by progress and plan-feedback polling.
+        Index("ix_commands_run_created", "run_id", "created_at", "id"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)

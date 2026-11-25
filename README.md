@@ -261,6 +261,8 @@ The repository worker (`--repository-analysis` or `--repository-workflow`) then 
 
 `GET /api/v1/runs/{run_id}` returns the pinned revision and run status, plus a sanitized `stop_reason` if analysis failed. The worker uses the saved analysis internally. Each read requires ownership, an active session, and current repository access under the configured installation. Existing runs remain readable when new submissions are disabled.
 
+To limit GitHub traffic from status polling, the run, plan and result reads may reuse a successful GitHub permission check for the same session for up to 30 seconds. Concurrent reads share one check, and a reused token must have more than five minutes left. The session and allowlist are still checked on every request, so sign-out and local revocation apply immediately. Every write (submission, plan edit or approval, waiver, publication approval) checks GitHub again. The browser polls at its normal interval while a response changes, then backs off by 1.5× per unchanged response, up to 15 seconds. Migration `0019_command_history_index` indexes per-run command history for these reads.
+
 Both routes are available through the same-origin Next.js proxy. It forwards only Refactra session cookies, preserves the original submission origin and CSRF and idempotency headers, and keeps responses uncached. The proxy allows up to 60 seconds for a submission or a run check.
 
 After verifying repository access, use **Repository analysis** to choose the base branch and enter a task. The panel shows the pinned commit and polls until the worker saves the analysis or records a failure. A submission retry with the same input reuses its key while the panel is open. The panel clears on sign-out and tracks the current run in memory.

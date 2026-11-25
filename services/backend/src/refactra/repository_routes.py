@@ -307,7 +307,9 @@ def create_repository_router(
             status_code=status, content={"error": detail}, headers={"Cache-Control": "no-store"}
         )
 
-    def authorize(request, repository_id, *, expected_installation=None) -> RepositoryGrant:
+    def authorize(
+        request, repository_id, *, expected_installation=None, reuse=False
+    ) -> RepositoryGrant:
         # The shared authorizer decides; this router only maps its errors to HTTP responses.
         try:
             return authorizer.for_session(
@@ -315,6 +317,7 @@ def create_repository_router(
                 request.cookies.get(oauth.session_cookie_name),
                 repository_id,
                 expected_installation=expected_installation,
+                reuse=reuse,
             )
         except (OSError, ValueError, KeyError):
             raise HTTPException(
@@ -465,7 +468,8 @@ def create_repository_router(
                 },
             )
 
-    def require_run_access(request: Request, run_id: UUID) -> int:
+    def require_run_access(request: Request, run_id: UUID, *, polling: bool = False) -> int:
+        """Recheck access to an owned run. Read-only polls may reuse a recent GitHub check."""
         with session_factory() as session:
             identity = resolve_session(session, request.cookies.get(oauth.session_cookie_name))
             if identity is None:
@@ -483,7 +487,7 @@ def create_repository_router(
             raise HTTPException(404, RUN_NOT_FOUND)
         repository_id, installation_id = binding
         try:
-            authorize(request, repository_id, expected_installation=installation_id)
+            authorize(request, repository_id, expected_installation=installation_id, reuse=polling)
         except HTTPException as exc:
             if exc.status_code == 403:
                 raise HTTPException(404, RUN_NOT_FOUND) from None
@@ -501,7 +505,7 @@ def create_repository_router(
     @router.get("/runs/{run_id}", response_model=RepositoryRunRead)
     def read_analysis(run_id: UUID, request: Request, response: Response):
         try:
-            require_run_access(request, run_id)
+            require_run_access(request, run_id, polling=True)
             with session_factory() as session:
                 run = session.get(Run, run_id)
                 if run is None:
@@ -530,7 +534,7 @@ def create_repository_router(
         revision: Annotated[int | None, Query(ge=1, le=2_147_483_647)] = None,
     ):
         try:
-            require_run_access(request, run_id)
+            require_run_access(request, run_id, polling=True)
             with session_factory() as session:
                 status = None
                 if revision is None:
@@ -568,7 +572,7 @@ def create_repository_router(
         progress: bool = False,
     ):
         try:
-            require_run_access(request, run_id)
+            require_run_access(request, run_id, polling=True)
         except HTTPException as exc:
             return error(exc.status_code, exc.detail)
 
