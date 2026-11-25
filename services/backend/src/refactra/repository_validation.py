@@ -399,6 +399,10 @@ def _validate_check(
             "false",
             "--incremental",
             "false",
+            # TypeScript 6 rejects options it deprecated (for example target ES5 or baseUrl).
+            # A repository's older tsconfig is not a candidate defect, so only type errors fail.
+            "--ignoreDeprecations",
+            "6.0",
             "--project",
             targets[0],
         ]
