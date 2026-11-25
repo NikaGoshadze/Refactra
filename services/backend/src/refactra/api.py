@@ -17,6 +17,7 @@ from refactra.diagnostics import database_error_details, workflow_log
 from refactra.github_auth import create_github_auth_router
 from refactra.models import Run, RunCommand, RunEvent
 from refactra.repository_routes import create_repository_router
+from refactra.request_limits import BodyLimitMiddleware
 from refactra.run_access import RepositoryAuthorizer
 from refactra.schemas import EventPage, EventRead, MockRunCreate, MockRunRead
 from refactra.session_routes import create_session_router
@@ -83,6 +84,9 @@ def create_app(
                 }
             },
         )
+
+    # Registered before request_id so request_id stays outermost and tags rejections too.
+    app.add_middleware(BodyLimitMiddleware)
 
     @app.middleware("http")
     async def request_id(request: Request, call_next):

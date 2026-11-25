@@ -265,6 +265,8 @@ To limit GitHub traffic from status polling, the run, plan and result reads may 
 
 Both routes are available through the same-origin Next.js proxy. It forwards only Refactra session cookies, preserves the original submission origin and CSRF and idempotency headers, and keeps responses uncached. The proxy allows up to 60 seconds for a submission or a run check.
 
+Request bodies are bounded in both the proxy and the API, whether or not `Content-Length` is sent. A plan edit may send up to 128 KiB (saved plans are at most 64 KiB); every other write is limited to 16 KiB. The whole body must arrive within 10 seconds. An oversized body returns 413 `request_too_large` and a slow one 408 `request_timeout`, and neither is forwarded. The proxy's deadline can be shortened for tests with `REFACTRA_PROXY_BODY_TIMEOUT_MS`.
+
 After verifying repository access, use **Repository analysis** to choose the base branch and enter a task. The panel shows the pinned commit and polls until the worker saves the analysis or records a failure. A submission retry with the same input reuses its key while the panel is open. The panel clears on sign-out and tracks the current run in memory.
 
 ## Run the full repository workflow locally

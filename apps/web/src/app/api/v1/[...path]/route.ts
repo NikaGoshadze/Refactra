@@ -10,6 +10,55 @@ const AUTH_COOKIES = new Set([
 ]);
 // The OAuth callback URL carries the authorization code and state; never send it as a referrer.
 const NO_REFERRER = { "Referrer-Policy": "no-referrer" };
+// Request bodies are read with a byte limit and a deadline before anything is forwarded.
+const BODY_LIMIT = 16 * 1024;
+const PLAN_BODY_LIMIT = 128 * 1024; // A full plan edit; saved plans are at most 64 KiB.
+const BODY_TIMEOUT_MS = Number(process.env.REFACTRA_PROXY_BODY_TIMEOUT_MS) || 10_000;
+const NO_STORE = { "Cache-Control": "no-store" };
+
+class BodyRejected extends Error {
+  constructor(readonly status: 400 | 408 | 413) { super(); }
+}
+
+/** Read at most `limit` bytes within the deadline, whether or not Content-Length is sent. */
+async function readBody(request: NextRequest, limit: number): Promise<string> {
+  if (Number(request.headers.get("content-length")) > limit) throw new BodyRejected(413);
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new BodyRejected(408)), BODY_TIMEOUT_MS);
+  });
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), expired]);
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) throw new BodyRejected(413);
+      chunks.push(value);
+    }
+  } catch (error) {
+    void reader.cancel().catch(() => undefined);
+    throw error instanceof BodyRejected ? error : new BodyRejected(400);
+  } finally {
+    clearTimeout(timer);
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
+}
+
+const BODY_ERRORS = {
+  400: { code: "request_body_unreadable", message: "The request body could not be read." },
+  408: { code: "request_timeout", message: "The request body was not received in time." },
+  413: { code: "request_too_large", message: "The request body is too large." },
+};
 
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
@@ -37,6 +86,15 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   if (!(request.method === "GET" ? readAllowed : request.method === "POST" && writeAllowed)) {
     return NextResponse.json({ error: { code: "unavailable_route", message: "This route is not available in the foundation build." } }, { status: 404, headers: { "Cache-Control": "no-store" } });
   }
+  let body: string | undefined;
+  if (request.method === "POST") {
+    try {
+      body = await readBody(request, isPlan ? PLAN_BODY_LIMIT : BODY_LIMIT);
+    } catch (error) {
+      const status = error instanceof BodyRejected ? error.status : 400;
+      return NextResponse.json({ error: BODY_ERRORS[status] }, { status, headers: NO_STORE });
+    }
+  }
   try {
     const headers = new Headers({ "Content-Type": "application/json" });
     const key = request.headers.get("Idempotency-Key");
@@ -58,7 +116,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     const timeoutMs = sessionOnly ? 60000 : relative === "auth/github/callback" ? 25000 : 5000;
     const upstream = await fetch(`${process.env.REFACTRA_API_URL ?? "http://127.0.0.1:8000"}/api/v1/${relative}${request.nextUrl.search}`, {
       method: request.method, headers,
-      body: request.method === "POST" ? await request.text() : undefined,
+      body,
       cache: "no-store", redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
     });
