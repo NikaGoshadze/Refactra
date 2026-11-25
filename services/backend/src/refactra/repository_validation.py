@@ -19,7 +19,6 @@ from sqlalchemy.engine import make_url
 
 from refactra.config import Settings
 from refactra.diagnostics import workflow_log
-from refactra.go_validation import GO_ENV, GO_IMAGE, GO_TMPFS, go_invocation, go_source_path
 from refactra.models import RunCommand
 from refactra.python_dependency_cache import PythonLockError, pinned_python_requirements
 from refactra.python_test_support import (
@@ -31,7 +30,6 @@ from refactra.python_test_support import (
 from refactra.refactoring_plan import (
     ASSET_CHECK,
     FLASK_CHECK,
-    GO_CHECK,
     PATCH_CHECK,
     TYPESCRIPT_CHECK,
     ProposedChange,
@@ -169,26 +167,13 @@ def candidate_checks(
 ) -> list[CandidateCheck]:
     if approved_file_operation(changes, checks) == "asset_replace":
         return [CandidateCheck(ASSET_CHECK, [changes[0].path], True)]
-    # Keep every approved check, including go.test, with its approved paths and required flag.
+    # Keep every approved check with its approved paths and required flag; the built-in
+    # patch check always runs last.
     result = [
         CandidateCheck(check.check_id, check.paths, check.required)
         for check in checks
         if check.check_id != PATCH_CHECK
     ]
-    approved_packages = {
-        PurePosixPath(path).parent
-        for check in checks
-        if check.check_id == GO_CHECK
-        for path in check.paths
-    }
-    # Infer a separate check for Go edits, including deletions, outside the approved packages.
-    inferred = [
-        edit.path
-        for edit in changes
-        if go_source_path(edit.path) and PurePosixPath(edit.path).parent not in approved_packages
-    ]
-    if inferred:
-        result.append(CandidateCheck(GO_CHECK, inferred, True))
     return [*result, CandidateCheck(PATCH_CHECK, [edit.path for edit in changes], True)]
 
 
@@ -274,10 +259,6 @@ def _locked_python_image(lock: bytes, base_id: str) -> str:
     raise RepositoryValidationError("The prepared Python image could not be verified.")
 
 
-def _deleted_paths(workspace: "ApprovedWorkspace") -> frozenset[str]:
-    return frozenset(edit.path for edit in workspace.changes if edit.action == "DELETE")
-
-
 def _targets(workspace: "ApprovedWorkspace", check: CandidateCheck) -> list[str]:
     if check.check_id == TYPESCRIPT_CHECK:
         if len(check.paths) != 1 or not is_typescript_config(check.paths[0]):
@@ -292,20 +273,12 @@ def _targets(workspace: "ApprovedWorkspace", check: CandidateCheck) -> list[str]
             raise RepositoryValidationError(reason)
         if check.check_id == FLASK_CHECK and not all(_pytest_file(path) for path in check.paths):
             raise RepositoryValidationError("Flask validation needs pytest test modules.")
-    elif check.check_id == GO_CHECK:
-        if not check.paths or any(not go_source_path(path) for path in check.paths):
-            raise RepositoryValidationError(
-                "Go validation needs staged Go source or a go.mod file."
-            )
     elif check.check_id == ASSET_CHECK:
         raise RepositoryValidationError("Asset validation needs one approved binary replacement.")
     else:
         raise RepositoryValidationError("Refactra has no runner for this check.")
     root = workspace.root.resolve(strict=True)
-    deleted = _deleted_paths(workspace)
     for path in check.paths:
-        if check.check_id == GO_CHECK and path in deleted:
-            continue  # The runner tests the deleted file's package or module instead.
         target = root.joinpath(*PurePosixPath(path).parts)
         if (
             (check.check_id in _PYTHON_CHECKS and target.suffix != ".py")
@@ -313,8 +286,6 @@ def _targets(workspace: "ApprovedWorkspace", check: CandidateCheck) -> list[str]
             or target.resolve() != target
             or not target.is_file()
         ):
-            if check.check_id == GO_CHECK:
-                raise RepositoryValidationError("Go validation needs staged regular files.")
             raise RepositoryValidationError(
                 "The approved check must target staged Python files or a staged tsconfig."
             )
@@ -388,7 +359,6 @@ def _validate_check(
     entrypoint = "/app/.venv/bin/python"
     workdir, tmpfs = "/workspace", TMPFS
     environment = ["--env", "HOME=/tmp", "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1"]
-    standalone_go = False
     declared = (
         declared_test_imports(workspace.root, check.paths)
         if check.check_id in _PYTHON_CHECKS
@@ -432,18 +402,6 @@ def _validate_check(
             "--project",
             targets[0],
         ]
-    elif check.check_id == GO_CHECK:
-        try:
-            go = go_invocation(
-                workspace.root.resolve(), check.paths, deleted=_deleted_paths(workspace)
-            )
-        except ValueError as error:
-            raise RepositoryValidationError(str(error)) from None
-        entrypoint = "/usr/local/go/bin/go"
-        workdir, tmpfs, arguments = go.directory, GO_TMPFS, go.arguments
-        standalone_go = go.standalone
-        for setting in (*GO_ENV, f"GO111MODULE={'off' if standalone_go else 'on'}"):
-            environment.extend(("--env", setting))
     labels = {
         CONTAINER_LABEL: "1",
         f"{CONTAINER_LABEL}.instance": owner.instance,
@@ -516,22 +474,6 @@ def _validate_check(
             unavailable = "The tests did not send a request to a changed Flask route."
         elif check.check_id in _PYTHON_CHECKS:
             unavailable = python_unavailable_reason(exit_code, text, declared)
-        elif check.check_id == GO_CHECK:
-            if standalone_go:
-                note = "No go.mod found. Go checks ran in standalone mode."
-                text = f"{note}\n{text}"
-                if exit_code == 0:
-                    unavailable = note
-            if (
-                exit_code == 1
-                and "module lookup disabled by GOPROXY=off" in text
-                and "[setup failed]" in text
-                and "--- FAIL:" not in text
-                and "[build failed]" not in text
-            ):
-                unavailable = "The Go module requires dependencies unavailable offline."
-            elif exit_code == 1 and text.startswith("go: go.mod requires go >="):
-                unavailable = "The module requires a newer Go toolchain than the offline runner."
         if unavailable:
             return ValidationResult(
                 check.check_id,
@@ -577,15 +519,6 @@ def validate_candidate(
             continue
         try:
             targets = _targets(workspace, check)
-            if check.check_id == GO_CHECK:
-                try:
-                    runner = _docker("image", "inspect", "--format", "{{.Id}}", GO_IMAGE)
-                except RepositoryValidationError:
-                    raise RepositoryValidationError(
-                        "The offline Go validation image is unavailable."
-                    ) from None
-                results.append(_validate_check(workspace, check, targets, runner, owner))
-                continue
             if image_error:
                 raise RepositoryValidationError(image_error)
             if not image_id:

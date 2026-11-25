@@ -10,7 +10,6 @@ import pytest
 from sqlalchemy import func, select
 
 from refactra import repository_validation as validation
-from refactra.go_validation import go_invocation
 from refactra.models import Run, RunCommand
 from refactra.python_dependency_cache import PythonLockError, pinned_python_requirements
 from refactra.python_test_support import (
@@ -176,105 +175,46 @@ def test_search(monkeypatch):
     assert validation.blocks_candidate([result, baseline]) == (mode == "wrong_type")
 
 
-@pytest.mark.skipif(os.getenv("REFACTRA_TEST_GO_DOCKER") != "1", reason="Requires the Go image.")
-@pytest.mark.parametrize(
-    "mode, expected",
-    [("module", "PASSED"), ("standalone", "UNAVAILABLE"), ("bad_import", "FAILED")],
-)
-def test_go_changes_run_an_offline_build_and_tests(tmp_path, mode, expected):
-    tool = tmp_path / "tools" / "book-index"
-    tool.mkdir(parents=True)
-    go_file = tool / "main.go"
-    extra = 'import "bytes"\n' if mode == "bad_import" else ""
-    go_file.write_text(f"package main\n{extra}func main() {{}}\nfunc books() int {{ return 2 }}\n")
-    (tool / "main_test.go").write_text(
-        'package main\nimport "testing"\n'
-        'func TestBooks(t *testing.T) { if books() != 2 { t.Fatal("wrong number") } }\n'
-    )
-    if mode == "module":
-        (tool / "go.mod").write_text("module example.test/book-index\n\ngo 1.24\n")
-    change = ProposedChange(
-        path="tools/book-index/main.go", action="CREATE", intent="Create a tool."
-    )
-    workspace = ApprovedWorkspace(tmp_path, "a" * 40, 1, "b" * 64, 3, (change,))
-    result, baseline = validation.validate_candidate(workspace)
-    assert result.check_id == "go.test" and result.status == expected, (result, baseline)
-    assert baseline.status == "PASSED"
-    assert validation.blocks_candidate([result, baseline]) == (mode == "bad_import")
-    if mode != "module":
-        assert "No go.mod" in result.output
-    if mode == "bad_import":
-        assert "imported and not used" in result.output
-
-
-def _go_change(path: str, action: str) -> ProposedChange:
-    return ProposedChange(path=path, action=action, intent="Change Go code.")
-
-
 def _scope(checks) -> list[tuple]:
     return [(check.check_id, check.paths, check.required) for check in checks]
 
 
-def test_approved_go_checks_keep_their_scope_and_inferred_checks_are_separate():
-    changes = [_go_change("svc/api/handler.go", "MODIFY"), _go_change("svc/old/old.go", "DELETE")]
-    approved = ValidationCheck(
-        check_id="go.test",
-        paths=["svc/api/handler_test.go", "svc/report/report_test.go"],
-        required=False,
-        criteria_ids=["AC1"],
-    )
-    assert _scope(validation.candidate_checks(changes, [approved])) == [
-        ("go.test", ["svc/api/handler_test.go", "svc/report/report_test.go"], False),
-        ("go.test", ["svc/old/old.go"], True),
-        ("repository.patch", ["svc/api/handler.go", "svc/old/old.go"], True),
+def test_approved_checks_keep_their_scope_and_the_patch_check_runs_last():
+    changes = [ProposedChange(path="src/cart.py", action="MODIFY", intent="Change the cart.")]
+    approved = [
+        ValidationCheck(
+            check_id="python.pytest",
+            paths=["tests/test_cart.py"],
+            required=True,
+            criteria_ids=["AC1"],
+        ),
+        ValidationCheck(
+            check_id="typescript.tsc",
+            paths=["tsconfig.json"],
+            required=False,
+            criteria_ids=["AC1"],
+        ),
+    ]
+    assert _scope(validation.candidate_checks(changes, approved)) == [
+        ("python.pytest", ["tests/test_cart.py"], True),
+        ("typescript.tsc", ["tsconfig.json"], False),
+        ("repository.patch", ["src/cart.py"], True),
     ]
 
 
-def test_deletion_only_go_change_still_records_a_required_check():
-    changes = [_go_change("pkg/util/strings.go", "DELETE")]
-    assert _scope(validation.candidate_checks(changes, [])) == [
-        ("go.test", ["pkg/util/strings.go"], True),
-        ("repository.patch", ["pkg/util/strings.go"], True),
-    ]
-
-
-def test_go_targets_accept_deleted_paths_but_not_other_missing_files(tmp_path):
-    change = _go_change("pkg/old.go", "DELETE")
-    workspace = ApprovedWorkspace(tmp_path, "a" * 40, 1, "b" * 64, 0, (change,))
-    assert validation._targets(workspace, validation.CandidateCheck("go.test", [change.path], True))
-    missing = validation.CandidateCheck("go.test", ["pkg/other.go"], True)
-    with pytest.raises(validation.RepositoryValidationError, match="staged regular files"):
-        validation._targets(workspace, missing)
-
-
-def test_deleted_go_files_test_their_package_or_the_whole_module(tmp_path):
-    (tmp_path / "go.mod").write_text("module example.test/app\n\ngo 1.24\n")
-    (tmp_path / "pkg" / "util").mkdir(parents=True)
-    (tmp_path / "pkg" / "util" / "keep.go").write_text("package util\n")
-    partial = go_invocation(tmp_path, ["pkg/util/old.go"], deleted=frozenset({"pkg/util/old.go"}))
-    assert partial.arguments[-1] == "./pkg/util"
-    removed = go_invocation(tmp_path, ["pkg/gone/gone.go"], deleted=frozenset({"pkg/gone/gone.go"}))
-    assert removed.arguments[-1] == "./..."
-
-
-@pytest.mark.skipif(os.getenv("REFACTRA_TEST_GO_DOCKER") != "1", reason="Requires the Go image.")
-def test_deleting_a_go_file_runs_the_tests_that_depended_on_it(tmp_path):
-    tool = tmp_path / "tools" / "book-index"
-    tool.mkdir(parents=True)
-    (tool / "go.mod").write_text("module example.test/book-index\n\ngo 1.24\n")
-    (tool / "main.go").write_text("package main\nfunc main() {}\n")
-    (tool / "main_test.go").write_text(
-        'package main\nimport "testing"\n'
-        'func TestBooks(t *testing.T) { if books() != 2 { t.Fatal("wrong number") } }\n'
+def test_a_check_without_a_runner_is_reported_unavailable_without_docker(tmp_path, monkeypatch):
+    # Go support was removed; older plans may still name go.test.
+    change = ProposedChange(path="main.go", action="MODIFY", intent="Change the tool.")
+    check = ValidationCheck(
+        check_id="go.test", paths=["main.go"], required=True, criteria_ids=["AC1"]
     )
-    # The candidate deleted books.go, which defined books().
-    change = _go_change("tools/book-index/books.go", "DELETE")
-    workspace = ApprovedWorkspace(tmp_path, "a" * 40, 1, "b" * 64, 2, (change,))
-    result, baseline = validation.validate_candidate(workspace)
-    assert (result.check_id, result.paths) == ("go.test", [change.path])
-    assert result.status == "FAILED", result.output
-    assert "undefined: books" in result.output
-    assert validation.blocks_candidate([result, baseline])
+    (tmp_path / "main.go").write_text("package main\n")
+    workspace = ApprovedWorkspace(tmp_path, "a" * 40, 1, "b" * 64, 1, (change,), (check,))
+    monkeypatch.setattr(validation, "_docker", lambda *args, **kwargs: pytest.fail("Docker"))
+    unavailable, baseline = validation.validate_candidate(workspace)
+    assert (unavailable.check_id, unavailable.status) == ("go.test", "UNAVAILABLE")
+    assert unavailable.reason == "Refactra has no runner for this check."
+    assert baseline.check_id == "repository.patch"
 
 
 def lock_for(version: str = "1.0") -> bytes:
