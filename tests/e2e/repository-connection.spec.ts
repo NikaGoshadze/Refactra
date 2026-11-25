@@ -1,7 +1,7 @@
 import { test, expect } from "../fixtures/auth-proxy";
 
 const metadata = { repository_id: 1001132861, full_name: "fixture/example", default_branch: "main", access: "read-only" };
-const repositoryUrl = "**/api/v1/repositories/1001132861";
+const repositoryUrl = "**/api/v1/repository";
 
 test.beforeEach(async ({ page, authProxy }) => {
   authProxy.calls.length = 0;
@@ -13,7 +13,7 @@ test("repository check stays disabled until the account is confirmed", async ({ 
   await expect(page.getByRole("region", { name: "GitHub account" }).getByText("Not signed in", { exact: true })).toBeVisible();
   const panel = page.getByRole("region", { name: "Repository connection" });
   await expect(panel.getByRole("button", { name: "Check repository access" })).toBeDisabled();
-  expect(authProxy.calls.some((call) => call.url.startsWith("/api/v1/repositories/"))).toBe(false);
+  expect(authProxy.calls.some((call) => call.url.startsWith("/api/v1/repositor"))).toBe(false);
 });
 
 test("a verified connection shows metadata and clears it after sign-out", async ({ page, context, authProxy }, testInfo) => {
@@ -22,11 +22,14 @@ test("a verified connection shows metadata and clears it after sign-out", async 
   await page.goto(authProxy.origin);
   const panel = page.getByRole("region", { name: "Repository connection" });
   await expect(panel.getByRole("button", { name: "Check repository access" })).toBeEnabled();
+  // The repository comes from the API's configuration, not a name built into the page.
+  await expect(panel.locator(".repository-target")).toHaveText("Configured repository");
   await panel.getByRole("button", { name: "Check repository access" }).click();
   await expect(panel.getByRole("status")).toHaveText("Read-only connection verified.");
-  await expect(panel.getByText("fixture/example", { exact: true })).toBeVisible();
+  await expect(panel.locator(".repository-target")).toHaveText("fixture/example");
+  await expect(panel.getByRole("definition").filter({ hasText: "fixture/example" })).toBeVisible();
   await expect(panel.getByText("main", { exact: true })).toBeVisible();
-  expect(authProxy.calls.filter((call) => call.url.startsWith("/api/v1/repositories/"))).toHaveLength(1);
+  expect(authProxy.calls.filter((call) => call.url === "/api/v1/repository")).toHaveLength(1);
   expect(await page.evaluate(() => document.cookie)).not.toContain("refactra_session");
   await page.screenshot({ path: testInfo.outputPath("repository-desktop.png"), fullPage: true });
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
@@ -78,15 +81,28 @@ test("sign-out cancels a pending check and prevents a late result from restoring
   });
   await page.goto(authProxy.origin);
   const panel = page.getByRole("region", { name: "Repository connection" });
-  const started = page.waitForRequest((request) => request.url().endsWith("/repositories/1001132861"));
+  const started = page.waitForRequest((request) => request.url().endsWith("/api/v1/repository"));
   await panel.getByRole("button", { name: "Check repository access" }).click();
   await started;
   await expect(panel.getByRole("button", { name: "Checking access…" })).toBeDisabled();
-  const cancelled = page.waitForEvent("requestfailed", { predicate: (request) => request.url().endsWith("/repositories/1001132861") });
+  const cancelled = page.waitForEvent("requestfailed", { predicate: (request) => request.url().endsWith("/api/v1/repository") });
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await cancelled;
   release();
   await lateResponse;
   await expect(panel.getByRole("button", { name: "Check repository access" })).toBeDisabled();
   await expect(panel.getByText("fixture/example", { exact: true })).toHaveCount(0);
+});
+
+test("the analysis form explains when no analysis worker is running", async ({ page, context, authProxy }) => {
+  await context.addCookies([{ name: "refactra_session", value: "fixture-session", url: authProxy.origin, httpOnly: true }]);
+  await page.route("**/api/v1/capabilities", (route) => route.fulfill({
+    json: { mock_enabled: true, repository_analysis_enabled: true, analysis_worker_available: false },
+  }));
+  await page.goto(authProxy.origin);
+  await page.getByRole("region", { name: "Repository connection" })
+    .getByRole("button", { name: "Check repository access" }).click();
+  const analysis = page.getByRole("region", { name: "Repository analysis" });
+  await expect(analysis.getByText("No analysis worker is running.", { exact: false })).toBeVisible();
+  await expect(analysis.getByRole("button", { name: "Start analysis" })).toBeVisible();
 });

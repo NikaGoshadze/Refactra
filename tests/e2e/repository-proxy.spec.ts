@@ -24,6 +24,18 @@ for (const cookieName of ["refactra_session", "__Host-refactra_session"]) {
   });
 }
 
+test("the configured repository route forwards only the session cookie", async ({ authProxy, request }) => {
+  const response = await request.get(`${authProxy.origin}/api/v1/repository`, {
+    headers: { Cookie: "refactra_session=fixture-session; analytics=private", Authorization: "Bearer must-not-pass" },
+  });
+  expect(response.status()).toBe(200);
+  expect(response.headers()["cache-control"]).toBe("no-store");
+  expect((await response.json()).repository_id).toBe(1001132861);
+  expect(authProxy.calls[0].url).toBe("/api/v1/repository");
+  expect(authProxy.calls[0].headers.cookie).toBe("refactra_session=fixture-session");
+  expect(authProxy.calls[0].headers.authorization).toBeUndefined();
+});
+
 test("anonymous repository requests retain the backend 401", async ({ authProxy, request }) => {
   const response = await request.get(`${authProxy.origin}/api/v1/repositories/42`, {
     headers: { Cookie: "refactra_oauth=attempt; analytics=private" },

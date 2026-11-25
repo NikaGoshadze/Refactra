@@ -247,6 +247,22 @@ test("an unavailable required check must be waived before publication approval",
   await expect(approve).toBeEnabled();
 });
 
+test("candidate review explains when no publication worker is running", async ({ page }) => {
+  await page.route("**/api/v1/capabilities", (route) => route.fulfill({
+    json: { mock_enabled: true, repository_analysis_enabled: true, publication_worker_available: false },
+  }));
+  await page.route(`**${PLAN_PATH}`, (route) => route.fulfill({ json: { ...PLAN, approval: { revision: 1 } } }));
+  await page.route(`**${RESULT_PATH}?progress=true`, (route) => route.fulfill({
+    json: { status: "idle", message: null, result: RESULT },
+  }));
+  await page.getByText("Open a saved run", { exact: true }).click();
+  await page.getByLabel("Run ID", { exact: true }).fill(RUN_ID);
+  await page.getByRole("button", { name: "Open run", exact: true }).click();
+  const result = page.getByRole("region", { name: "Candidate result" });
+  await expect(result.getByText("No publication worker is running.", { exact: false })).toBeVisible();
+  await expect(result.getByRole("button", { name: "Approve publication" })).toBeEnabled();
+});
+
 test("shows a worker failure when reopening an approved run", async ({ page }) => {
   await page.route(`**${PLAN_PATH}`, (route) => route.fulfill({
     json: { ...PLAN, approval: { revision: 1 } },

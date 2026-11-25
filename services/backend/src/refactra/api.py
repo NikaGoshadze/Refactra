@@ -18,7 +18,11 @@ from refactra.repository_routes import create_repository_router
 from refactra.run_access import RepositoryAuthorizer
 from refactra.schemas import EventPage, EventRead, MockRunCreate, MockRunRead
 from refactra.session_routes import create_session_router
-from refactra.worker_health import worker_status
+from refactra.worker_health import (
+    ANALYSIS_WORKER_MODES,
+    PUBLICATION_WORKER_MODES,
+    worker_status,
+)
 
 
 def create_app(
@@ -141,12 +145,22 @@ def create_app(
 
     @app.get("/api/v1/capabilities")
     def capabilities():
+        """What this deployment accepts, and whether a worker is available to act on it."""
+        try:
+            with session_factory() as session:
+                worker = worker_status(session)
+            status, mode = worker.status, worker.mode
+        except SQLAlchemyError:
+            status, mode = "unknown", None
+        running = status == "running"
         return {
             "mock_enabled": settings.enable_mock,
             "repository_analysis_enabled": settings.enable_repository_analysis,
-            "live_execution_enabled": False,
-            "approvals_enabled": False,
-            "github_publication_enabled": False,
+            # Plan, waiver and publication approval routes are always served for existing runs.
+            "approvals_enabled": True,
+            "worker": {"status": status, "mode": mode},
+            "analysis_worker_available": running and mode in ANALYSIS_WORKER_MODES,
+            "publication_worker_available": running and mode in PUBLICATION_WORKER_MODES,
         }
 
     if not settings.enable_repository_analysis:

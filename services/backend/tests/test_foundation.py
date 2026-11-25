@@ -31,9 +31,10 @@ def test_liveness_and_disabled_features_do_not_require_a_database():
         assert client.get("/api/v1/capabilities").json() == {
             "mock_enabled": False,
             "repository_analysis_enabled": False,
-            "live_execution_enabled": False,
-            "approvals_enabled": False,
-            "github_publication_enabled": False,
+            "approvals_enabled": True,
+            "worker": {"status": "unknown", "mode": None},
+            "analysis_worker_available": False,
+            "publication_worker_available": False,
         }
         assert submit(client).json()["error"]["code"] == "mock_disabled"
         assert client.post("/api/v1/runs").json()["error"]["code"] == "live_execution_disabled"

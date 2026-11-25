@@ -15,7 +15,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   const { path } = await context.params;
   const relative = path.join("/");
   const isAuth = AUTH_READ_ROUTES.has(relative) || relative === "auth/logout";
-  const isRepository = /^repositories\/[1-9][0-9]*$/.test(relative);
+  const isRepository = relative === "repository" || /^repositories\/[1-9][0-9]*$/.test(relative);
   const isAnalysisSubmit = relative === "runs";
   const [resource, id, section, action] = path;
   const isRun = resource === "runs" && RUN_ID_PATTERN.test(id ?? "");

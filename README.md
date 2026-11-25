@@ -126,7 +126,16 @@ The separate GitHub permission checker mints a repository-scoped read token, con
 
 Runtime settings are `REFACTRA_ALLOWED_GITHUB_USER_IDS`, `REFACTRA_GITHUB_REPOSITORY_ID`, `REFACTRA_GITHUB_INSTALLATION_ID`, `REFACTRA_GITHUB_CLIENT_ID` and a readable `REFACTRA_GITHUB_PRIVATE_KEY_PATH`. The default Compose API does not receive the repository settings or key mount; enable the optional override below for local use. The web proxy exposes this endpoint as GET-only for positive decimal repository IDs. Endpoint tests use PostgreSQL sessions and simulated GitHub responses.
 
-The workspace's Repository connection panel targets the selected AI-Hub development fixture (`1001132861`); repository selection is not implemented yet. Confirm your account, then click Check repository access to retrieve metadata. Loading/errors are explicit, failed checks can be retried, and sign-out clears details and cancels pending reads. Results stay in component memory and are rechecked on demand; the browser permits 65 seconds for the proxy's 60-second request limit. This panel does not enable real refactoring or change the mock task queue.
+The workspace's Repository connection panel targets the repository configured by `REFACTRA_GITHUB_REPOSITORY_ID`. `GET /api/v1/repository` returns that repository's verified metadata only to an eligible signed-in user, with the same checks as `/repositories/{id}`, and 503 when nothing is configured. The panel shows the verified name after the check, so a non-fixture deployment never displays a built-in name. Confirm your account, then click Check repository access to retrieve metadata. Loading and errors are explicit, failed checks can be retried, and sign-out clears details and cancels pending reads. Results stay in component memory and are rechecked on demand; the browser permits 65 seconds for the proxy's 60-second request limit.
+
+`GET /api/v1/capabilities` reports what the deployment accepts and whether a worker can act on it:
+- `repository_analysis_enabled`: whether new submissions are accepted.
+- `approvals_enabled`: plan, waiver and publication approvals, which are always served for existing runs.
+- `worker`: the worker's heartbeat status and mode.
+- `analysis_worker_available`: a running `repository_analysis` or `repository_workflow` worker.
+- `publication_worker_available`: a running `repository_workflow` worker, or a `--repository-candidate` worker with an artifact directory, which reports the mode `repository_publication`.
+
+When no suitable worker is running, the analysis form and candidate review explain that work will wait in the queue.
 
 Repository proxy calls forward only Refactra session cookies (local and HTTPS names), preserve backend status/JSON, and force `no-store` on responses. OAuth/unrelated cookies and browser Authorization headers are not forwarded to this route. The proxy permits up to 60 seconds for the backend's sequential GitHub checks; other route timeouts are unchanged. Proxy tests use an isolated production Next.js server and a simulated API, including a response delayed beyond five seconds.
 

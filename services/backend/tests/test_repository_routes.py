@@ -171,6 +171,22 @@ def test_authorized_endpoint_returns_only_safe_metadata(browser):
     assert "fixture-secret" not in response.text and "fixture-private" not in response.text
 
 
+def test_configured_repository_is_returned_only_to_eligible_users(browser, monkeypatch):
+    client, calls, _, _ = browser
+    by_id = client.get("/api/v1/repositories/42").json()
+    configured = client.get("/api/v1/repository")
+    assert configured.status_code == 200 and configured.json() == by_id
+    assert configured.headers["cache-control"] == "no-store"
+    client.cookies.clear()
+    calls.clear()
+    anonymous = client.get("/api/v1/repository")
+    assert anonymous.status_code == 401 and "42" not in anonymous.text and calls == []
+    monkeypatch.delenv("REFACTRA_GITHUB_REPOSITORY_ID")
+    missing = client.get("/api/v1/repository")
+    assert missing.status_code == 503
+    assert missing.json()["error"]["code"] == "repository_access_unconfigured"
+
+
 @pytest.mark.parametrize(
     "problem,status",
     [("anonymous", 401), ("revoked", 401), ("uninvited", 403), ("wrong_repo", 403)],
