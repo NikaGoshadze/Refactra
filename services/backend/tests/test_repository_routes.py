@@ -5,18 +5,17 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 import refactra.repository_plan_worker as plan_worker
-import refactra.repository_routes as routes
-import refactra.run_access as run_access
 from refactra.api import create_app
 from refactra.auth_sessions import GitHubIdentity, issue_session, revoke_session
 from refactra.candidate_patch import CandidatePatch
 from refactra.candidate_results import save_validated_candidate
 from refactra.config import Settings
-from refactra.github_app import GitHubAppClient, InstallationToken
 from refactra.models import Run, RunAnalysisContext, RunCommand, RunEvent
 from refactra.openai_analysis import OpenAIAnalysisProvider
 from refactra.publication_target import (
@@ -31,6 +30,7 @@ from refactra.refactoring_plan import GENERATE_PLAN, approve_refactoring_plan, s
 from refactra.repository_analysis_worker import WORKFLOW, process_repository_analysis
 from refactra.repository_candidate import VALIDATE_CANDIDATE
 from refactra.repository_validation import ValidationResult
+from refactra.run_access import RepositoryAuthorizer, authorize_run_repository
 from refactra.snapshot_preparation import PREPARE_SNAPSHOT, process_snapshot_preparation
 from refactra.worker import claim_command
 
@@ -44,6 +44,9 @@ ARCHIVE = zip_bytes(
     [("example/src/cart.py", b"def cart(): return 1"), ("example/.env", b"PASSWORD=private")]
 )
 PIN = "a" * 40
+APP_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
+    serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+)
 ARCHIVE_PATH = f"/repositories/42/zipball/{PIN}"
 NO_QUESTIONS = (
     "None. The provided inventory is sufficient to propose the refactor "
@@ -54,7 +57,7 @@ NO_QUESTIONS = (
 @pytest.fixture
 def browser(database, session_factory, monkeypatch, tmp_path):
     key = tmp_path / "app.pem"
-    key.write_bytes(b"fixture-private-key")
+    key.write_bytes(APP_KEY)
     for name, value in {
         "REFACTRA_GITHUB_CALLBACK_URL": "https://refactra.example/api/v1/auth/github/callback",
         "REFACTRA_ALLOWED_GITHUB_USER_IDS": "12345",
@@ -67,6 +70,19 @@ def browser(database, session_factory, monkeypatch, tmp_path):
     calls, mode = [], {}
 
     def handler(request):
+        if request.method == "POST" and request.url.path == "/app/installations/7/access_tokens":
+            # GitHub's installation token endpoint; kept out of `calls` to count API reads only.
+            body = json.loads(request.content)
+            assert body["repository_ids"] == [42]
+            return httpx.Response(
+                201,
+                json={
+                    "token": "fixture-secret-token",
+                    "expires_at": (datetime.now(UTC) + timedelta(minutes=59)).isoformat(),
+                    "permissions": body["permissions"],
+                    "repositories": [{"id": 42}],
+                },
+            )
         calls.append(request.url.path)
         assert request.method == "GET"
         if request.url.host == "codeload.github.com":
@@ -118,25 +134,20 @@ def browser(database, session_factory, monkeypatch, tmp_path):
             },
         )
 
-    def app(client_id, private_key):
-        assert (client_id, private_key) == ("fixture-client", b"fixture-private-key")
-        return GitHubAppClient(client_id, private_key, httpx.MockTransport(handler))
-
-    def mint(self, installation_id, repository_id):
-        assert (installation_id, repository_id) == (7, 42)
-        return InstallationToken("fixture-secret-token", 42, datetime.now(UTC) + timedelta(hours=1))
-
-    monkeypatch.setattr(routes, "GitHubAppClient", app)
-    monkeypatch.setattr(run_access, "GitHubAppClient", app)
-    monkeypatch.setattr(GitHubAppClient, "mint_read_token", mint)
+    # Inject a simulated GitHub instead of patching module attributes.
+    authorizer = RepositoryAuthorizer(transport=httpx.MockTransport(handler))
     with session_factory.begin() as session:
         token = issue_session(session, GitHubIdentity(12345, "old-login"))
     with TestClient(
-        create_app(Settings("unused", enable_repository_analysis=True), database),
+        create_app(
+            Settings("unused", enable_repository_analysis=True),
+            database,
+            repository_authorizer=authorizer,
+        ),
         base_url="https://refactra.example",
     ) as client:
         client.cookies.set("__Host-refactra_session", token, domain="refactra.example", path="/")
-        client.prepare_snapshots = lambda: prepare_snapshots(session_factory)
+        client.prepare_snapshots = lambda: prepare_snapshots(session_factory, authorizer)
         yield client, calls, mode, token
 
 
@@ -216,13 +227,18 @@ def test_github_denials_and_failures_do_not_expose_metadata_or_credentials(brows
     )
 
 
-def prepare_snapshots(session_factory) -> int:
+def prepare_snapshots(session_factory, authorizer) -> int:
     """Run queued snapshot preparation as the worker would, with real access checks."""
     processed = 0
     while command := claim_command(
         session_factory, "snapshot-worker", workflow=WORKFLOW, kind=PREPARE_SNAPSHOT
     ):
-        assert process_snapshot_preparation(session_factory, command, "snapshot-worker")
+        assert process_snapshot_preparation(
+            session_factory,
+            command,
+            "snapshot-worker",
+            authorize=lambda run: authorize_run_repository(run, authorizer),
+        )
         processed += 1
     return processed
 
@@ -255,14 +271,14 @@ def test_submission_returns_once_pinned_and_the_worker_prepares_source(browser, 
         assert session.scalars(select(RunCommand.kind)).all() == [PREPARE_SNAPSHOT]
 
     # A failed download is retried by the worker, not by the browser.
-    assert prepare_snapshots(session_factory) == 1
+    assert client.prepare_snapshots() == 1
     with session_factory.begin() as session:
         command = session.scalar(select(RunCommand).where(RunCommand.kind == PREPARE_SNAPSHOT))
         assert command.status == "PENDING" and session.get(Run, run_id).status == "CREATED"
         command.available_at = session.scalar(select(func.now()))
     switches.update(source_failure=False, branch_tip="b" * 40)
     assert submit(client, key, prepare=False).json() == receipt
-    assert prepare_snapshots(session_factory) == 1
+    assert client.prepare_snapshots() == 1
     assert submit(client, key).json() == receipt
     assert submit(client, key, task_text="Another task").status_code == 409
     assert calls.count(ARCHIVE_PATH) == 2

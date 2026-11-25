@@ -15,12 +15,18 @@ from refactra.db import make_engine, sessions
 from refactra.github_auth import create_github_auth_router
 from refactra.models import Run, RunCommand, RunEvent
 from refactra.repository_routes import create_repository_router
+from refactra.run_access import RepositoryAuthorizer
 from refactra.schemas import EventPage, EventRead, MockRunCreate, MockRunRead
 from refactra.session_routes import create_session_router
 from refactra.worker_health import worker_status
 
 
-def create_app(settings: Settings | None = None, engine: Engine | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    engine: Engine | None = None,
+    *,
+    repository_authorizer: RepositoryAuthorizer | None = None,
+) -> FastAPI:
     install_auth_query_redaction()
     settings = settings or Settings.from_env()
     owns_engine = engine is None
@@ -43,7 +49,9 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(create_session_router(session_factory))
     app.include_router(
         create_repository_router(
-            session_factory, enable_analysis=settings.enable_repository_analysis
+            session_factory,
+            enable_analysis=settings.enable_repository_analysis,
+            authorizer=repository_authorizer,
         )
     )
 
