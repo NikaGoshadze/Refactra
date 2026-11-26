@@ -46,6 +46,7 @@ def create_repository_run(
         requested_by=identity.user_id,
         github_installation_id=installation_id,
         github_repository_id=revision.repository_id,
+        repository_full_name=revision.full_name,
         base_branch=revision.base_branch,
         base_sha=revision.commit_sha,
         task_text=task_text.strip(),
