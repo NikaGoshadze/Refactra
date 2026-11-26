@@ -21,6 +21,7 @@ from refactra.request_limits import BodyLimitMiddleware
 from refactra.run_access import RepositoryAuthorizer
 from refactra.schemas import EventPage, EventRead, MockRunCreate, MockRunRead
 from refactra.session_routes import create_session_router
+from refactra.user_repository_routes import create_user_repository_router
 from refactra.worker_health import (
     ANALYSIS_WORKER_MODES,
     PUBLICATION_WORKER_MODES,
@@ -63,6 +64,7 @@ def create_app(
             authorizer=repository_authorizer,
         )
     )
+    app.include_router(create_user_repository_router(session_factory))
 
     @app.exception_handler(HTTPException)
     async def http_error(_, exc: HTTPException):

@@ -37,21 +37,30 @@ class RepositoryAccessPolicy:
             repository_id=_positive_id(repository) if repository else None,
         )
 
-    def require_eligible_session(
-        self, session: Session, token: str | None, repository_id: int
-    ) -> GitHubIdentity:
-        """Resolve an active session, then apply the operator's user/repository limits."""
+    def require_allowed_user(self, session: Session, token: str | None) -> GitHubIdentity:
+        """Resolve an active session for a user on the operator's invite list."""
         identity = resolve_session(session, token)
         if identity is None:
             raise HTTPException(
                 401,
                 {"code": "authentication_required", "message": "Sign in to access repositories."},
             )
-        if (
-            identity.user_id not in self.allowed_user_ids
-            or type(repository_id) is not int
-            or repository_id != self.repository_id
-        ):
+        if identity.user_id not in self.allowed_user_ids:
+            raise HTTPException(
+                403,
+                {
+                    "code": "repository_access_denied",
+                    "message": "Repository access is not allowed.",
+                },
+            )
+        return identity
+
+    def require_eligible_session(
+        self, session: Session, token: str | None, repository_id: int
+    ) -> GitHubIdentity:
+        """Resolve an active session, then apply the operator's user/repository limits."""
+        identity = self.require_allowed_user(session, token)
+        if type(repository_id) is not int or repository_id != self.repository_id:
             raise HTTPException(
                 403,
                 {
