@@ -18,7 +18,9 @@ $root = Split-Path -Parent $PSScriptRoot
 # uv reads backslashes in --env-file as escapes, so pass forward-slash paths.
 $project = (Join-Path $root 'services/backend').Replace('\', '/')
 $envFile = (Join-Path $root '.env').Replace('\', '/')
-$delay = 5
+# Tests may shorten the first restart delay; operators get 5 seconds.
+$initialDelay = if ($env:REFACTRA_WORKER_RESTART_SECONDS) { [int]$env:REFACTRA_WORKER_RESTART_SECONDS } else { 5 }
+$delay = $initialDelay
 
 while ($true) {
     $started = Get-Date
@@ -31,7 +33,7 @@ while ($true) {
     if ($code -eq 2) {
         Write-Error "Worker arguments or configuration are invalid (exit code 2); not restarting."
     }
-    if (((Get-Date) - $started).TotalMinutes -ge 5) { $delay = 5 }
+    if (((Get-Date) - $started).TotalMinutes -ge 5) { $delay = $initialDelay }
     Write-Warning "Worker exited with code $code. Restarting in $delay seconds (Ctrl+C to stop)."
     Start-Sleep -Seconds $delay
     $delay = [Math]::Min($delay * 2, 60)
