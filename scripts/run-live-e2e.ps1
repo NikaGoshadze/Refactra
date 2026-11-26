@@ -4,7 +4,7 @@ Run the live end-to-end browser test: a real task from analysis to a draft pull 
 
 .DESCRIPTION
 Uses the real stack, GitHub App and OpenAI, so each run costs model tokens and opens a draft
-pull request on the configured repository. The script:
+pull request on the chosen repository (AI-Hub by default). The script:
 
 1. creates a disposable base branch at the pinned AI-Hub commit and fetches it into the clone;
 2. starts the protected stack and a host worker in repository-workflow mode;
@@ -21,6 +21,8 @@ Results, the worker log, the Playwright trace and screenshots go to .runtime/e2e
 #>
 [CmdletBinding()]
 param(
+    # The repository to pick in the workspace; the App must be installed on it.
+    [string]$Repository = 'NikaGoshadze/AI-Hub',
     [string]$Source = '../AI-Hub',
     [string]$BaseCommit = '82b3f25a17cf72cf25d92e0e9726818fcec8831d',
     [string]$Task,
@@ -38,7 +40,7 @@ $sessionFile = Join-Path $runDir 'session.token'
 $resultFile = Join-Path $runDir 'result.json'
 $workerLog = Join-Path $runDir 'worker.log'
 $baseBranch = "e2e/base-$stamp"
-$repository = $null
+$subject = $null
 $baseCreated = $false
 $worker = $null
 $failed = $true
@@ -58,7 +60,7 @@ try {
     foreach ($tool in 'docker', 'gh', 'git', 'uv', 'npx') {
         if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "$tool is not on PATH." }
     }
-    foreach ($name in 'REFACTRA_OPENAI_API_KEY', 'REFACTRA_GITHUB_REPOSITORY_ID', 'REFACTRA_ALLOWED_GITHUB_USER_IDS') {
+    foreach ($name in 'REFACTRA_OPENAI_API_KEY', 'REFACTRA_ALLOWED_GITHUB_USER_IDS') {
         if (-not (Get-EnvValue $name)) { throw "$name is not set in .env." }
     }
     $key = Join-Path $root '.runtime/secrets/github-app.pem'
@@ -67,13 +69,14 @@ try {
     New-Item -ItemType Directory -Path $runDir -Force | Out-Null
     $artifacts = (New-Item -ItemType Directory -Path (Join-Path $runDir 'artifacts') -Force).FullName
 
-    $repository = gh api "repositories/$(Get-EnvValue 'REFACTRA_GITHUB_REPOSITORY_ID')" --jq '.full_name'
-    if ($LASTEXITCODE -ne 0 -or -not $repository) {
-        throw 'Could not resolve the configured repository; check that gh is signed in.'
+    # GitHub's canonical name, which is also how the workspace picker labels it.
+    $subject, $subjectId = gh api "repos/$Repository" --jq '.full_name, .id'
+    if ($LASTEXITCODE -ne 0 -or -not $subject -or -not $subjectId) {
+        throw "Could not find $Repository; check the name and that gh is signed in."
     }
-    Write-Host "Creating $baseBranch on $repository at $BaseCommit."
+    Write-Host "Creating $baseBranch on $subject at $BaseCommit."
     Invoke-Checked 'Creating the base branch' {
-        gh api "repos/$repository/git/refs" -f "ref=refs/heads/$baseBranch" -f "sha=$BaseCommit" > $null
+        gh api "repos/$subject/git/refs" -f "ref=refs/heads/$baseBranch" -f "sha=$BaseCommit" > $null
     }
     $baseCreated = $true
     Invoke-Checked 'Fetching the base branch' { git -C $Source fetch --quiet origin $baseBranch }
@@ -99,6 +102,8 @@ try {
 
     $env:REFACTRA_E2E_SESSION_FILE = $sessionFile
     $env:REFACTRA_E2E_BASE_BRANCH = $baseBranch
+    $env:REFACTRA_E2E_REPOSITORY = $subject
+    $env:REFACTRA_E2E_REPOSITORY_ID = $subjectId
     $env:REFACTRA_E2E_RESULT_FILE = $resultFile
     $env:REFACTRA_E2E_OUTPUT = Join-Path $runDir 'playwright'
     $env:REFACTRA_E2E_ALLOW_WAIVERS = if ($AllowWaivers) { '1' } else { '0' }
@@ -124,14 +129,14 @@ try {
     if (Test-Path $sessionFile) {
         uv run --project services/backend --env-file .env python -m refactra.e2e_session --revoke $sessionFile
     }
-    if ($repository -and -not $KeepPullRequest) {
+    if ($subject -and -not $KeepPullRequest) {
         $published = if (Test-Path $resultFile) { (Get-Content $resultFile -Raw | ConvertFrom-Json).pullRequestUrl }
         if ($published) {
             gh pr close $published --delete-branch --comment 'Closed by the live end-to-end test cleanup.' *> $null
             if ($LASTEXITCODE -ne 0) { Write-Warning "Could not close $published; close it by hand." }
         }
         if ($baseCreated) {
-            gh api -X DELETE "repos/$repository/git/refs/heads/$baseBranch" *> $null
+            gh api -X DELETE "repos/$subject/git/refs/heads/$baseBranch" *> $null
             if ($LASTEXITCODE -ne 0) { Write-Warning "Could not delete $baseBranch; delete it by hand." }
             git -C $Source branch --quiet --delete --remotes "origin/$baseBranch" *> $null
         }

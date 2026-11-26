@@ -39,6 +39,10 @@ a { color: inherit; text-decoration: none; }
 .repository-note { margin: 18px 0 0; font-size: 11px; line-height: 1.6; color: var(--muted); }
 .analysis-card label { display: block; margin-top: 14px; margin-bottom: 8px; }
 .analysis-card input { width: 100%; padding: 10px 14px; font: inherit; border: 1px solid var(--border); border-radius: 7px; }
+.analysis-card select, .repository-picker input, .repository-picker select { width: 100%; padding: 10px 14px; font: inherit; border: 1px solid var(--border); border-radius: 7px; background: #fff; }
+.repository-picker { margin-top: 16px; }
+.repository-picker label { margin-top: 14px; margin-bottom: 8px; }
+.repository-links { margin: 14px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.8; }
 .analysis-result { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; padding: 14px; background: #fbfcfe; border: 1px solid var(--border); border-radius: 7px; }
 .saved-run, .saved-plan { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
 .saved-run summary { cursor: pointer; font-size: 14px; font-weight: 600; }

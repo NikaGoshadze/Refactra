@@ -85,29 +85,24 @@ def test_missing_configuration_exits_cleanly(monkeypatch, capsys):
     assert "Repository check failed" in output.err
 
 
-@pytest.mark.parametrize("argv,expected", [([], 42), (["43"], 43)])
-def test_cli_reads_local_key_and_prints_only_the_summary(
-    monkeypatch, tmp_path, capsys, argv, expected
-):
+def test_cli_requires_exactly_one_repository_id(capsys):
+    assert main([]) == 2
+    assert main(["42", "43"]) == 2
+    assert "Usage:" in capsys.readouterr().err
+
+
+def test_cli_reads_local_key_and_prints_only_the_summary(monkeypatch, tmp_path, capsys):
     key = tmp_path / "key.pem"
     key.write_bytes(b"fixture-private-key")
-    for name, value in {
-        "REFACTRA_GITHUB_CLIENT_ID": "client",
-        "REFACTRA_GITHUB_PRIVATE_KEY_PATH": str(key),
-        "REFACTRA_GITHUB_REPOSITORY_ID": "42",
-    }.items():
-        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("REFACTRA_GITHUB_CLIENT_ID", "client")
+    monkeypatch.setenv("REFACTRA_GITHUB_PRIVATE_KEY_PATH", str(key))
 
     def check(client_id, private_key, repository_id):
-        assert (client_id, private_key, repository_id) == (
-            "client",
-            b"fixture-private-key",
-            expected,
-        )
-        return {"repository_id": expected, "access": "read-only"}
+        assert (client_id, private_key, repository_id) == ("client", b"fixture-private-key", 43)
+        return {"repository_id": 43, "access": "read-only"}
 
     monkeypatch.setattr("refactra.github_repository_check.check_repository", check)
-    assert main(argv) == 0
+    assert main(["43"]) == 0
     output = capsys.readouterr()
     assert '"access": "read-only"' in output.out
     assert "fixture-private-key" not in output.out

@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 import refactra.repository_plan_worker as plan_worker
+import refactra.repository_routes as repository_routes
 from refactra.api import create_app
 from refactra.auth_sessions import GitHubIdentity, issue_session, revoke_session
 from refactra.candidate_patch import CandidatePatch
@@ -61,7 +62,6 @@ def browser(database, session_factory, monkeypatch, tmp_path):
     for name, value in {
         "REFACTRA_GITHUB_CALLBACK_URL": "https://refactra.example/api/v1/auth/github/callback",
         "REFACTRA_ALLOWED_GITHUB_USER_IDS": "12345",
-        "REFACTRA_GITHUB_REPOSITORY_ID": "42",
         "REFACTRA_GITHUB_CLIENT_ID": "fixture-client",
         "REFACTRA_GITHUB_PRIVATE_KEY_PATH": str(key),
     }.items():
@@ -111,6 +111,14 @@ def browser(database, session_factory, monkeypatch, tmp_path):
                     "private_key": "fixture-private-key",
                 },
             )
+        if request.url.path == "/repositories/42/branches":
+            # Two pages when `many_branches` is set, so pagination is exercised.
+            page = int(request.url.params["page"])
+            if mode.get("many_branches"):
+                names = [f"b{page}-{n:03d}" for n in range(100 if page == 1 else 3)]
+            else:
+                names = ["feature/cart", "main"]
+            return httpx.Response(200, json=[{"name": name} for name in names])
         if request.url.path == "/user/12345":
             return httpx.Response(200, json={"id": 12345, "login": "current-login"})
         if request.url.path == "/repos/fixture/example/git/ref/heads/feature/cart":
@@ -166,12 +174,15 @@ def test_authorized_endpoint_returns_only_safe_metadata(browser):
         "full_name": "fixture/example",
         "default_branch": "main",
         "access": "read-only",
+        "branches": ["feature/cart", "main"],
+        "branches_truncated": False,
     }
     assert calls == [
         "/repositories/42",
         "/user/12345",
         "/repos/fixture/example/collaborators/current-login/permission",
         "/repositories/42",
+        "/repositories/42/branches",
     ]
     assert "fixture-secret" not in response.text and "fixture-private" not in response.text
 
@@ -203,20 +214,25 @@ def test_polling_reuses_a_recent_check_but_writes_and_sign_out_do_not(browser, s
     assert calls.count(permission) == 2
 
 
-def test_configured_repository_is_returned_only_to_eligible_users(browser, monkeypatch):
-    client, calls, _, _ = browser
-    by_id = client.get("/api/v1/repositories/42").json()
-    configured = client.get("/api/v1/repository")
-    assert configured.status_code == 200 and configured.json() == by_id
-    assert configured.headers["cache-control"] == "no-store"
-    client.cookies.clear()
+def test_a_picked_repository_lists_its_branches_across_pages(browser):
+    client, calls, mode, _ = browser
+    body = client.get("/api/v1/repositories/42").json()
+    assert (body["branches"], body["branches_truncated"]) == (["feature/cart", "main"], False)
+    mode["many_branches"] = True
     calls.clear()
-    anonymous = client.get("/api/v1/repository")
-    assert anonymous.status_code == 401 and "42" not in anonymous.text and calls == []
-    monkeypatch.delenv("REFACTRA_GITHUB_REPOSITORY_ID")
-    missing = client.get("/api/v1/repository")
-    assert missing.status_code == 503
-    assert missing.json()["error"]["code"] == "repository_access_unconfigured"
+    body = client.get("/api/v1/repositories/42").json()
+    assert len(body["branches"]) == 103 and not body["branches_truncated"]
+    assert calls.count("/repositories/42/branches") == 2
+    # The old configured-repository route is gone.
+    assert client.get("/api/v1/repository").status_code == 404
+
+
+def test_a_branch_list_stops_at_the_page_cap(browser, monkeypatch):
+    client, _, mode, _ = browser
+    monkeypatch.setattr(repository_routes, "MAX_BRANCH_PAGES", 1)
+    mode["many_branches"] = True
+    body = client.get("/api/v1/repositories/42").json()
+    assert len(body["branches"]) == 100 and body["branches_truncated"]
 
 
 @pytest.mark.parametrize(

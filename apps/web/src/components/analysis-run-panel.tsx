@@ -27,9 +27,12 @@ function errorMessage(error: unknown, timeoutMessage: string, fallback: string) 
   return error instanceof Error ? error.message : fallback;
 }
 
-export function AnalysisRunPanel({ repositoryId, defaultBranch }: {
-  repositoryId: number; defaultBranch: string;
+export function AnalysisRunPanel({ repositoryId, defaultBranch, branches = [], branchesTruncated = false }: {
+  repositoryId: number; defaultBranch: string; branches?: string[]; branchesTruncated?: boolean;
 }) {
+  // A complete list becomes a dropdown with the default branch first; otherwise type the name.
+  const branchOptions = branchesTruncated || branches.length === 0 ? null
+    : [defaultBranch, ...branches.filter((name) => name !== defaultBranch)];
   const [available, setAvailable] = useState<boolean | null>(null);
   const [workerAvailable, setWorkerAvailable] = useState(true);
   const [capabilityError, setCapabilityError] = useState<string | null>(null);
@@ -152,8 +155,13 @@ export function AnalysisRunPanel({ repositoryId, defaultBranch }: {
             No analysis worker is running. Submitted runs wait in the queue until one starts.
           </p>}
           <label htmlFor="analysis-branch">Base branch</label>
-          <input id="analysis-branch" value={branch} maxLength={255} required disabled={busy || tracking}
-            onChange={(event) => setBranch(event.target.value)} />
+          {branchOptions
+            ? <select id="analysis-branch" value={branch} required disabled={busy || tracking}
+              onChange={(event) => setBranch(event.target.value)}>
+              {branchOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+            : <input id="analysis-branch" value={branch} maxLength={255} required disabled={busy || tracking}
+              onChange={(event) => setBranch(event.target.value)} />}
           <label htmlFor="analysis-task">What would you like to refactor?</label>
           <textarea id="analysis-task" value={task} maxLength={4000} rows={4} required disabled={busy || tracking}
             onChange={(event) => setTask(event.target.value)} />

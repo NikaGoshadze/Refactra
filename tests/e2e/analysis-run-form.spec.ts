@@ -1,4 +1,4 @@
-import { PLAN, PLAN_APPROVAL_PATH, PLAN_PATH, PUBLICATION_APPROVAL_PATH, RESULT, RESULT_PATH, REVISED_ARTIFACT, RUN_ID, RUN_PATH, WAIVER_PATH, expect, test } from "../fixtures/auth-proxy";
+import { PLAN, PLAN_APPROVAL_PATH, PLAN_PATH, PUBLICATION_APPROVAL_PATH, RESULT, RESULT_PATH, REVISED_ARTIFACT, RUN_ID, RUN_PATH, WAIVER_PATH, chooseRepository, expect, test } from "../fixtures/auth-proxy";
 
 const REPOSITORY_ID = 1001132861;
 const receipt = { run_id: RUN_ID, base_branch: "feature/cart", base_sha: "a".repeat(40) };
@@ -11,7 +11,7 @@ test.beforeEach(async ({ context, page, authProxy }) => {
   }));
   await page.goto(authProxy.origin);
   await expect(page.getByRole("region", { name: "Repository analysis" })).toHaveCount(0);
-  await page.getByRole("button", { name: "Check repository access" }).click();
+  await chooseRepository(page);
 });
 
 test("verified repository submits a selected branch and shows the saved read-only analysis", async ({ page }) => {
@@ -19,8 +19,10 @@ test("verified repository submits a selected branch and shows the saved read-onl
   const panel = page.getByRole("region", { name: "Repository analysis" });
   const branch = panel.getByLabel("Base branch", { exact: true });
   await expect(branch).toHaveValue("main");
+  // The repository's branches are offered with the default first.
+  await expect(branch.locator("option")).toHaveText(["main", "feature/cart"]);
   await expect(panel.getByRole("button", { name: "Start analysis" })).toBeDisabled();
-  await branch.fill(receipt.base_branch);
+  await branch.selectOption(receipt.base_branch);
   await panel.getByLabel("What would you like to refactor?").fill("  Review cart  ");
   await page.route("**/api/v1/runs", async (route) => {
     expect(route.request().postDataJSON()).toEqual({
@@ -266,7 +268,7 @@ test("candidate review explains when no publication worker is running", async ({
 test("candidate polling backs off while progress stays the same", async ({ page }) => {
   await page.clock.install();
   await page.reload();
-  await page.getByRole("button", { name: "Check repository access" }).click();
+  await chooseRepository(page);
   let polls = 0;
   await page.route(`**${PLAN_PATH}`, (route) => route.fulfill({ json: { ...PLAN, approval: { revision: 1 } } }));
   await page.route(`**${RESULT_PATH}?progress=true`, (route) => {

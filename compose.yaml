@@ -97,7 +97,6 @@ services:
     environment:
       REFACTRA_GITHUB_CLIENT_ID: ${REFACTRA_GITHUB_CLIENT_ID:-}
       REFACTRA_GITHUB_PRIVATE_KEY_PATH: /run/secrets/github-app.pem
-      REFACTRA_GITHUB_REPOSITORY_ID: ${REFACTRA_GITHUB_REPOSITORY_ID:-}
     volumes:
       - type: bind
         source: ./.runtime/secrets/github-app.pem
@@ -105,7 +104,9 @@ services:
         read_only: true
         bind:
           create_host_path: false
-    command: [uv, run, --no-sync, python, -m, refactra.github_repository_check]
+    # Append the repository ID: docker compose --profile github-check run --rm github-check ID
+    entrypoint: [uv, run, --no-sync, python, -m, refactra.github_repository_check]
+    command: []
 
   test:
     <<: *backend
