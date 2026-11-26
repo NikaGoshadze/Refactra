@@ -15,7 +15,13 @@ import refactra.github_auth as github_auth
 from refactra.api import create_app
 from refactra.auth_sessions import resolve_session
 from refactra.config import Settings
-from refactra.github_auth import CALLBACK_PATH, GitHubOAuthConfig, validate_oauth_attempt
+from refactra.github_auth import (
+    CALLBACK_PATH,
+    GitHubOAuthConfig,
+    refresh_github_token,
+    validate_oauth_attempt,
+)
+from refactra.github_user_tokens import KEY_ENV, TokenCipher, TokenRejected, current_user_token
 from refactra.models import AuthSession
 
 
@@ -133,6 +139,7 @@ def test_local_http_uses_local_cookie_and_request_cannot_override_callback(oauth
 def callback(oauth, database, monkeypatch):
     config, _ = oauth
     monkeypatch.setenv("REFACTRA_GITHUB_CLIENT_SECRET", "fixture-secret")
+    monkeypatch.setenv(KEY_ENV, urlsafe_b64encode(bytes(range(32))).decode())
     config = GitHubOAuthConfig.from_env()
     calls, behavior = [], {}
 
@@ -200,6 +207,16 @@ def test_callback_verifies_github_and_commits_a_rotated_session(callback, sessio
         identity = resolve_session(session, token)
         assert (identity.user_id, identity.login) == (12345, "verified-user")
         assert session.scalar(select(AuthSession.token_hash)) == sha256(token.encode()).hexdigest()
+        # The GitHub token is kept only as ciphertext and never reaches the browser.
+        stored = session.scalar(select(AuthSession.github_token_ciphertext))
+        assert stored and b"fixture-github-token" not in stored
+    with session_factory.begin() as session:
+        assert (
+            current_user_token(
+                session, sha256(token.encode()).hexdigest(), TokenCipher.from_env(), pytest.fail
+            )
+            == "fixture-github-token"
+        )
     _, query, _ = start(client, config)
     second = client.get(
         CALLBACK_PATH,
@@ -276,3 +293,41 @@ def test_database_failure_does_not_issue_a_session_cookie(callback, session_fact
     assert "private database details" not in response.text
     with session_factory() as session:
         assert session.scalar(select(func.count()).select_from(AuthSession)) == 0
+
+
+def test_refresh_exchanges_the_refresh_token_and_reports_rejection(monkeypatch):
+    config = GitHubOAuthConfig("Iv1.fixture", "https://refactra.example/cb", "s", "secret")
+    calls, answers = (
+        [],
+        [
+            {
+                "access_token": "ghu_new",
+                "token_type": "bearer",
+                "expires_in": 28800,
+                "refresh_token": "ghr_new",
+                "refresh_token_expires_in": 15897600,
+            },
+            {"error": "bad_refresh_token"},
+        ],
+    )
+
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(200, json=answers.pop(0))
+
+    monkeypatch.setattr(
+        github_auth,
+        "Client",
+        lambda **kwargs: httpx.Client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    renewed = refresh_github_token(config, "ghr_old")
+    assert (renewed.access_token, renewed.refresh_token) == ("ghu_new", "ghr_new")
+    assert str(calls[0].url) == "https://github.com/login/oauth/access_token"
+    assert parse_qs(calls[0].content.decode()) == {
+        "client_id": ["Iv1.fixture"],
+        "client_secret": ["secret"],
+        "grant_type": ["refresh_token"],
+        "refresh_token": ["ghr_old"],
+    }
+    with pytest.raises(TokenRejected):
+        refresh_github_token(config, "ghr_new")

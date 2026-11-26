@@ -42,6 +42,11 @@ class AuthSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # AES-GCM ciphertexts of the user's GitHub tokens (see github_user_tokens); never plaintext.
+    github_token_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
+    github_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    github_refresh_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
+    github_refresh_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Run(Base):

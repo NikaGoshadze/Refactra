@@ -150,7 +150,7 @@ def test_migration_downgrade_and_upgrade(database):
         assert connection.scalar(text("SELECT to_regclass('auth_sessions')")) is None
         command.upgrade(config, "head")
         version = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "0019_command_history_index"
+        assert version == "0020_session_github_tokens"
 
 
 def test_session_persists_only_a_digest_and_resolves_through_a_new_connection(session_factory):
