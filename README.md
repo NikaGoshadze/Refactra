@@ -473,6 +473,18 @@ npm run test:e2e
 
 The browser smoke tests expect the Compose stack at `http://127.0.0.1:3000`. Override `REFACTRA_WEB_URL` if needed. They create mock records in the local development database. The auth-proxy integration tests start an isolated Next.js server against a simulated API; they need the local `npm run build` output and never contact GitHub. Type checking follows the build because Next.js generates route types during the build.
 
+### Live end-to-end test (on demand)
+
+`tests/e2e-live` drives the real workflow in a browser: a real task goes through analysis, OpenAI planning, plan approval, candidate generation, validation, publication approval and a GitHub draft pull request. It costs model tokens and writes to the configured repository, so it has its own [playwright.live.config.ts](playwright.live.config.ts) and never runs in CI or with `npm run test:e2e`. Start it from the Refactra root, with Node 24 and `gh` (signed in) on `PATH`, after completing the [full repository workflow setup](#run-the-full-repository-workflow-locally):
+
+```powershell
+.\scripts\run-live-e2e.ps1                    # the summary_lines task above, then cleanup
+.\scripts\run-live-e2e.ps1 -KeepPullRequest   # leave the draft PR open for review
+.\scripts\run-live-e2e.ps1 -Task '...'        # another small task with an explicit test path
+```
+
+The script creates a disposable `e2e/base-<timestamp>` branch at the original AI-Hub base commit and fetches it into `../AI-Hub` (`-Source`). It stops the Compose worker, starts the protected stack and runs a host worker in repository-workflow mode. Instead of the GitHub sign-in page, it issues an 8-hour session for the allowlisted user with `python -m refactra.e2e_session`. That command writes the token to a file and never prints it; every request still checks the allowlist and the user's current GitHub write access. After the browser run, the script checks that the pull request is an open draft against the disposable base branch. Whatever the outcome, it revokes the session and stops the worker. Unless `-KeepPullRequest` is given, it also closes the draft pull request and deletes both branches. A required check that cannot run fails the test unless `-AllowWaivers` is passed. The worker log, result, Playwright trace and screenshots go to the ignored `.runtime/e2e-live/<timestamp>` folder. The trace includes the session cookie, which is revoked when the run ends.
+
 For backend development outside Docker, use Python 3.12 and uv, run `uv sync --frozen` in `services/backend`, set `REFACTRA_DATABASE_URL` and `REFACTRA_ENABLE_MOCK=true`, then run `uv run alembic upgrade head`. Start `uv run uvicorn refactra.api:app --reload` and `uv run python -m refactra.worker` in separate terminals. Set `REFACTRA_TEST_DATABASE_URL` before `uv run pytest`; database tests skip explicitly when it is absent. Set environment variables in the shell; these Python commands do not automatically load the root `.env` file.
 
 ## Repository layout
@@ -480,6 +492,7 @@ For backend development outside Docker, use Python 3.12 and uv, run `uv sync --f
 - `apps/web`: Next.js App Router UI and a server-side API proxy.
 - `services/backend`: shared FastAPI/worker package, Alembic migrations and PostgreSQL integration tests.
 - `tests/e2e`: Playwright browser and proxy integration tests; shared helpers live in `tests/fixtures`.
+- `tests/e2e-live`: the on-demand live workflow test, run only by `scripts/run-live-e2e.ps1`.
 - `docs/diagrams`: versioned diagrams and editable source links.
 
 Frontend dependencies are locked in `package-lock.json`; backend dependencies are locked in `services/backend/uv.lock`. Both containers run as non-root users. These service containers are not the restricted code-execution sandbox planned for later.
