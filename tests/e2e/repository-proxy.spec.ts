@@ -36,6 +36,20 @@ test("the configured repository route forwards only the session cookie", async (
   expect(authProxy.calls[0].headers.authorization).toBeUndefined();
 });
 
+test("the user's repository list forwards only the session cookie and stays uncached", async ({ authProxy, request }) => {
+  const response = await request.get(`${authProxy.origin}/api/v1/user/repositories`, {
+    headers: { Cookie: "refactra_session=fixture-session; analytics=private", Authorization: "Bearer must-not-pass" },
+  });
+  expect(response.status()).toBe(200);
+  expect(response.headers()["cache-control"]).toBe("no-store");
+  expect((await response.json()).repositories).toEqual([]);
+  expect(authProxy.calls[0].headers.cookie).toBe("refactra_session=fixture-session");
+  expect(authProxy.calls[0].headers.authorization).toBeUndefined();
+  const blocked = await request.post(`${authProxy.origin}/api/v1/user/repositories`);
+  expect(blocked.status()).toBe(404);
+  expect(authProxy.calls).toHaveLength(1);
+});
+
 test("anonymous repository requests retain the backend 401", async ({ authProxy, request }) => {
   const response = await request.get(`${authProxy.origin}/api/v1/repositories/42`, {
     headers: { Cookie: "refactra_oauth=attempt; analytics=private" },

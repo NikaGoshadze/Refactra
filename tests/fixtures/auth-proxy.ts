@@ -98,6 +98,13 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
           return;
         }
         response.writeHead(204, { "Set-Cookie": [CLEAR_SESSION, CLEAR_OAUTH] });
+      } else if (route === "/api/v1/user/repositories") {
+        const authenticated = request.headers.cookie?.includes("refactra_session=fixture-session") ?? false;
+        response.writeHead(authenticated ? 200 : 401, { "Cache-Control": "public, max-age=3600" });
+        response.end(JSON.stringify(authenticated
+          ? { install_url: null, installations: [], repositories: [], truncated: false }
+          : { error: { code: "authentication_required", message: "Sign in to access repositories." } }));
+        return;
       } else if (route === "/api/v1/repository" || /^\/api\/v1\/repositories\/[1-9][0-9]*$/.test(route)) {
         // The configured-repository route resolves to the fixture's configured ID.
         const id = route === "/api/v1/repository" ? 1001132861 : Number(route.split("/").at(-1));
