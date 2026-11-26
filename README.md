@@ -123,6 +123,16 @@ The workspace's Repository connection panel is the repository picker. After sign
 
 `GET /api/v1/user/repositories` lists the signed-in user's repositories for the upcoming repository picker. Using the user's stored GitHub token, it returns the user's App installations with their GitHub settings links and every repository in them. Each repository includes `writable`, because publishing needs write access. Set `REFACTRA_GITHUB_APP_SLUG` (the name in `https://github.com/apps/<slug>`) to also return the App's install link. Only users on `REFACTRA_ALLOWED_GITHUB_USER_IDS` get the list. It is capped at 20 installations and 1,000 repositories per installation, and `truncated` says when a cap applied. If GitHub rejects the stored token, the response asks the user to sign in again. The list only populates the picker: each run still checks the repository and the user's write access.
 
+`GET /api/v1/runs` returns the signed-in user's own repository runs for the **History** page (`/history`, linked from the top bar), newest first. Each entry includes:
+- the repository name (stored when the run is created; older runs show the repository ID);
+- a task summary, base branch and commit;
+- a stage, one of `analyzing`, `plan_ready`, `generating`, `ready_to_publish`, `publishing`, `published` or `failed`, with the reason for a failure;
+- the number of plan revisions and the draft PR link;
+- the model cost, from settled usage or the reserved maximum while unsettled;
+- the start and last-activity times.
+
+`q` searches task text and repository names. Pages hold up to 50 runs (`limit`, default 20) and continue with the returned `next_cursor`. Only invited signed-in users get the list, and it never includes other users' runs. The list reads only Refactra's records, so it makes no GitHub call; opening a run still rechecks repository access. Migration `0021_run_history` adds the repository name column and the owner index.
+
 `GET /api/v1/capabilities` reports what the deployment accepts and whether a worker can act on it:
 - `repository_analysis_enabled`: whether new submissions are accepted.
 - `approvals_enabled`: plan, waiver and publication approvals, which are always served for existing runs.
