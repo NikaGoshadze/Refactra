@@ -16,6 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from refactra.auth_sessions import SESSION_TTL, GitHubIdentity, issue_session, revoke_session
 from refactra.diagnostics import database_error_details, workflow_log
+from refactra.github_user_tokens import GitHubUserToken, TokenCipher, TokenRejected
 
 OAUTH_TTL_SECONDS = 600
 CALLBACK_PATH = "/api/v1/auth/github/callback"
@@ -121,7 +122,32 @@ def validate_oauth_attempt(config: GitHubOAuthConfig, cookie: str | None, state:
     return verifier
 
 
-def _github_identity(config: GitHubOAuthConfig, code: str, verifier: str) -> GitHubIdentity:
+def refresh_github_token(config: GitHubOAuthConfig, refresh_token: str) -> GitHubUserToken:
+    """Exchange a refresh token for a new user token. Raises TokenRejected when GitHub refuses
+    it, and HTTPError or ValueError when GitHub cannot be reached or answers unexpectedly."""
+    with Client(timeout=10.0, follow_redirects=False, trust_env=False) as github:
+        response = github.post(
+            "https://github.com/login/oauth/access_token",
+            data={
+                "client_id": config.client_id,
+                "client_secret": config.client_secret,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+            },
+            headers={"Accept": "application/json"},
+        )
+        response.raise_for_status()
+        data = response.json()
+    if not isinstance(data, dict):
+        raise ValueError("Invalid token response")
+    if "error" in data:
+        raise TokenRejected()
+    return GitHubUserToken.from_response(data)
+
+
+def _github_identity(
+    config: GitHubOAuthConfig, code: str, verifier: str
+) -> tuple[GitHubIdentity, GitHubUserToken]:
     if not config.client_secret:
         raise HTTPException(
             503,
@@ -153,13 +179,11 @@ def _github_identity(config: GitHubOAuthConfig, code: str, verifier: str) -> Git
                         "message": "GitHub rejected this login. Start again.",
                     },
                 )
-            token = data["access_token"]
-            if not isinstance(token, str) or not token or data.get("token_type") != "bearer":
-                raise ValueError("Invalid token response")
+            user_token = GitHubUserToken.from_response(data)
             response = github.get(
                 "https://api.github.com/user",
                 headers={
-                    "Authorization": f"Bearer {token}",
+                    "Authorization": f"Bearer {user_token.access_token}",
                     "Accept": "application/vnd.github+json",
                     "X-GitHub-Api-Version": "2026-03-10",
                 },
@@ -168,7 +192,7 @@ def _github_identity(config: GitHubOAuthConfig, code: str, verifier: str) -> Git
             user = response.json()
             if type(user["id"]) is not int or not isinstance(user["login"], str):
                 raise ValueError("Invalid GitHub identity")
-            return GitHubIdentity(user_id=user["id"], login=user["login"])
+            return GitHubIdentity(user_id=user["id"], login=user["login"]), user_token
     except (HTTPError, ValueError, KeyError, TypeError):
         raise HTTPException(
             502,
@@ -183,6 +207,8 @@ def create_github_auth_router(
     session_factory, config: GitHubOAuthConfig | None = None
 ) -> APIRouter:
     config = config or GitHubOAuthConfig.from_env()
+    # Read once at startup so an invalid key stops the API instead of failing each sign-in.
+    cipher = TokenCipher.from_env()
     router = APIRouter(prefix="/api/v1/auth/github", tags=["GitHub sign-in"])
 
     @router.get("/login", response_class=RedirectResponse, status_code=302)
@@ -236,10 +262,10 @@ def create_github_auth_router(
                         "message": "GitHub sign-in was declined or incomplete.",
                     },
                 )
-            identity = _github_identity(config, code, verifier)
+            identity, user_token = _github_identity(config, code, verifier)
             with session_factory.begin() as session:
                 revoke_session(session, request.cookies.get(config.session_cookie_name))
-                token = issue_session(session, identity)
+                token = issue_session(session, identity, user_token, cipher)
             # The transaction has committed before an authenticated cookie is issued.
             destination = urlsplit(config.callback_url)._replace(path="/").geturl()
             response = RedirectResponse(destination, status_code=302)

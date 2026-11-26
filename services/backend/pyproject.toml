@@ -5,6 +5,7 @@ description = "Refactra API and PostgreSQL command worker"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "alembic>=1.16,<2",
+  "cryptography>=46,<51",
   "fastapi>=0.115,<1",
   "httpx>=0.28,<1",
   "itsdangerous>=2.2,<3",

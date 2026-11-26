@@ -69,6 +69,8 @@ REFACTRA_GITHUB_CALLBACK_URL=http://localhost:3000/api/v1/auth/github/callback
 
 Retain the generated `REFACTRA_OAUTH_STATE_SECRET`. The Client ID differs from the App ID; the client secret is required for the server's authorization-code exchange. See [GitHub's user access-token flow](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app). Compose supplies the OAuth client secret and signing key only to the API service; other services do not receive these secrets. The optional repository check also uses the public Client ID.
 
+When `REFACTRA_TOKEN_ENCRYPTION_KEY` is set, sign-in also keeps the user's GitHub token so Refactra can later list the repositories that user can reach. `prepare-local-env.py` generates this key for a new `.env`; for an existing `.env`, add 32 random bytes in URL-safe base64, such as the output of `python -c "import secrets; print(secrets.token_urlsafe(32))"`. The token is encrypted with AES-GCM and tied to its session, so a copied value is useless elsewhere. It is never sent to the browser and is wiped at logout. It is refreshed shortly before it expires, and if GitHub refuses the refresh, the user signs in again. Changing the key makes stored tokens unreadable, so users must sign in again. Without the key, sign-in still works but no token is kept.
+
 Start or recreate the stack after editing `.env`:
 
 ```powershell
