@@ -16,6 +16,7 @@ for (const cookieName of ["refactra_session", "__Host-refactra_session"]) {
     expect(response.headersArray().filter((header) => header.name.toLowerCase() === "set-cookie")).toEqual([]);
     expect(await response.json()).toEqual({
       repository_id: 42, full_name: "fixture/example", default_branch: "main", access: "read-only",
+      branches: ["feature/cart", "main"], branches_truncated: false,
     });
     expect(authProxy.calls).toHaveLength(1);
     expect(authProxy.calls[0].url).toBe("/api/v1/repositories/42?view=summary");
@@ -24,16 +25,12 @@ for (const cookieName of ["refactra_session", "__Host-refactra_session"]) {
   });
 }
 
-test("the configured repository route forwards only the session cookie", async ({ authProxy, request }) => {
+test("the removed configured-repository route is no longer forwarded", async ({ authProxy, request }) => {
   const response = await request.get(`${authProxy.origin}/api/v1/repository`, {
-    headers: { Cookie: "refactra_session=fixture-session; analytics=private", Authorization: "Bearer must-not-pass" },
+    headers: { Cookie: "refactra_session=fixture-session" },
   });
-  expect(response.status()).toBe(200);
-  expect(response.headers()["cache-control"]).toBe("no-store");
-  expect((await response.json()).repository_id).toBe(1001132861);
-  expect(authProxy.calls[0].url).toBe("/api/v1/repository");
-  expect(authProxy.calls[0].headers.cookie).toBe("refactra_session=fixture-session");
-  expect(authProxy.calls[0].headers.authorization).toBeUndefined();
+  expect(response.status()).toBe(404);
+  expect(authProxy.calls).toHaveLength(0);
 });
 
 test("the user's repository list forwards only the session cookie and stays uncached", async ({ authProxy, request }) => {
@@ -42,7 +39,7 @@ test("the user's repository list forwards only the session cookie and stays unca
   });
   expect(response.status()).toBe(200);
   expect(response.headers()["cache-control"]).toBe("no-store");
-  expect((await response.json()).repositories).toEqual([]);
+  expect((await response.json()).repositories).toHaveLength(2);
   expect(authProxy.calls[0].headers.cookie).toBe("refactra_session=fixture-session");
   expect(authProxy.calls[0].headers.authorization).toBeUndefined();
   const blocked = await request.post(`${authProxy.origin}/api/v1/user/repositories`);

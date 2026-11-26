@@ -5,65 +5,125 @@ import { AnalysisRunPanel } from "@/components/analysis-run-panel";
 import { AuthControls } from "@/components/auth-controls";
 import { request, type SessionStatus } from "@/lib/api";
 
-type Repository = { repository_id: number; full_name: string; default_branch: string; access: "read-only" };
-type Connection = { status: "idle" } | { status: "verified"; repository: Repository }
-  | { status: "error"; message: string };
+type UserRepository = {
+  id: number; full_name: string; private: boolean; default_branch: string; installation_id: number; writable: boolean;
+};
+type Installation = { id: number; account: string; settings_url: string };
+type Listing = {
+  install_url: string | null; installations: Installation[]; repositories: UserRepository[]; truncated: boolean;
+};
+type Repository = {
+  repository_id: number; full_name: string; default_branch: string; branches: string[]; branches_truncated: boolean;
+};
+type Load<T> = { status: "idle" | "loading" } | { status: "ready"; value: T } | { status: "error"; message: string };
+
+const TIMEOUT_MS = 65000; // The proxy allows 60 seconds for repository reads.
+
+function failure(error: unknown, timeout: string, fallback: string) {
+  if (error instanceof DOMException && error.name === "TimeoutError") return timeout;
+  return error instanceof Error ? error.message : fallback;
+}
 
 function RepositoryPanel({ authenticated }: { authenticated: boolean }) {
-  const [connection, setConnection] = useState<Connection>({ status: "idle" });
-  const [checking, setChecking] = useState(false);
-  const pending = useRef<AbortController | null>(null);
-  useEffect(() => () => pending.current?.abort(), []);
+  const [listing, setListing] = useState<Load<Listing>>({ status: authenticated ? "loading" : "idle" });
+  const [filter, setFilter] = useState("");
+  const [selected, setSelected] = useState("");
+  const [repository, setRepository] = useState<Load<Repository>>({ status: "idle" });
+  const [reload, setReload] = useState(0);
+  const verifying = useRef<AbortController | null>(null);
 
-  async function checkAccess() {
-    if (!authenticated || pending.current) return;
+  useEffect(() => {
+    if (!authenticated) return;
     const controller = new AbortController();
-    pending.current = controller;
-    setChecking(true);
+    request<Listing>("user/repositories", { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(TIMEOUT_MS)]) })
+      .then((value) => { if (!controller.signal.aborted) setListing({ status: "ready", value }); })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) setListing({
+          status: "error", message: failure(error, "Loading your repositories timed out. Try again.", "Could not load your repositories."),
+        });
+      });
+    return () => controller.abort();
+  }, [authenticated, reload]);
+  useEffect(() => () => verifying.current?.abort(), []);
+
+  async function choose(id: string) {
+    verifying.current?.abort();
+    setSelected(id);
+    setRepository({ status: id ? "loading" : "idle" });
+    if (!id) return;
+    const controller = new AbortController();
+    verifying.current = controller;
     try {
-      // The API returns the operator-configured repository once access is verified.
-      const repository = await request<Repository>("repository", {
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(65000)]),
+      // Rechecks the App installation and the user's write access, and lists branches.
+      const value = await request<Repository>(`repositories/${id}`, {
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(TIMEOUT_MS)]),
       });
-      if (!controller.signal.aborted) setConnection({ status: "verified", repository });
-    } catch (err) {
-      if (!controller.signal.aborted) setConnection({
-        status: "error", message: err instanceof DOMException && err.name === "TimeoutError"
-          ? "Repository check timed out. Try again."
-          : err instanceof Error ? err.message : "Could not check repository access.",
+      if (!controller.signal.aborted) setRepository({ status: "ready", value });
+    } catch (error) {
+      if (!controller.signal.aborted) setRepository({
+        status: "error", message: failure(error, "The access check timed out. Try again.", "Could not check repository access."),
       });
-    } finally {
-      if (pending.current === controller) pending.current = null;
-      if (!controller.signal.aborted) setChecking(false);
     }
   }
+
+  const repositories = listing.status === "ready" ? listing.value.repositories : [];
+  const shown = repositories.filter((item) => item.full_name.toLowerCase().includes(filter.trim().toLowerCase()));
+  const usable = repositories.some((item) => item.writable);
+  const status = !authenticated ? "Sign in with GitHub to choose a repository."
+    : listing.status === "loading" || listing.status === "idle" ? "Loading your repositories…"
+    : listing.status === "error" ? null
+    : !usable ? "No repositories are available yet. Install Refactra on the repositories you want to refactor."
+    : repository.status === "loading" ? "Checking your access…"
+    : repository.status === "ready" ? "Write access verified."
+    : repository.status === "error" ? null
+    : "Choose a repository to refactor.";
 
   return (
     <>
     <section className="repository-card" aria-labelledby="repository-title">
       <div className="repository-heading">
         <div><p className="eyebrow">GITHUB CONNECTION</p><h2 id="repository-title">Repository connection</h2>
-          <p className="repository-target">{connection.status === "verified"
-            ? connection.repository.full_name : "Configured repository"}</p></div>
-        <button className="repository-check" type="button" onClick={checkAccess}
-          disabled={!authenticated || checking}>
-          {checking ? "Checking access…" : connection.status === "error" ? "Retry connection" : "Check repository access"}
-        </button>
+          <p className="repository-target">{repository.status === "ready" ? repository.value.full_name : "No repository chosen"}</p></div>
+        {authenticated && <button className="repository-check" type="button" disabled={listing.status === "loading"}
+          onClick={() => {
+            void choose("");
+            setListing({ status: "loading" });
+            setReload((value) => value + 1);
+          }}>Refresh list</button>}
       </div>
-      {connection.status === "error" && !checking ? <p className="account-error repository-state" role="alert">{connection.message}</p>
-        : <p className="repository-state" role="status">{!authenticated ? "Confirm your GitHub account above to check access."
-          : checking ? "Checking your repository permissions…"
-          : connection.status === "verified" ? "Read-only connection verified."
-          : "Access has not been checked."}</p>}
-      {connection.status === "verified" && <dl className="repository-details">
-        <div><dt>Repository</dt><dd>{connection.repository.full_name}</dd></div>
-        <div><dt>Default branch</dt><dd>{connection.repository.default_branch}</dd></div>
-        <div><dt>Access</dt><dd>Read-only</dd></div>
+      {status && <p className="repository-state" role="status">{status}</p>}
+      {listing.status === "error" && <p className="account-error repository-state" role="alert">{listing.message}</p>}
+      {repository.status === "error" && <p className="account-error repository-state" role="alert">{repository.message}</p>}
+      {listing.status === "ready" && <div className="repository-picker">
+        {repositories.length > 0 && <>
+          <label htmlFor="repository-filter">Filter repositories</label>
+          <input id="repository-filter" type="search" value={filter} onChange={(event) => setFilter(event.target.value)} />
+          <label htmlFor="repository-select">Repository</label>
+          <select id="repository-select" value={selected} disabled={repository.status === "loading"}
+            onChange={(event) => void choose(event.target.value)}>
+            <option value="">Choose a repository…</option>
+            {shown.map((item) => <option key={item.id} value={item.id} disabled={!item.writable}>
+              {item.full_name}{item.writable ? "" : " (read-only)"}
+            </option>)}
+          </select>
+        </>}
+        {listing.value.truncated && <p>Only some of your repositories are listed.</p>}
+        <ul className="repository-links">
+          {listing.value.install_url && <li><a href={listing.value.install_url}>Install Refactra on more repositories</a></li>}
+          {listing.value.installations.map((item) => <li key={item.id}>
+            <a href={item.settings_url}>Choose which {item.account} repositories Refactra can access</a>
+          </li>)}
+        </ul>
+      </div>}
+      {repository.status === "ready" && <dl className="repository-details">
+        <div><dt>Repository</dt><dd>{repository.value.full_name}</dd></div>
+        <div><dt>Default branch</dt><dd>{repository.value.default_branch}</dd></div>
       </dl>}
     </section>
-    {connection.status === "verified" && (
-      <AnalysisRunPanel repositoryId={connection.repository.repository_id}
-        defaultBranch={connection.repository.default_branch} />
+    {repository.status === "ready" && (
+      <AnalysisRunPanel key={repository.value.repository_id} repositoryId={repository.value.repository_id}
+        defaultBranch={repository.value.default_branch} branches={repository.value.branches}
+        branchesTruncated={repository.value.branches_truncated} />
     )}
     </>
   );

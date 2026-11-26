@@ -38,6 +38,24 @@ export const PLAN = {
     repository: { repository_id: 1001132861, base_branch: "main", base_sha: "a".repeat(40) },
   },
 };
+export const USER_REPOSITORIES = {
+  install_url: "https://github.com/apps/refactra-fixture/installations/new",
+  installations: [{
+    id: 7, account: "fixture", account_type: "User", repository_selection: "selected",
+    settings_url: "https://github.com/settings/installations/7",
+  }],
+  repositories: [
+    { id: 1001132861, full_name: "fixture/example", private: false, default_branch: "main", installation_id: 7, writable: true },
+    { id: 1001132862, full_name: "fixture/read-only", private: true, default_branch: "main", installation_id: 7, writable: false },
+  ],
+  truncated: false,
+};
+/** Choose the fixture repository in the picker and wait for its access check. */
+export async function chooseRepository(page: import("@playwright/test").Page, name = "fixture/example") {
+  const panel = page.getByRole("region", { name: "Repository connection" });
+  await panel.getByLabel("Repository", { exact: true }).selectOption({ label: name });
+  await expect(panel.getByRole("status")).toHaveText("Write access verified.", { timeout: 12000 });
+}
 export const SAVED_RUN = {
   run_id: RUN_ID, repository_id: 1001132861, base_branch: "main", base_sha: "a".repeat(40),
   status: "NEEDS_HUMAN_REVIEW", analysis_text: "Fixture analysis", stop_reason: null,
@@ -102,19 +120,19 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
         const authenticated = request.headers.cookie?.includes("refactra_session=fixture-session") ?? false;
         response.writeHead(authenticated ? 200 : 401, { "Cache-Control": "public, max-age=3600" });
         response.end(JSON.stringify(authenticated
-          ? { install_url: null, installations: [], repositories: [], truncated: false }
+          ? USER_REPOSITORIES
           : { error: { code: "authentication_required", message: "Sign in to access repositories." } }));
         return;
-      } else if (route === "/api/v1/repository" || /^\/api\/v1\/repositories\/[1-9][0-9]*$/.test(route)) {
-        // The configured-repository route resolves to the fixture's configured ID.
-        const id = route === "/api/v1/repository" ? 1001132861 : Number(route.split("/").at(-1));
+      } else if (/^\/api\/v1\/repositories\/[1-9][0-9]*$/.test(route)) {
+        const id = Number(route.split("/").at(-1));
         if (id === 47) { request.socket.destroy(); return; }
         const authenticated = request.headers.cookie?.includes("refactra_session=fixture-session") ?? false;
         const statuses: Record<number, number> = { 43: 403, 44: 502, 45: 503 };
         const status = !authenticated ? 401 : (statuses[id] ?? 200);
         const codes: Record<number, string> = { 401: "authentication_required", 403: "repository_access_denied", 502: "github_unavailable", 503: "repository_access_unconfigured" };
         const body = status === 200
-          ? { repository_id: id, full_name: "fixture/example", default_branch: "main", access: "read-only" }
+          ? { repository_id: id, full_name: "fixture/example", default_branch: "main", access: "read-only",
+            branches: ["feature/cart", "main"], branches_truncated: false }
           : { error: { code: codes[status], message: "Fixture repository access failed." } };
         response.writeHead(status, {
           "Cache-Control": "public, max-age=3600", "Set-Cookie": "unrelated=must-not-pass; Path=/",
