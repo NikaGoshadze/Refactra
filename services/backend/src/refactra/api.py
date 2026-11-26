@@ -19,6 +19,7 @@ from refactra.models import Run, RunCommand, RunEvent
 from refactra.repository_routes import create_repository_router
 from refactra.request_limits import BodyLimitMiddleware
 from refactra.run_access import RepositoryAuthorizer
+from refactra.run_history import create_run_history_router
 from refactra.schemas import EventPage, EventRead, MockRunCreate, MockRunRead
 from refactra.session_routes import create_session_router
 from refactra.user_repository_routes import create_user_repository_router
@@ -65,6 +66,7 @@ def create_app(
         )
     )
     app.include_router(create_user_repository_router(session_factory))
+    app.include_router(create_run_history_router(session_factory))
 
     @app.exception_handler(HTTPException)
     async def http_error(_, exc: HTTPException):
@@ -161,7 +163,7 @@ def create_app(
     def ready():
         with engine.connect() as connection:
             version = connection.scalar(text("SELECT version_num FROM alembic_version"))
-            if version != "0020_session_github_tokens":
+            if version != "0021_run_history":
                 raise HTTPException(503, {"code": "schema_not_ready", "message": "Run migrations."})
         return {"status": "ready", "database": "postgresql", "schema": version}
 

@@ -64,6 +64,8 @@ class Run(Base):
     requested_by: Mapped[int] = mapped_column(BigInteger, default=0)
     github_installation_id: Mapped[int] = mapped_column(BigInteger, default=0)
     github_repository_id: Mapped[int] = mapped_column(BigInteger, default=0)
+    # Display name at submission time, for the history page; NULL for mock and older runs.
+    repository_full_name: Mapped[str | None] = mapped_column(Text)
     base_branch: Mapped[str] = mapped_column(Text, default="mock-fixture")
     base_sha: Mapped[str] = mapped_column(String(40), default="0" * 40)
     task_text: Mapped[str] = mapped_column(Text)

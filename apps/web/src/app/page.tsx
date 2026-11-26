@@ -1,16 +1,11 @@
 import { RunConsole } from "@/components/run-console";
 import { RepositoryConnection } from "@/components/repository-connection";
-import Link from "next/link";
+import { TopBar } from "@/components/top-bar";
 
 export default function Home() {
   return (
     <div className="workspace">
-      <header className="topbar">
-        <Link className="brand" href="/" aria-label="Refactra home">
-          <span className="brand-mark" aria-hidden="true">r/</span>Refactra
-        </Link>
-        <span className="environment"><span className="status-dot" />Local foundation <span>0.1</span></span>
-      </header>
+      <TopBar />
       <main>
         <RepositoryConnection>
         <section className="intro">

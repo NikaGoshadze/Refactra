@@ -161,7 +161,8 @@ for (const path of [RUN_PATH, PLAN_PATH, RESULT_PATH]) {
 }
 
 for (const [method, route, status] of [
-  ["GET", SUBMIT, 404], ["POST", RUN_PATH, 404], ["DELETE", PLAN_PATH, 405], ["DELETE", RUN_PATH, 405],
+  // GET SUBMIT (/api/v1/runs) is the run history now; run-history.spec.ts covers it.
+  ["POST", RUN_PATH, 404], ["DELETE", PLAN_PATH, 405], ["DELETE", RUN_PATH, 405],
   ["GET", PLAN_APPROVAL_PATH, 404], ["POST", `${PLAN_APPROVAL_PATH}/extra`, 404],
   ["POST", RESULT_PATH, 404], ["GET", `${RESULT_PATH}/extra`, 404],
   ["GET", PUBLICATION_APPROVAL_PATH, 404], ["POST", `${PUBLICATION_APPROVAL_PATH}/extra`, 404],

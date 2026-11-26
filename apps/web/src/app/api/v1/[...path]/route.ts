@@ -79,7 +79,8 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     && path.length === 4 && request.method === "POST";
   const isResultWrite = isPublicationApproval || isCheckWaiver;
   const sessionOnly = isRepository || isAnalysisSubmit || isRunRead || isPlanWrite || isResultWrite;
-  const readAllowed = isRepository || isRunRead || AUTH_READ_ROUTES.has(relative)
+  // GET runs is the user's run history; POST runs submits a new analysis.
+  const readAllowed = isRepository || isRunRead || isAnalysisSubmit || AUTH_READ_ROUTES.has(relative)
     || relative === "capabilities" || /^mock\/runs\/[0-9a-f-]{36}(\/events)?$/i.test(relative);
   const writeAllowed = isAnalysisSubmit || isPlanWrite || isResultWrite
     || relative === "mock/runs" || relative === "auth/logout";
