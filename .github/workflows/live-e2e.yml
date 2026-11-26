@@ -37,6 +37,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check the OpenAI key
+        # Fails in seconds instead of after the image build. On rejection it prints OpenAI's error
+        # code and a short fingerprint to compare with the local key; never the key itself.
+        env:
+          OPENAI_API_KEY: ${{ secrets.REFACTRA_OPENAI_API_KEY }}
+        run: |
+          response="$RUNNER_TEMP/openai-check.json"
+          status=$(curl --silent --output "$response" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $OPENAI_API_KEY" https://api.openai.com/v1/models)
+          if [ "$status" != 200 ]; then
+            code=$(jq -r '.error.code // .error.type // "none"' "$response" 2>/dev/null || echo none)
+            fingerprint=$(printf '%s' "$OPENAI_API_KEY" | sha256sum | cut -c1-8)
+            rm -f "$response"
+            echo "::error::OpenAI rejected REFACTRA_OPENAI_API_KEY (HTTP $status, code $code; length ${#OPENAI_API_KEY}, sha256 $fingerprint)."
+            exit 1
+          fi
+          rm -f "$response"
+          echo "OpenAI accepted the key."
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.9"
