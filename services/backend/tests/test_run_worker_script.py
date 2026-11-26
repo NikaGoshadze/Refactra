@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -36,6 +37,12 @@ sys.exit(codes[0])
 """
 
 
+def plain(output):
+    """Drop colour codes and join PowerShell's wrapped error lines into one string."""
+    text = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    return " ".join(re.sub(r"\s*\|\s+", " ", text).split())
+
+
 @pytest.fixture
 def run_worker(tmp_path):
     if PWSH is None or not SCRIPT.is_file():
@@ -66,6 +73,7 @@ def run_worker(tmp_path):
             "FAKE_UV_STATE": str(state),
             "FAKE_UV_LOG": str(log),
             "REFACTRA_WORKER_RESTART_SECONDS": "1",
+            "NO_COLOR": "1",
         }
         completed = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-File", str(SCRIPT), *args],
@@ -75,7 +83,7 @@ def run_worker(tmp_path):
             timeout=60,
         )
         calls = [json.loads(line) for line in log.read_text().splitlines()]
-        return completed, completed.stdout + completed.stderr, calls
+        return completed, plain(completed.stdout + completed.stderr), calls
 
     return run
 
