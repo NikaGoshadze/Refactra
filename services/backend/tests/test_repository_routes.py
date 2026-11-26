@@ -62,7 +62,6 @@ def browser(database, session_factory, monkeypatch, tmp_path):
         "REFACTRA_GITHUB_CALLBACK_URL": "https://refactra.example/api/v1/auth/github/callback",
         "REFACTRA_ALLOWED_GITHUB_USER_IDS": "12345",
         "REFACTRA_GITHUB_REPOSITORY_ID": "42",
-        "REFACTRA_GITHUB_INSTALLATION_ID": "7",
         "REFACTRA_GITHUB_CLIENT_ID": "fixture-client",
         "REFACTRA_GITHUB_PRIVATE_KEY_PATH": str(key),
     }.items():
@@ -70,6 +69,12 @@ def browser(database, session_factory, monkeypatch, tmp_path):
     calls, mode = [], {}
 
     def handler(request):
+        if request.url.path.endswith("/installation"):
+            # The App's installation lookup; also kept out of `calls`.
+            assert request.headers["Authorization"].startswith("Bearer ey")
+            if request.url.path != "/repositories/42/installation":
+                return httpx.Response(404, json={"message": "Not Found"})
+            return httpx.Response(200, json={"id": mode.get("installation", 7)})
         if request.method == "POST" and request.url.path == "/app/installations/7/access_tokens":
             # GitHub's installation token endpoint; kept out of `calls` to count API reads only.
             body = json.loads(request.content)
@@ -215,8 +220,7 @@ def test_configured_repository_is_returned_only_to_eligible_users(browser, monke
 
 
 @pytest.mark.parametrize(
-    "problem,status",
-    [("anonymous", 401), ("revoked", 401), ("uninvited", 403), ("wrong_repo", 403)],
+    "problem,status", [("anonymous", 401), ("revoked", 401), ("uninvited", 403)]
 )
 def test_local_rejections_precede_key_loading_and_github(
     browser, session_factory, monkeypatch, problem, status
@@ -230,17 +234,28 @@ def test_local_rejections_precede_key_loading_and_github(
             revoke_session(session, token)
     elif problem == "uninvited":
         monkeypatch.setenv("REFACTRA_ALLOWED_GITHUB_USER_IDS", "99999")
-    response = client.get(f"/api/v1/repositories/{43 if problem == 'wrong_repo' else 42}")
+    response = client.get("/api/v1/repositories/42")
     assert response.status_code == status
     assert response.headers["cache-control"] == "no-store"
     assert calls == []
+
+
+def test_any_repository_with_the_app_installed_is_allowed_and_others_are_explained(browser):
+    client, calls, _, _ = browser
+    # Repository 42 is not special: access follows the App installation and write permission.
+    assert client.get("/api/v1/repositories/42").status_code == 200
+    calls.clear()
+    response = client.get("/api/v1/repositories/43")
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "app_not_installed"
+    assert response.headers["cache-control"] == "no-store"
+    assert calls == []  # Nothing is read from a repository the App cannot reach.
 
 
 @pytest.mark.parametrize(
     "setting,value",
     [
         ("REFACTRA_GITHUB_PRIVATE_KEY_PATH", "missing.pem"),
-        ("REFACTRA_GITHUB_INSTALLATION_ID", "bad"),
         ("REFACTRA_GITHUB_CLIENT_ID", ""),
         ("REFACTRA_ALLOWED_GITHUB_USER_IDS", "*"),
     ],
@@ -893,7 +908,7 @@ def test_run_routes_recheck_access(
     elif problem == "uninvited":
         monkeypatch.setenv("REFACTRA_ALLOWED_GITHUB_USER_IDS", "56789")
     elif problem == "installation_changed":
-        monkeypatch.setenv("REFACTRA_GITHUB_INSTALLATION_ID", "8")
+        switches["installation"] = 8  # GitHub now reports another installation.
     else:
         switches[problem] = True
     payload = None

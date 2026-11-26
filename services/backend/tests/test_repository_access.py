@@ -51,11 +51,11 @@ def test_invalid_configuration_is_rejected_without_echoing_values(monkeypatch, n
     assert value not in str(error.value)
 
 
-def test_active_invited_user_is_eligible_for_the_configured_repository(session_factory, signed_in):
+def test_active_invited_user_is_allowed(session_factory, signed_in):
     identity, token = signed_in
-    policy = RepositoryAccessPolicy(frozenset({identity.user_id}), 42)
+    policy = RepositoryAccessPolicy(frozenset({identity.user_id}))
     with session_factory() as session:
-        assert policy.require_eligible_session(session, token, 42) == identity
+        assert policy.require_allowed_user(session, token) == identity
 
 
 def test_same_login_with_a_different_user_id_is_not_invited(session_factory, signed_in):
@@ -64,28 +64,20 @@ def test_same_login_with_a_different_user_id_is_not_invited(session_factory, sig
     with session_factory.begin() as session:
         token = issue_session(session, GitHubIdentity(99999, identity.login))
     with session_factory() as session, pytest.raises(HTTPException) as error:
-        policy.require_eligible_session(session, token, 42)
+        policy.require_allowed_user(session, token)
     assert error.value.status_code == 403
     assert error.value.detail["code"] == "repository_access_denied"
     assert token not in str(error.value)
 
 
-@pytest.mark.parametrize(
-    "allowed,configured,requested",
-    [
-        (frozenset(), 42, 42),
-        (frozenset({12345}), None, 42),
-        (frozenset({12345}), 42, 99),
-        (frozenset({12345}), 42, "42"),
-    ],
-)
-def test_unconfigured_or_other_repositories_are_denied(
-    session_factory, signed_in, allowed, configured, requested
+@pytest.mark.parametrize("configured", [None, 42])
+def test_an_empty_invite_list_denies_everyone_whatever_the_default_repository(
+    session_factory, signed_in, configured
 ):
     _, token = signed_in
-    policy = RepositoryAccessPolicy(allowed, configured)
+    policy = RepositoryAccessPolicy(frozenset(), configured)
     with session_factory() as session, pytest.raises(HTTPException) as error:
-        policy.require_eligible_session(session, token, requested)
+        policy.require_allowed_user(session, token)
     assert error.value.status_code == 403
     assert error.value.detail["code"] == "repository_access_denied"
 
@@ -108,6 +100,6 @@ def test_missing_or_inactive_sessions_cannot_pass_the_policy(session_factory, si
                 stored.created_at = now - timedelta(hours=9)
                 stored.expires_at = now - timedelta(seconds=1)
     with session_factory() as session, pytest.raises(HTTPException) as error:
-        policy.require_eligible_session(session, token, 42)
+        policy.require_allowed_user(session, token)
     assert error.value.status_code == 401
     assert error.value.detail["code"] == "authentication_required"

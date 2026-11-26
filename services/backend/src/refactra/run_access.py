@@ -1,4 +1,8 @@
-"""One repository authorization policy for browser sessions and queued run owners."""
+"""One repository authorization policy for browser sessions and queued run owners.
+
+Any repository works when the App is installed on it and the user can write to it; the local
+policy only limits who may use Refactra (the invite list).
+"""
 
 import os
 import threading
@@ -12,14 +16,27 @@ import httpx
 from fastapi import HTTPException
 
 from refactra.auth_sessions import GitHubIdentity
-from refactra.github_app import GitHubAppClient, InstallationToken
+from refactra.github_app import AppNotInstalled, GitHubAppClient, InstallationToken
 from refactra.github_repository_access import require_github_write_access
 from refactra.models import Run
 from refactra.repository_access import RepositoryAccessPolicy
 
+REPOSITORY_DENIED = {
+    "code": "repository_access_denied",
+    "message": "Repository access is not allowed.",
+}
+APP_NOT_INSTALLED = {
+    "code": "app_not_installed",
+    "message": "Refactra is not installed on this repository. Install it on GitHub first.",
+}
+INSTALLATION_CHANGED = {
+    "code": "repository_installation_changed",
+    "message": "This repository moved to another Refactra installation.",
+}
+
 
 class RunAccessDenied(ValueError):
-    """The local policy no longer allows this run owner, repository or installation."""
+    """The local policy no longer allows this run owner or installation."""
 
 
 @dataclass(frozen=True)
@@ -87,13 +104,6 @@ class RepositoryAuthorizer:
         self.transport = transport
         self.read_cache = read_cache or ReadAccessCache()
 
-    @staticmethod
-    def _installation_id() -> int:
-        installation_id = int(os.environ["REFACTRA_GITHUB_INSTALLATION_ID"])
-        if installation_id <= 0:
-            raise ValueError("Invalid App configuration")
-        return installation_id
-
     def _app(self) -> GitHubAppClient:
         client_id = os.environ["REFACTRA_GITHUB_CLIENT_ID"].strip()
         if not client_id:
@@ -118,33 +128,39 @@ class RepositoryAuthorizer:
         """
         policy = RepositoryAccessPolicy.from_env()
         with session_factory() as session:
-            identity = policy.require_eligible_session(session, session_token, repository_id)
-        installation_id = self._installation_id()
-        if expected_installation is not None and installation_id != expected_installation:
-            raise HTTPException(403, "Repository installation changed.")
+            identity = policy.require_allowed_user(session, session_token)
+        if type(repository_id) is not int or repository_id <= 0:
+            raise HTTPException(403, REPOSITORY_DENIED)
 
         def check() -> RepositoryGrant:
             app = self._app()
+            try:
+                installation_id = app.repository_installation(repository_id)
+            except AppNotInstalled:
+                raise HTTPException(403, APP_NOT_INSTALLED) from None
+            if expected_installation is not None and installation_id != expected_installation:
+                raise HTTPException(403, INSTALLATION_CHANGED)
             token = require_github_write_access(app, installation_id, repository_id, identity)
             return RepositoryGrant(identity, installation_id, app, token)
 
         if not reuse:
             return check()
         session_key = sha256((session_token or "").encode()).hexdigest()
-        key = (identity.user_id, repository_id, installation_id, session_key)
+        key = (identity.user_id, repository_id, expected_installation, session_key)
         return self.read_cache.get_or_check(key, check)
 
     def for_run(self, run: Run) -> RepositoryGrant:
-        """Recheck a queued run's owner, repository and installation, then GitHub permission."""
+        """Recheck a queued run's owner and installation, then the owner's GitHub permission."""
         policy = RepositoryAccessPolicy.from_env()
-        installation_id = self._installation_id()
-        if (
-            run.github_repository_id != policy.repository_id
-            or run.requested_by not in policy.allowed_user_ids
-            or installation_id != run.github_installation_id
-        ):
+        if run.requested_by not in policy.allowed_user_ids:
             raise RunAccessDenied("Repository access is not allowed.")
         app = self._app()
+        try:
+            installation_id = app.repository_installation(run.github_repository_id)
+        except AppNotInstalled:
+            raise RunAccessDenied("The App is no longer installed on this repository.") from None
+        if installation_id != run.github_installation_id:
+            raise RunAccessDenied("The repository moved to another App installation.")
         identity = GitHubIdentity(run.requested_by, "operator")
         token = require_github_write_access(
             app, installation_id, run.github_repository_id, identity

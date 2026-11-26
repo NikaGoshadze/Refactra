@@ -489,8 +489,6 @@ def test_operator_plan_uses_saved_inputs_and_one_paid_receipt(
     key = tmp_path / "app.pem"
     key.write_bytes(b"fixture")
     for name, value in {
-        "REFACTRA_GITHUB_REPOSITORY_ID": "42",
-        "REFACTRA_GITHUB_INSTALLATION_ID": "77",
         "REFACTRA_GITHUB_CLIENT_ID": "fixture-client",
         "REFACTRA_GITHUB_PRIVATE_KEY_PATH": str(key),
         "REFACTRA_ALLOWED_GITHUB_USER_IDS": "999",
@@ -500,7 +498,12 @@ def test_operator_plan_uses_saved_inputs_and_one_paid_receipt(
     def verify_permission(app, installation, repository, user):
         assert (installation, repository, user.user_id) == (77, 42, run.requested_by)
 
+    def installation(app, repository):
+        assert repository == 42
+        return 77
+
     monkeypatch.setattr(run_access, "require_github_write_access", verify_permission)
+    monkeypatch.setattr(run_access.GitHubAppClient, "repository_installation", installation)
     legacy_id = uuid5(run.id, "repository:initial-plan")
     attempt_id = uuid5(run.id, "repository:initial-plan:structured-v1")
     requests = []

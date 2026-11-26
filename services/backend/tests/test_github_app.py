@@ -8,7 +8,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
-from refactra.github_app import GitHubAppClient, GitHubAppError
+from refactra.github_app import AppNotInstalled, GitHubAppClient, GitHubAppError
 
 
 @pytest.fixture(scope="module")
@@ -180,3 +180,33 @@ def test_invalid_credentials_fail_before_a_request(private_key, problem):
     with pytest.raises(GitHubAppError) as error:
         client.mint_read_token(7, 42)
     assert "invalid-private-key" not in str(error.value)
+
+
+def test_installation_lookup_is_signed_and_reports_a_missing_app(private_key):
+    answers = {42: httpx.Response(200, json={"id": 7, "account": {"login": "octo"}})}
+
+    def handler(request):
+        assert request.method == "GET"
+        claims = jwt.decode(
+            request.headers["Authorization"].split()[1],
+            private_key.public_key(),
+            algorithms=["RS256"],
+        )
+        assert claims["iss"] == "fixture-client"
+        repository = int(request.url.path.split("/")[2])
+        assert request.url.path == f"/repositories/{repository}/installation"
+        return answers.get(repository, httpx.Response(404, json={"message": "Not Found"}))
+
+    client = app(private_key, handler)
+    assert client.repository_installation(42) == 7
+    with pytest.raises(AppNotInstalled):
+        client.repository_installation(43)
+    answers[44] = httpx.Response(200, json={"id": "7"})
+    answers[45] = httpx.Response(500, text="sensitive upstream body")
+    for repository in (44, 45):
+        with pytest.raises(GitHubAppError) as error:
+            client.repository_installation(repository)
+        assert not isinstance(error.value, AppNotInstalled)
+        assert "sensitive" not in str(error.value)
+    with pytest.raises(ValueError):
+        client.repository_installation(0)

@@ -676,10 +676,10 @@ def create_repository_router(
                 },
             )
         try:
-            repository_id = require_run_access(request, run_id)
+            require_run_access(request, run_id)
             with session_factory.begin() as session:
-                actor = RepositoryAccessPolicy.from_env().require_eligible_session(
-                    session, request.cookies.get(oauth.session_cookie_name), repository_id
+                actor = RepositoryAccessPolicy.from_env().require_allowed_user(
+                    session, request.cookies.get(oauth.session_cookie_name)
                 )
                 approval = approve_publication_target(
                     session, run_id, **body.model_dump(), actor_id=actor.user_id
@@ -705,10 +705,10 @@ def create_repository_router(
                 {"code": "csrf_rejected", "message": "Check waivers require a trusted origin."},
             )
         try:
-            repository_id = require_run_access(request, run_id)
+            require_run_access(request, run_id)
             with session_factory.begin() as session:
-                actor = RepositoryAccessPolicy.from_env().require_eligible_session(
-                    session, request.cookies.get(oauth.session_cookie_name), repository_id
+                actor = RepositoryAccessPolicy.from_env().require_allowed_user(
+                    session, request.cookies.get(oauth.session_cookie_name)
                 )
                 waiver = waive_publication_check(
                     session, run_id, **body.model_dump(), actor_id=actor.user_id
@@ -734,10 +734,10 @@ def create_repository_router(
                 {"code": "csrf_rejected", "message": "Plan revision requires a trusted origin."},
             )
         try:
-            repository_id = require_run_access(request, run_id)
+            require_run_access(request, run_id)
             with session_factory.begin() as session:
-                RepositoryAccessPolicy.from_env().require_eligible_session(
-                    session, request.cookies.get(oauth.session_cookie_name), repository_id
+                RepositoryAccessPolicy.from_env().require_allowed_user(
+                    session, request.cookies.get(oauth.session_cookie_name)
                 )
                 if isinstance(body, PlanFeedback):
                     return _plan_response(
@@ -775,10 +775,10 @@ def create_repository_router(
                 {"code": "csrf_rejected", "message": "Plan approval requires a trusted origin."},
             )
         try:
-            repository_id = require_run_access(request, run_id)
+            require_run_access(request, run_id)
             with session_factory.begin() as session:
-                actor = RepositoryAccessPolicy.from_env().require_eligible_session(
-                    session, request.cookies.get(oauth.session_cookie_name), repository_id
+                actor = RepositoryAccessPolicy.from_env().require_allowed_user(
+                    session, request.cookies.get(oauth.session_cookie_name)
                 )
                 approval = approve_refactoring_plan(
                     session, run_id, **body.model_dump(), actor_id=actor.user_id
