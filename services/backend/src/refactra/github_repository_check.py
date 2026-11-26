@@ -8,18 +8,18 @@ from pathlib import Path
 
 import httpx
 
-from refactra.github_app import GitHubAppClient, GitHubAppError
+from refactra.github_app import AppNotInstalled, GitHubAppClient, GitHubAppError
 
 
 def check_repository(
     client_id: str,
     private_key: bytes,
-    installation_id: int,
     repository_id: int,
     *,
     transport: httpx.BaseTransport | None = None,
 ) -> dict:
     app = GitHubAppClient(client_id, private_key, transport)
+    installation_id = app.repository_installation(repository_id)
     token = app.mint_read_token(installation_id, repository_id)
     try:
         with httpx.Client(
@@ -46,6 +46,7 @@ def check_repository(
         return {
             "repository": name,
             "repository_id": repository_id,
+            "installation_id": installation_id,
             "access": "read-only",
             "expires_at": token.expires_at.isoformat(),
         }
@@ -53,17 +54,22 @@ def check_repository(
         raise GitHubAppError("GitHub repository read could not be verified.") from None
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    """Check one repository: its ID from the first argument or REFACTRA_GITHUB_REPOSITORY_ID."""
+    argv = sys.argv[1:] if argv is None else argv
     try:
+        repository = argv[0] if argv else os.environ["REFACTRA_GITHUB_REPOSITORY_ID"]
         result = check_repository(
             os.environ["REFACTRA_GITHUB_CLIENT_ID"],
             Path(os.environ["REFACTRA_GITHUB_PRIVATE_KEY_PATH"]).read_bytes(),
-            int(os.environ["REFACTRA_GITHUB_INSTALLATION_ID"]),
-            int(os.environ["REFACTRA_GITHUB_REPOSITORY_ID"]),
+            int(repository),
         )
+    except AppNotInstalled:
+        print("The App is not installed on that repository.", file=sys.stderr)
+        return 1
     except (OSError, KeyError, ValueError, GitHubAppError):
         print(
-            "Repository check failed. Check Client ID, PEM file, installation/repository IDs "
+            "Repository check failed. Check Client ID, PEM file, the repository ID "
             "and the App's Contents read permission. No credentials are shown.",
             file=sys.stderr,
         )

@@ -84,7 +84,6 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.REFACTRA_OPENAI_API_KEY }}
           GITHUB_APP_PRIVATE_KEY: ${{ secrets.REFACTRA_GITHUB_APP_PRIVATE_KEY }}
           CLIENT_ID: ${{ vars.REFACTRA_GITHUB_CLIENT_ID }}
-          INSTALLATION_ID: ${{ vars.REFACTRA_GITHUB_INSTALLATION_ID }}
           REPOSITORY_ID: ${{ vars.REFACTRA_GITHUB_REPOSITORY_ID }}
           ALLOWED_USER_IDS: ${{ vars.REFACTRA_ALLOWED_GITHUB_USER_IDS }}
         run: |
@@ -97,7 +96,6 @@ jobs:
           {
             echo "REFACTRA_DATABASE_URL=postgresql+psycopg://refactra:refactra_local@localhost:5433/refactra"
             echo "REFACTRA_GITHUB_CLIENT_ID=$CLIENT_ID"
-            echo "REFACTRA_GITHUB_INSTALLATION_ID=$INSTALLATION_ID"
             echo "REFACTRA_GITHUB_REPOSITORY_ID=$REPOSITORY_ID"
             echo "REFACTRA_ALLOWED_GITHUB_USER_IDS=$ALLOWED_USER_IDS"
             echo "REFACTRA_OPENAI_API_KEY=$OPENAI_API_KEY"

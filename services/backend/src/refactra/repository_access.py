@@ -21,6 +21,10 @@ def _positive_id(value: str) -> int:
 
 @dataclass(frozen=True)
 class RepositoryAccessPolicy:
+    """Who may use Refactra. `repository_id` is only the default the current workspace UI
+    shows until the repository picker replaces it; it does not limit which repository a run
+    may use."""
+
     allowed_user_ids: frozenset[int] = frozenset()
     repository_id: int | None = None
 
@@ -46,21 +50,6 @@ class RepositoryAccessPolicy:
                 {"code": "authentication_required", "message": "Sign in to access repositories."},
             )
         if identity.user_id not in self.allowed_user_ids:
-            raise HTTPException(
-                403,
-                {
-                    "code": "repository_access_denied",
-                    "message": "Repository access is not allowed.",
-                },
-            )
-        return identity
-
-    def require_eligible_session(
-        self, session: Session, token: str | None, repository_id: int
-    ) -> GitHubIdentity:
-        """Resolve an active session, then apply the operator's user/repository limits."""
-        identity = self.require_allowed_user(session, token)
-        if type(repository_id) is not int or repository_id != self.repository_id:
             raise HTTPException(
                 403,
                 {

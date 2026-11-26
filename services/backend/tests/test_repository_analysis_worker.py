@@ -2,6 +2,8 @@ from datetime import timedelta
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import HTTPException
 from sqlalchemy import func, select
 
@@ -22,7 +24,7 @@ from refactra.repository_analysis_worker import (
     enqueue_repository_analysis,
     process_repository_analysis,
 )
-from refactra.run_access import RunAccessDenied, authorize_run_repository
+from refactra.run_access import RepositoryAuthorizer, RunAccessDenied, authorize_run_repository
 from refactra.worker import claim_command
 
 from .test_analysis_context import prepare
@@ -95,17 +97,46 @@ def test_worker_persists_analysis_or_safe_failure(session_factory, queued, outco
         assert event.payload == {"code": code}
 
 
-@pytest.mark.parametrize(
-    "change", [{"requested_by": 7}, {"github_repository_id": 43}, {"github_installation_id": 78}]
-)
-def test_local_policy_denial_is_distinct_and_needs_no_credentials(monkeypatch, change):
+OWNER = {"requested_by": 123, "github_repository_id": 42, "github_installation_id": 77}
+
+
+def test_an_uninvited_owner_is_denied_locally_without_credentials(monkeypatch):
     monkeypatch.setenv("REFACTRA_ALLOWED_GITHUB_USER_IDS", "123")
-    monkeypatch.setenv("REFACTRA_GITHUB_REPOSITORY_ID", "42")
-    monkeypatch.setenv("REFACTRA_GITHUB_INSTALLATION_ID", "77")
     monkeypatch.delenv("REFACTRA_GITHUB_PRIVATE_KEY_PATH", raising=False)
-    owner = {"requested_by": 123, "github_repository_id": 42, "github_installation_id": 77}
     with pytest.raises(RunAccessDenied):
-        authorize_run_repository(Run(**(owner | change)))
+        authorize_run_repository(Run(**(OWNER | {"requested_by": 7})))
+
+
+@pytest.mark.parametrize("github_says", [404, 78])
+def test_a_removed_or_moved_installation_is_denied_before_any_token(
+    monkeypatch, tmp_path, github_says
+):
+    key = tmp_path / "app.pem"
+    key.write_bytes(
+        rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    for name, value in {
+        "REFACTRA_ALLOWED_GITHUB_USER_IDS": "123",
+        "REFACTRA_GITHUB_CLIENT_ID": "fixture-client",
+        "REFACTRA_GITHUB_PRIVATE_KEY_PATH": str(key),
+    }.items():
+        monkeypatch.setenv(name, value)
+    paths = []
+
+    def github(request):
+        paths.append(request.url.path)
+        if github_says == 404:
+            return httpx.Response(404, json={"message": "Not Found"})
+        return httpx.Response(200, json={"id": github_says})
+
+    authorizer = RepositoryAuthorizer(transport=httpx.MockTransport(github))
+    with pytest.raises(RunAccessDenied):
+        authorize_run_repository(Run(**OWNER), authorizer)
+    assert paths == ["/repositories/42/installation"]
 
 
 def _recording_provider(calls):
@@ -130,7 +161,7 @@ def _stop_code(session):
     [
         (RunAccessDenied("Removed from the allowlist."), "analysis_access_revoked"),
         (HTTPException(403, "Write access was removed."), "analysis_access_revoked"),
-        (KeyError("REFACTRA_GITHUB_INSTALLATION_ID"), "analysis_access_unconfigured"),
+        (KeyError("REFACTRA_GITHUB_CLIENT_ID"), "analysis_access_unconfigured"),
         (OSError("Private key is missing."), "analysis_access_unconfigured"),
     ],
 )

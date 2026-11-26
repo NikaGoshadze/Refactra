@@ -18,6 +18,10 @@ class GitHubAppError(Exception):
     """Sanitized integration failure; never include credentials or upstream bodies."""
 
 
+class AppNotInstalled(GitHubAppError):
+    """The App is not installed on the repository, or the installation cannot reach it."""
+
+
 @dataclass(frozen=True)
 class InstallationToken:
     value: str = field(repr=False)
@@ -45,34 +49,67 @@ class GitHubAppClient:
         """Request pull request write access for one approved repository."""
         return self._mint_token(installation_id, repository_id, {"pull_requests": "write"})
 
+    def repository_installation(self, repository_id: int) -> int:
+        """The ID of the App installation that covers this repository.
+
+        Raises AppNotInstalled when GitHub reports none, and GitHubAppError otherwise.
+        """
+        if type(repository_id) is not int or repository_id <= 0:
+            raise ValueError("A positive repository ID is required.")
+        try:
+            with httpx.Client(
+                timeout=10.0, follow_redirects=False, trust_env=False, transport=self.transport
+            ) as client:
+                response = client.get(
+                    f"https://api.github.com/repositories/{repository_id}/installation",
+                    headers=self._headers(self._app_jwt()),
+                )
+            if response.status_code == 404:
+                raise AppNotInstalled("The App is not installed on this repository.")
+            if response.status_code != 200:
+                raise ValueError("Installation lookup failed")
+            installation_id = response.json()["id"]
+            if type(installation_id) is not int or installation_id <= 0:
+                raise ValueError("Unexpected installation")
+            return installation_id
+        except (httpx.HTTPError, jwt.PyJWTError, ValueError, KeyError, TypeError):
+            raise GitHubAppError("GitHub App authentication could not be completed.") from None
+
+    def _app_jwt(self) -> str:
+        if not isinstance(self.client_id, str) or not self.client_id.strip():
+            raise ValueError("Missing client ID")
+        signing_key = serialization.load_pem_private_key(self.private_key, password=None)
+        if not isinstance(signing_key, rsa.RSAPrivateKey):
+            raise ValueError("An RSA private key is required")
+        now = int(time())
+        return jwt.encode(
+            {"iat": now - 60, "exp": now + 540, "iss": self.client_id},
+            signing_key,
+            algorithm="RS256",
+        )
+
+    @staticmethod
+    def _headers(app_jwt: str) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {app_jwt}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2026-03-10",
+        }
+
     def _mint_token(
         self, installation_id: int, repository_id: int, permissions: dict[str, str]
     ) -> InstallationToken:
         if any(type(value) is not int or value <= 0 for value in (installation_id, repository_id)):
             raise ValueError("Positive installation and repository IDs are required.")
         try:
-            if not isinstance(self.client_id, str) or not self.client_id.strip():
-                raise ValueError("Missing client ID")
-            signing_key = serialization.load_pem_private_key(self.private_key, password=None)
-            if not isinstance(signing_key, rsa.RSAPrivateKey):
-                raise ValueError("An RSA private key is required")
-            now = int(time())
-            app_jwt = jwt.encode(
-                {"iat": now - 60, "exp": now + 540, "iss": self.client_id},
-                signing_key,
-                algorithm="RS256",
-            )
+            app_jwt = self._app_jwt()
             permissions = {**permissions, "metadata": "read"}
             with httpx.Client(
                 timeout=10.0, follow_redirects=False, trust_env=False, transport=self.transport
             ) as client:
                 response = client.post(
                     f"https://api.github.com/app/installations/{installation_id}/access_tokens",
-                    headers={
-                        "Authorization": f"Bearer {app_jwt}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2026-03-10",
-                    },
+                    headers=self._headers(app_jwt),
                     json={"repository_ids": [repository_id], "permissions": permissions},
                 )
             if response.status_code != 201:

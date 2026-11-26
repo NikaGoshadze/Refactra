@@ -77,7 +77,7 @@ def test_worker_saves_the_pinned_context_and_queues_analysis_once(
     [
         (RunAccessDenied("Removed from the allowlist."), "analysis_access_revoked"),
         (HTTPException(403, "Write access was removed."), "analysis_access_revoked"),
-        (KeyError("REFACTRA_GITHUB_INSTALLATION_ID"), "analysis_access_unconfigured"),
+        (KeyError("REFACTRA_GITHUB_CLIENT_ID"), "analysis_access_unconfigured"),
     ],
 )
 def test_lost_access_stops_before_any_download(

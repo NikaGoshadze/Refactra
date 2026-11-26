@@ -3,7 +3,12 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
-from refactra.github_app import GitHubAppClient, GitHubAppError, InstallationToken
+from refactra.github_app import (
+    AppNotInstalled,
+    GitHubAppClient,
+    GitHubAppError,
+    InstallationToken,
+)
 from refactra.github_repository_check import check_repository, main
 
 
@@ -15,7 +20,12 @@ def token(monkeypatch):
         assert (installation_id, repository_id) == (7, 42)
         return token
 
+    def installation(self, repository_id):
+        assert repository_id == 42
+        return 7
+
     monkeypatch.setattr(GitHubAppClient, "mint_read_token", mint)
+    monkeypatch.setattr(GitHubAppClient, "repository_installation", installation)
     return token
 
 
@@ -27,12 +37,11 @@ def test_check_reads_the_selected_repository_without_exposing_credentials(token)
         assert request.headers["X-GitHub-Api-Version"] == "2026-03-10"
         return httpx.Response(200, json={"id": 42, "full_name": "fixture/example"})
 
-    result = check_repository(
-        "client", b"private-key", 7, 42, transport=httpx.MockTransport(handler)
-    )
+    result = check_repository("client", b"private-key", 42, transport=httpx.MockTransport(handler))
     assert result == {
         "repository": "fixture/example",
         "repository_id": 42,
+        "installation_id": 7,
         "access": "read-only",
         "expires_at": token.expires_at.isoformat(),
     }
@@ -62,7 +71,7 @@ def test_failed_reads_are_sanitized_without_following_redirects(token, problem):
         return httpx.Response(200, json=payload)
 
     with pytest.raises(GitHubAppError) as error:
-        check_repository("client", b"key", 7, 42, transport=httpx.MockTransport(handler))
+        check_repository("client", b"key", 42, transport=httpx.MockTransport(handler))
     assert len(requests) == 1
     assert "sensitive" not in str(error.value)
     assert token.value not in str(error.value)
@@ -70,35 +79,50 @@ def test_failed_reads_are_sanitized_without_following_redirects(token, problem):
 
 def test_missing_configuration_exits_cleanly(monkeypatch, capsys):
     monkeypatch.delenv("REFACTRA_GITHUB_CLIENT_ID", raising=False)
-    assert main() == 1
+    assert main(["42"]) == 1
     output = capsys.readouterr()
     assert not output.out
     assert "Repository check failed" in output.err
 
 
-def test_cli_reads_local_key_and_prints_only_the_summary(monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize("argv,expected", [([], 42), (["43"], 43)])
+def test_cli_reads_local_key_and_prints_only_the_summary(
+    monkeypatch, tmp_path, capsys, argv, expected
+):
     key = tmp_path / "key.pem"
     key.write_bytes(b"fixture-private-key")
     for name, value in {
         "REFACTRA_GITHUB_CLIENT_ID": "client",
         "REFACTRA_GITHUB_PRIVATE_KEY_PATH": str(key),
-        "REFACTRA_GITHUB_INSTALLATION_ID": "7",
         "REFACTRA_GITHUB_REPOSITORY_ID": "42",
     }.items():
         monkeypatch.setenv(name, value)
 
-    def check(client_id, private_key, installation_id, repository_id):
-        assert (client_id, private_key, installation_id, repository_id) == (
+    def check(client_id, private_key, repository_id):
+        assert (client_id, private_key, repository_id) == (
             "client",
             b"fixture-private-key",
-            7,
-            42,
+            expected,
         )
-        return {"repository_id": 42, "access": "read-only"}
+        return {"repository_id": expected, "access": "read-only"}
 
     monkeypatch.setattr("refactra.github_repository_check.check_repository", check)
-    assert main() == 0
+    assert main(argv) == 0
     output = capsys.readouterr()
     assert '"access": "read-only"' in output.out
     assert "fixture-private-key" not in output.out
     assert not output.err
+
+
+def test_cli_explains_when_the_app_is_not_installed(monkeypatch, tmp_path, capsys):
+    key = tmp_path / "key.pem"
+    key.write_bytes(b"fixture-private-key")
+    monkeypatch.setenv("REFACTRA_GITHUB_CLIENT_ID", "client")
+    monkeypatch.setenv("REFACTRA_GITHUB_PRIVATE_KEY_PATH", str(key))
+
+    def check(*_):
+        raise AppNotInstalled("not installed")
+
+    monkeypatch.setattr("refactra.github_repository_check.check_repository", check)
+    assert main(["42"]) == 1
+    assert "not installed on that repository" in capsys.readouterr().err
