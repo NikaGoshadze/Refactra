@@ -50,6 +50,22 @@ export const USER_REPOSITORIES = {
   ],
   truncated: false,
 };
+const HISTORY_ITEM = {
+  run_id: RUN_ID, repository_id: 1001132861, repository_full_name: "fixture/example", base_branch: "main",
+  base_sha: "a".repeat(40), task_summary: "Extract the cart calculation", stage: "published", stop_reason: null,
+  plan_revisions: 2, pull_request: { number: 7, url: "https://github.com/fixture/example/pull/7" },
+  cost_usd: "0.0421", created_at: "2026-11-20T01:00:00Z", last_activity_at: "2026-11-20T01:30:00Z",
+};
+export const RUN_HISTORY = {
+  runs: [
+    HISTORY_ITEM,
+    { ...HISTORY_ITEM, run_id: "5d2b5f4e-0c1a-4c55-9a51-2f0e7f1c9a10", repository_full_name: null,
+      task_summary: "Rename the order helper", stage: "failed", stop_reason: "Candidate validation failed.",
+      plan_revisions: 1, pull_request: null, cost_usd: "0.0100" },
+  ],
+  next_cursor: null,
+};
+
 /** Choose the fixture repository in the picker and wait for its access check. */
 export async function chooseRepository(page: import("@playwright/test").Page, name = "fixture/example") {
   const panel = page.getByRole("region", { name: "Repository connection" });
@@ -139,6 +155,12 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
         });
         if (id === 46) setTimeout(() => response.end(JSON.stringify(body)), 5500);
         else response.end(JSON.stringify(body));
+        return;
+      } else if (route === "/api/v1/runs" && request.method === "GET") {
+        const authenticated = request.headers.cookie?.includes("refactra_session=fixture-session") ?? false;
+        response.writeHead(authenticated ? 200 : 401, { "Cache-Control": "public, max-age=3600" });
+        response.end(JSON.stringify(authenticated ? RUN_HISTORY
+          : { error: { code: "authentication_required", message: "Sign in to access repositories." } }));
         return;
       } else if (route === "/api/v1/runs") {
         request.setEncoding("utf8");

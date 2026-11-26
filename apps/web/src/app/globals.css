@@ -43,6 +43,16 @@ a { color: inherit; text-decoration: none; }
 .repository-picker { margin-top: 16px; }
 .repository-picker label { margin-top: 14px; margin-bottom: 8px; }
 .repository-links { margin: 14px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.8; }
+.topnav { display: flex; gap: 18px; font-size: 13px; font-weight: 600; }
+.history-search { display: grid; grid-template-columns: 1fr auto; gap: 8px 10px; align-items: end; margin-top: 14px; }
+.history-search label { grid-column: 1 / -1; margin: 0; }
+.history-search input { padding: 10px 14px; font: inherit; border: 1px solid var(--border); border-radius: 7px; min-width: 0; }
+.history-list { list-style: none; margin: 18px 0; padding: 0; display: grid; gap: 14px; }
+.history-list article { border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+.history-repository { margin: 0; font-size: 12px; color: var(--muted); }
+.history-task { margin: 6px 0; font-weight: 600; overflow-wrap: anywhere; }
+.stage-failed { color: #923d32; }
+.stage-published { color: #1f7a4d; }
 .analysis-result { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; padding: 14px; background: #fbfcfe; border: 1px solid var(--border); border-radius: 7px; }
 .saved-run, .saved-plan { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
 .saved-run summary { cursor: pointer; font-size: 14px; font-weight: 600; }
