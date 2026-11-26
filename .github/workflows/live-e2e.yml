@@ -1,0 +1,145 @@
+name: Live end-to-end
+
+# Runs the real workflow (OpenAI, GitHub App, draft PR on AI-Hub) only when started by hand.
+# Secrets live in the protected live-e2e environment, which only main can deploy to.
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Refactoring task (empty uses the README summary_lines task)
+        required: false
+        type: string
+      keep_pull_request:
+        description: Leave the draft PR and base branch open for review
+        type: boolean
+        default: false
+      allow_waivers:
+        description: Publish even if a required check cannot run
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-e2e
+  cancel-in-progress: false
+
+jobs:
+  live:
+    name: Live workflow to draft PR
+    runs-on: ubuntu-24.04
+    environment: live-e2e
+    timeout-minutes: 60
+    env:
+      SUBJECT_REPOSITORY: ${{ github.repository_owner }}/AI-Hub
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.9"
+          enable-cache: true
+          cache-dependency-glob: services/backend/uv.lock
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install browser test dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: GitHub App token for the subject repository
+        # Creates and deletes the disposable branches and closes the draft PR; revoked after the job.
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.REFACTRA_GITHUB_CLIENT_ID }}
+          private-key: ${{ secrets.REFACTRA_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AI-Hub
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Write the local configuration
+        env:
+          OPENAI_API_KEY: ${{ secrets.REFACTRA_OPENAI_API_KEY }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.REFACTRA_GITHUB_APP_PRIVATE_KEY }}
+          CLIENT_ID: ${{ vars.REFACTRA_GITHUB_CLIENT_ID }}
+          INSTALLATION_ID: ${{ vars.REFACTRA_GITHUB_INSTALLATION_ID }}
+          REPOSITORY_ID: ${{ vars.REFACTRA_GITHUB_REPOSITORY_ID }}
+          ALLOWED_USER_IDS: ${{ vars.REFACTRA_ALLOWED_GITHUB_USER_IDS }}
+        run: |
+          git clone --quiet "https://github.com/$SUBJECT_REPOSITORY.git" "$RUNNER_TEMP/AI-Hub"
+          mkdir -p .runtime/secrets
+          printf '%s\n' "$GITHUB_APP_PRIVATE_KEY" > .runtime/secrets/github-app.pem
+          # The API container's non-root user reads the key through a read-only bind mount.
+          chmod 644 .runtime/secrets/github-app.pem
+          umask 077
+          {
+            echo "REFACTRA_DATABASE_URL=postgresql+psycopg://refactra:refactra_local@localhost:5433/refactra"
+            echo "REFACTRA_GITHUB_CLIENT_ID=$CLIENT_ID"
+            echo "REFACTRA_GITHUB_INSTALLATION_ID=$INSTALLATION_ID"
+            echo "REFACTRA_GITHUB_REPOSITORY_ID=$REPOSITORY_ID"
+            echo "REFACTRA_ALLOWED_GITHUB_USER_IDS=$ALLOWED_USER_IDS"
+            echo "REFACTRA_OPENAI_API_KEY=$OPENAI_API_KEY"
+          } > .env
+      - name: Run the live test
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TASK: ${{ inputs.task }}
+          KEEP_PULL_REQUEST: ${{ inputs.keep_pull_request }}
+          ALLOW_WAIVERS: ${{ inputs.allow_waivers }}
+        run: |
+          $options = @{ Source = "$env:RUNNER_TEMP/AI-Hub" }
+          if ($env:TASK) { $options.Task = $env:TASK }
+          if ($env:KEEP_PULL_REQUEST -eq 'true') { $options.KeepPullRequest = $true }
+          if ($env:ALLOW_WAIVERS -eq 'true') { $options.AllowWaivers = $true }
+          ./scripts/run-live-e2e.ps1 @options
+      - name: Summary
+        if: always()
+        run: |
+          for result in .runtime/e2e-live/*/result.json; do
+            [ -f "$result" ] || continue
+            jq -r '"Run `\(.runId // "not started")` on `\(.baseBranch)`: \(.pullRequestUrl // "no pull request") (waived checks: \(.waivedChecks // 0))"' \
+              "$result" >> "$GITHUB_STEP_SUMMARY"
+          done
+      - name: Fallback cleanup
+        # The script cleans up itself; this covers a cancelled or timed-out job.
+        if: always() && !inputs.keep_pull_request
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          for run in .runtime/e2e-live/*/; do
+            [ -d "$run" ] || continue
+            if [ -f "$run/result.json" ]; then
+              url=$(jq -r '.pullRequestUrl // empty' "$run/result.json")
+              if [ -n "$url" ] && [ "$(gh pr view "$url" --json state --jq .state)" = OPEN ]; then
+                gh pr close "$url" --delete-branch || true
+              fi
+            fi
+            gh api -X DELETE "repos/$SUBJECT_REPOSITORY/git/refs/heads/e2e/base-$(basename "$run")" \
+              >/dev/null 2>&1 || true
+          done
+      - name: Upload the failure trace and worker log
+        # The repository is public: upload diagnostics only when they are needed. The session in
+        # the trace is revoked when the run ends; the token file is deleted before this step.
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: live-e2e-diagnostics
+          path: |
+            .runtime/e2e-live/*/result.json
+            .runtime/e2e-live/*/worker.log*
+            .runtime/e2e-live/*/playwright/
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Compose logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail 200 api web
+      - name: Stop the stack and remove local secrets
+        if: always()
+        run: |
+          docker compose -f compose.yaml -f compose.repository-api.yaml down --volumes || true
+          rm -f .env .runtime/secrets/github-app.pem
