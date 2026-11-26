@@ -55,10 +55,13 @@ def check_repository(
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Check one repository: its ID from the first argument or REFACTRA_GITHUB_REPOSITORY_ID."""
+    """Check one repository, given by its numeric ID as the only argument."""
     argv = sys.argv[1:] if argv is None else argv
+    if len(argv) != 1:
+        print("Usage: python -m refactra.github_repository_check REPOSITORY_ID", file=sys.stderr)
+        return 2
     try:
-        repository = argv[0] if argv else os.environ["REFACTRA_GITHUB_REPOSITORY_ID"]
+        repository = argv[0]
         result = check_repository(
             os.environ["REFACTRA_GITHUB_CLIENT_ID"],
             Path(os.environ["REFACTRA_GITHUB_PRIVATE_KEY_PATH"]).read_bytes(),

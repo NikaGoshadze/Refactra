@@ -21,24 +21,20 @@ def _positive_id(value: str) -> int:
 
 @dataclass(frozen=True)
 class RepositoryAccessPolicy:
-    """Who may use Refactra. `repository_id` is only the default the current workspace UI
-    shows until the repository picker replaces it; it does not limit which repository a run
-    may use."""
+    """Who may use Refactra: the invite list. Which repositories is GitHub's decision, through
+    the App installation and the user's current write permission."""
 
     allowed_user_ids: frozenset[int] = frozenset()
-    repository_id: int | None = None
 
     @classmethod
     def from_env(cls) -> "RepositoryAccessPolicy":
         users = os.getenv("REFACTRA_ALLOWED_GITHUB_USER_IDS", "").strip()
-        repository = os.getenv("REFACTRA_GITHUB_REPOSITORY_ID", "").strip()
         return cls(
             allowed_user_ids=(
                 frozenset(_positive_id(value) for value in users.split(","))
                 if users
                 else frozenset()
             ),
-            repository_id=_positive_id(repository) if repository else None,
         )
 
     def require_allowed_user(self, session: Session, token: str | None) -> GitHubIdentity:

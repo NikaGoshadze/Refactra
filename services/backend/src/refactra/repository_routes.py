@@ -106,11 +106,18 @@ def _analysis_stop_reason(session, run_id: UUID) -> StopReason:
     return StopReason(code="analysis_failed", message="Analysis could not be completed.")
 
 
+BRANCH_PAGE_SIZE = 100
+MAX_BRANCH_PAGES = 10
+
+
 class RepositoryRead(BaseModel):
     repository_id: int
     full_name: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
     default_branch: str = Field(min_length=1)
     access: Literal["read-only"] = "read-only"
+    # Branch names for the picker; `branches_truncated` means the list stopped at the cap.
+    branches: list[str] = []
+    branches_truncated: bool = False
 
 
 class ArtifactReference(BaseModel):
@@ -328,47 +335,49 @@ def create_repository_router(
                 },
             ) from None
 
-    @router.get("/repository", response_model=RepositoryRead)
-    def configured_repository(request: Request, response: Response):
-        """The operator-configured repository, returned only to an eligible signed-in user."""
-        try:
-            repository_id = RepositoryAccessPolicy.from_env().repository_id
-        except ValueError:
-            repository_id = None
-        if repository_id is None:
-            return error(
-                503,
-                {
-                    "code": "repository_access_unconfigured",
-                    "message": "Repository access configuration is unavailable.",
-                },
-            )
-        return repository(repository_id, request, response)
-
     @router.get("/repositories/{repository_id}", response_model=RepositoryRead)
     def repository(repository_id: int, request: Request, response: Response):
+        """Verify access to a repository the user picked and list its branches."""
         response.headers["Cache-Control"] = "no-store"
         try:
             grant = authorize(request, repository_id)
             with httpx.Client(
-                timeout=10.0, follow_redirects=False, trust_env=False, transport=grant.app.transport
+                base_url="https://api.github.com",
+                headers={
+                    "Authorization": f"Bearer {grant.token.value}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2026-03-10",
+                },
+                timeout=10.0,
+                follow_redirects=False,
+                trust_env=False,
+                transport=grant.app.transport,
             ) as client:
-                result = client.get(
-                    f"https://api.github.com/repositories/{repository_id}",
-                    headers={
-                        "Authorization": f"Bearer {grant.token.value}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2026-03-10",
-                    },
-                )
-            result.raise_for_status()
-            data = result.json()
-            if type(data["id"]) is not int or data["id"] != repository_id:
-                raise ValueError("Unexpected repository identity")
+                result = client.get(f"/repositories/{repository_id}")
+                result.raise_for_status()
+                data = result.json()
+                if type(data["id"]) is not int or data["id"] != repository_id:
+                    raise ValueError("Unexpected repository identity")
+                branches, truncated = [], True
+                for page in range(1, MAX_BRANCH_PAGES + 1):
+                    listed = client.get(
+                        f"/repositories/{repository_id}/branches",
+                        params={"per_page": BRANCH_PAGE_SIZE, "page": page},
+                    )
+                    listed.raise_for_status()
+                    names = [item["name"] for item in listed.json()]
+                    if not all(isinstance(name, str) and name for name in names):
+                        raise ValueError("Unexpected branch")
+                    branches.extend(names)
+                    if len(names) < BRANCH_PAGE_SIZE:
+                        truncated = False
+                        break
             return RepositoryRead(
                 repository_id=repository_id,
                 full_name=data["full_name"],
                 default_branch=data["default_branch"],
+                branches=branches,
+                branches_truncated=truncated,
             )
         except HTTPException as exc:
             return error(exc.status_code, exc.detail)
