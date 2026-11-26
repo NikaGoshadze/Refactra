@@ -64,12 +64,13 @@ try {
     $key = Join-Path $root '.runtime/secrets/github-app.pem'
     if (-not (Test-Path $key)) { throw 'The GitHub App key .runtime/secrets/github-app.pem is missing.' }
     $Source = (Resolve-Path $Source).Path
-    Invoke-Checked 'gh auth status' { gh auth status *> $null }
     New-Item -ItemType Directory -Path $runDir -Force | Out-Null
     $artifacts = (New-Item -ItemType Directory -Path (Join-Path $runDir 'artifacts') -Force).FullName
 
     $repository = gh api "repositories/$(Get-EnvValue 'REFACTRA_GITHUB_REPOSITORY_ID')" --jq '.full_name'
-    if ($LASTEXITCODE -ne 0 -or -not $repository) { throw 'Could not resolve the configured repository.' }
+    if ($LASTEXITCODE -ne 0 -or -not $repository) {
+        throw 'Could not resolve the configured repository; check that gh is signed in.'
+    }
     Write-Host "Creating $baseBranch on $repository at $BaseCommit."
     Invoke-Checked 'Creating the base branch' {
         gh api "repos/$repository/git/refs" -f "ref=refs/heads/$baseBranch" -f "sha=$BaseCommit" > $null
@@ -116,7 +117,8 @@ try {
     $failed = $false
 } finally {
     if ($worker -and -not $worker.HasExited) {
-        taskkill /PID $worker.Id /T /F *> $null
+        $worker.Kill($true)  # The whole tree: the supervisor, uv and the Python worker.
+        $worker.WaitForExit(10000) | Out-Null
         Write-Host 'Worker stopped.'
     }
     if (Test-Path $sessionFile) {
