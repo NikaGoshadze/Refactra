@@ -6,6 +6,8 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 const sessionFile = process.env.REFACTRA_E2E_SESSION_FILE;
 const baseBranch = process.env.REFACTRA_E2E_BASE_BRANCH;
 const resultFile = process.env.REFACTRA_E2E_RESULT_FILE;
+const repositoryName = process.env.REFACTRA_E2E_REPOSITORY;
+const repositoryId = Number(process.env.REFACTRA_E2E_REPOSITORY_ID);
 const allowWaivers = process.env.REFACTRA_E2E_ALLOW_WAIVERS === "1";
 // The README's demo task: small, fully specified and covered by an explicit test file.
 const task = process.env.REFACTRA_E2E_TASK || [
@@ -40,16 +42,33 @@ async function waitFor(page: Page, ready: Locator, failures: Locator[], timeout:
 }
 
 async function connect(page: Page, outcome: Outcome) {
+  // The test session skips GitHub's sign-in page, so it holds no GitHub user token and the
+  // picker list (GET /user/repositories) cannot be loaded. Supply that list with the subject
+  // repository; choosing it still runs the real installation, write-access and branch checks.
+  await page.route("**/api/v1/user/repositories", (route) => route.fulfill({
+    json: {
+      install_url: null, installations: [], truncated: false,
+      repositories: [{
+        id: repositoryId, full_name: repositoryName, private: false, default_branch: "main",
+        installation_id: 0, writable: true,
+      }],
+    },
+  }));
+  await page.reload();
   const repository = page.getByRole("region", { name: "Repository connection" });
-  await repository.getByRole("button", { name: "Check repository access" }).click();
-  await expect(repository.getByRole("status")).toHaveText("Read-only connection verified.",
-    { timeout: 90_000 });
+  const picker = repository.getByLabel("Repository", { exact: true });
+  await expect(picker.locator("option", { hasText: repositoryName })).toHaveCount(1, { timeout: 90_000 });
+  await picker.selectOption({ label: repositoryName! });
+  await expect(repository.getByRole("status")).toHaveText("Write access verified.", { timeout: 90_000 });
   outcome.repository = (await repository.locator(".repository-target").innerText()).trim();
 }
 
 async function analyseAndApprovePlan(page: Page, outcome: Outcome) {
   const analysis = page.getByRole("region", { name: "Repository analysis" });
-  await analysis.getByLabel("Base branch", { exact: true }).fill(baseBranch!);
+  const branch = analysis.getByLabel("Base branch", { exact: true });
+  // A dropdown when the branch list is complete, a text box otherwise.
+  if (await branch.evaluate((element) => element.tagName === "SELECT")) await branch.selectOption(baseBranch!);
+  else await branch.fill(baseBranch!);
   await analysis.getByLabel("What would you like to refactor?").fill(task);
   const submitted = page.waitForResponse((response) =>
     response.url().endsWith("/api/v1/runs") && response.request().method() === "POST");
@@ -102,7 +121,8 @@ async function validateAndPublish(page: Page, outcome: Outcome) {
 }
 
 test("a real task goes from analysis to a draft pull request", async ({ page, context, baseURL }) => {
-  test.skip(!sessionFile || !baseBranch || !resultFile, "Run through scripts/run-live-e2e.ps1.");
+  test.skip(!sessionFile || !baseBranch || !resultFile || !repositoryName || !(repositoryId > 0),
+    "Run through scripts/run-live-e2e.ps1.");
   const outcome: Outcome = { baseBranch, task };
   await context.addCookies([{
     name: "refactra_session", value: readFileSync(sessionFile!, "ascii").trim(),
