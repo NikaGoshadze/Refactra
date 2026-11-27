@@ -64,6 +64,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   const { path } = await context.params;
   const relative = path.join("/");
   const isAuth = AUTH_READ_ROUTES.has(relative) || relative === "auth/logout";
+  const isAccountDeletion = relative === "account/delete" && request.method === "POST";
   // The user's repository list and usage are signed-in reads like the repository checks.
   const isRepository = relative === "user/repositories" || relative === "usage"
     || /^repositories\/[1-9][0-9]*$/.test(relative);
@@ -80,11 +81,11 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   const isCheckWaiver = isRun && section === "result" && action === "waivers"
     && path.length === 4 && request.method === "POST";
   const isResultWrite = isPublicationApproval || isCheckWaiver;
-  const sessionOnly = isRepository || isAnalysisSubmit || isRunRead || isPlanWrite || isResultWrite;
+  const sessionOnly = isAccountDeletion || isRepository || isAnalysisSubmit || isRunRead || isPlanWrite || isResultWrite;
   // GET runs is the user's run history; POST runs submits a new analysis.
   const readAllowed = isRepository || isRunRead || isAnalysisSubmit || AUTH_READ_ROUTES.has(relative)
     || relative === "capabilities" || /^mock\/runs\/[0-9a-f-]{36}(\/events)?$/i.test(relative);
-  const writeAllowed = isAnalysisSubmit || isPlanWrite || isResultWrite
+  const writeAllowed = isAccountDeletion || isAnalysisSubmit || isPlanWrite || isResultWrite
     || relative === "mock/runs" || relative === "auth/logout";
   if (!(request.method === "GET" ? readAllowed : request.method === "POST" && writeAllowed)) {
     return NextResponse.json({ error: { code: "unavailable_route", message: "This route is not available in the foundation build." } }, { status: 404, headers: { "Cache-Control": "no-store" } });
@@ -108,7 +109,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
         .filter((item) => allowedCookies.has(item.slice(0, item.indexOf("=")))).join("; ");
       if (cookies) headers.set("Cookie", cookies);
     }
-    if (isAuth || isAnalysisSubmit || isPlanWrite || isResultWrite) {
+    if (isAuth || isAccountDeletion || isAnalysisSubmit || isPlanWrite || isResultWrite) {
       // Preserve browser-supplied values; inventing a trusted Origin would bypass CSRF checks.
       for (const name of ["Origin", "X-Refactra-CSRF"]) {
         const value = request.headers.get(name);
@@ -128,7 +129,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       const value = upstream.headers.get(name);
       if (value !== null) responseHeaders.set(name, value);
     }
-    if (isAuth) {
+    if (isAuth || isAccountDeletion) {
       for (const cookie of upstream.headers.getSetCookie()) responseHeaders.append("Set-Cookie", cookie);
     }
     return new NextResponse(upstream.status === 204 ? null : await upstream.text(), {
