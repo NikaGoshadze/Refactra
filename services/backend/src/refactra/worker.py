@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import signal
+import sys
 import threading
 from datetime import timedelta
 from pathlib import Path
@@ -20,6 +21,7 @@ from refactra.db import make_engine, sessions
 from refactra.diagnostics import database_error_details
 from refactra.models import Run, RunCommand, RunEvent
 from refactra.openai_analysis import OpenAIAnalysisProvider
+from refactra.production import ProductionConfigError, require_production_ready
 from refactra.publication_pr import process_approved_publication
 from refactra.publication_target import PUBLISH_CANDIDATE
 from refactra.refactoring_plan import APPLY_PLAN_APPROVAL
@@ -195,6 +197,12 @@ def main():
             parser.error(
                 "Validation requires a candidate or workflow mode and both existing directories."
             )
+    try:
+        require_production_ready("worker")
+    except ProductionConfigError as error:
+        # Exit code 2 tells run-worker.ps1 not to restart: a restart cannot fix settings.
+        print(error, file=sys.stderr)
+        raise SystemExit(2) from None
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = Settings.from_env()
