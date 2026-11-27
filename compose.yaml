@@ -9,6 +9,8 @@ x-backend: &backend
   environment: &backend-environment
     REFACTRA_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-refactra}:${POSTGRES_PASSWORD:-refactra_local}@postgres:5432/${POSTGRES_DB:-refactra}
     REFACTRA_ENABLE_MOCK: ${REFACTRA_ENABLE_MOCK:-true}
+    # production makes the API and worker refuse unsafe settings at startup.
+    REFACTRA_ENVIRONMENT: ${REFACTRA_ENVIRONMENT:-development}
 
 services:
   postgres:

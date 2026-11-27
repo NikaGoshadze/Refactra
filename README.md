@@ -469,6 +469,25 @@ The mock worker's outcome and command completion commit together, so an interrup
 
 To see persistence directly, stop the worker with `docker compose stop worker`, submit a task, and observe its queued state. Start it with `docker compose start worker` and observe the recorded outcome.
 
+## Production mode
+
+`REFACTRA_ENVIRONMENT` is `development` by default, which keeps the local conveniences. With `REFACTRA_ENVIRONMENT=production`, the API and the worker check their settings at startup and refuse to start until all of these hold:
+
+| Setting | Required in production | Checked by |
+|---|---|---|
+| `REFACTRA_ENABLE_MOCK` | not `true`, because the mock queue accepts anonymous runs | API, worker |
+| `REFACTRA_DATABASE_URL` | set, and not the local `refactra_local` password | API, worker |
+| `REFACTRA_ALLOWED_GITHUB_USER_IDS` | at least one numeric user ID | API, worker |
+| `REFACTRA_GITHUB_CLIENT_ID` | set | API, worker |
+| `REFACTRA_GITHUB_PRIVATE_KEY_PATH` | an existing file | API, worker |
+| `REFACTRA_GITHUB_CALLBACK_URL` | a public `https://` URL, which makes session cookies `Secure` with the `__Host-` prefix | API |
+| `REFACTRA_GITHUB_CLIENT_SECRET` | set | API |
+| `REFACTRA_OAUTH_STATE_SECRET` | at least 32 random characters | API |
+| `REFACTRA_TOKEN_ENCRYPTION_KEY` | 32 random bytes in URL-safe base64 | API |
+| `REFACTRA_GITHUB_APP_SLUG` | the App's URL name | API |
+
+The error lists the setting names that need attention and never their values. The worker exits with code 2, so `run-worker.ps1` does not restart it. `GET /api/v1/capabilities` reports the environment. Compose passes the setting to the API and the worker.
+
 ## Checks
 
 GitHub Actions ([ci.yml](.github/workflows/ci.yml)) runs on every pull request and push to `main`. The backend job runs Ruff and the full pytest suite against a PostgreSQL 17 service. That suite also runs `run-worker.ps1` under PowerShell 7 with a fake `uv`, checking clean stop, restart with a doubling delay and stop on a configuration error. These tests skip only outside CI when `pwsh` is missing. The web job runs lint, build, typecheck and the Playwright specs that use the isolated proxy fixture. A docker job starts the Compose stack and checks readiness and the worker heartbeat. It then runs the Docker-gated validation tests against the built `refactra-backend:local` image, failing if any of them is skipped, and finishes with the full-stack `mock-run.spec.ts` browser test.
