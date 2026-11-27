@@ -22,7 +22,7 @@ from refactra.github_auth import (
     validate_oauth_attempt,
 )
 from refactra.github_user_tokens import KEY_ENV, TokenCipher, TokenRejected, current_user_token
-from refactra.models import AuthSession
+from refactra.models import AuthSession, UserAccess
 
 
 @pytest.fixture
@@ -207,6 +207,8 @@ def test_callback_verifies_github_and_commits_a_rotated_session(callback, sessio
         identity = resolve_session(session, token)
         assert (identity.user_id, identity.login) == (12345, "verified-user")
         assert session.scalar(select(AuthSession.token_hash)) == sha256(token.encode()).hexdigest()
+        # The fixture user is not an owner or invited, so signing in joined the waitlist.
+        assert session.get(UserAccess, 12345).status == "waitlisted"
         # The GitHub token is kept only as ciphertext and never reaches the browser.
         stored = session.scalar(select(AuthSession.github_token_ciphertext))
         assert stored and b"fixture-github-token" not in stored

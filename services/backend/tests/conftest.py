@@ -8,6 +8,7 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
+import refactra.repository_access as repository_access
 from refactra.api import create_app
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
@@ -19,6 +20,13 @@ def migration_config(connection) -> Config:
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.attributes["connection"] = connection
     return config
+
+
+@pytest.fixture(autouse=True)
+def no_leftover_invite_store():
+    """worker.main registers its session factory for invite checks; never let it outlive a test."""
+    yield
+    repository_access.use_invite_store(None)
 
 
 @pytest.fixture

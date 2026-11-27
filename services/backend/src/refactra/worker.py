@@ -25,6 +25,7 @@ from refactra.production import ProductionConfigError, require_production_ready
 from refactra.publication_pr import process_approved_publication
 from refactra.publication_target import PUBLISH_CANDIDATE
 from refactra.refactoring_plan import APPLY_PLAN_APPROVAL
+from refactra.repository_access import use_invite_store
 from refactra.repository_analysis_worker import (
     GENERATE_CANDIDATE,
     GENERATE_PLAN,
@@ -241,6 +242,8 @@ def main():
     workflow = "mock-v0.1" if mode == "mock" else WORKFLOW
     engine = make_engine(settings.database_url)
     session_factory = sessions(engine)
+    # Queued runs of invited users (not only listed owners) keep passing access re-checks.
+    use_invite_store(session_factory)
     worker_id = str(uuid4())
 
     def dispatch(claimed_kind: str, command_id: UUID) -> bool:
