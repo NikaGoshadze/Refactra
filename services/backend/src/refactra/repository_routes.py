@@ -1,7 +1,7 @@
 """Protected repository metadata and saved workflow artifacts."""
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -9,7 +9,7 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -76,8 +76,10 @@ from refactra.schemas import (
 )
 from refactra.session_routes import is_trusted_mutation
 from refactra.snapshot_preparation import enqueue_snapshot_preparation
+from refactra.usage_limits import UsageLimitReached, UsageLimits, check_new_run, limit_response
 
 RUN_NOT_FOUND = {"code": "not_found", "message": "Repository run not found."}
+USAGE_LOCK = 72341003  # With the user ID, serializes one user's run submissions.
 
 
 def _analysis_stop_reason(session, run_id: UUID) -> StopReason:
@@ -295,6 +297,7 @@ def create_repository_router(
     router = APIRouter(prefix="/api/v1", tags=["Repositories"])
     oauth = GitHubOAuthConfig.from_env()
     authorizer = authorizer or RepositoryAuthorizer()
+    UsageLimits.from_env()  # Invalid limits stop the API at startup; requests reread them.
 
     def error(status, detail):
         return JSONResponse(
@@ -400,6 +403,12 @@ def create_repository_router(
                 )
                 try:
                     with session_factory.begin() as session:
+                        # One lock per user makes simultaneous submissions take turns, so
+                        # they cannot both pass the daily limit.
+                        session.execute(
+                            select(func.pg_advisory_xact_lock(USAGE_LOCK, identity.user_id % 2**31))
+                        )
+                        check_new_run(session, identity.user_id, UsageLimits.from_env())
                         run = create_repository_run(
                             session,
                             identity=identity,
@@ -447,6 +456,8 @@ def create_repository_router(
             )
         except HTTPException as exc:
             return error(exc.status_code, exc.detail)
+        except UsageLimitReached as reached:
+            return limit_response(reached, datetime.now(UTC))
         except GitHubAppError:
             return error(
                 502,

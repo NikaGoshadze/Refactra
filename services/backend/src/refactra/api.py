@@ -23,6 +23,7 @@ from refactra.run_access import RepositoryAuthorizer
 from refactra.run_history import create_run_history_router
 from refactra.schemas import EventPage, EventRead, MockRunCreate, MockRunRead
 from refactra.session_routes import create_session_router
+from refactra.usage_limits import create_usage_router
 from refactra.user_repository_routes import create_user_repository_router
 from refactra.worker_health import (
     ANALYSIS_WORKER_MODES,
@@ -70,6 +71,7 @@ def create_app(
     )
     app.include_router(create_user_repository_router(session_factory))
     app.include_router(create_run_history_router(session_factory))
+    app.include_router(create_usage_router(session_factory))
 
     @app.exception_handler(HTTPException)
     async def http_error(_, exc: HTTPException):

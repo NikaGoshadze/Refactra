@@ -125,7 +125,9 @@ def test_stale_preflight_cannot_reset_run_budgets(
         reserve(session_factory, request)
 
 
-def test_competing_runs_cannot_both_spend_the_last_monthly_allocation(session_factory):
+def test_competing_runs_cannot_both_spend_the_last_monthly_allocation(session_factory, monkeypatch):
+    # One fixture user spends the whole overall budget, so lift the per-user allowance.
+    monkeypatch.setenv("REFACTRA_USER_MONTHLY_USD", "100")
     for _ in range(15):
         reserve(session_factory, prepare(session_factory, expensive=True))
     requests = [prepare(session_factory, expensive=True) for _ in range(2)]
@@ -142,6 +144,28 @@ def test_competing_runs_cannot_both_spend_the_last_monthly_allocation(session_fa
     with session_factory() as session:
         assert session.scalar(select(func.sum(ModelReservation.maximum_cost_usd))) == Decimal("12")
         assert session.scalar(select(func.count()).select_from(ModelReservation)) == 16
+
+
+def test_each_user_has_a_monthly_allowance_across_runs(session_factory, monkeypatch):
+    monkeypatch.setenv("REFACTRA_USER_MONTHLY_USD", "1.5")
+    for _ in range(2):  # Two $0.75 calls on separate runs use the allowance.
+        reserve(session_factory, prepare(session_factory, expensive=True))
+    with pytest.raises(BudgetExceeded, match="user_monthly_cost"):
+        reserve(session_factory, prepare(session_factory, expensive=True))
+    # Another user's run is unaffected.
+    other = prepare(session_factory, expensive=True)
+    with session_factory.begin() as session:
+        session.execute(
+            text("UPDATE runs SET requested_by = 456 WHERE id = :id"), {"id": other.run_id}
+        )
+    assert reserve(session_factory, other).created
+
+
+def test_the_overall_monthly_cap_is_configurable(session_factory, monkeypatch):
+    monkeypatch.setenv("REFACTRA_MONTHLY_USD", "1")
+    reserve(session_factory, prepare(session_factory, expensive=True))
+    with pytest.raises(BudgetExceeded, match="monthly_cost"):
+        reserve(session_factory, prepare(session_factory, expensive=True))
 
 
 @pytest.mark.parametrize("isolation", ["REPEATABLE READ", "AUTOCOMMIT"])
