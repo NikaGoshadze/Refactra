@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from refactra.environment_template import append_template_entries
+from refactra.publication_text import PublicationText
 from refactra.python_calls import new_python_call_issue
 from refactra.refactoring_plan import PlanPath, approved_file_operation, plan_edit_kind
 
@@ -41,6 +42,8 @@ class CandidatePatch(BaseModel):
     base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
     plan_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     edits: list[CandidateEdit] = Field(min_length=1, max_length=10)
+    # AI-written branch, commit and PR text; None for candidates saved before it existed.
+    publication: PublicationText | None = None
 
 
 def read_candidate_patch(path: Path) -> CandidatePatch:

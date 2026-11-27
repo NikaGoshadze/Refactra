@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from refactra import publication_text
 from refactra.analysis_context import FORMAT, PreparedAnalysisContext
 from refactra.candidate_patch import MAX_EDIT_FILE_BYTES, CandidatePatch, CandidatePatchError
 from refactra.candidate_references import collect_candidate_references, valid_candidate_references
@@ -51,7 +52,7 @@ CANDIDATE_INSTRUCTIONS = (
     "importing the actual application. Keep the app and its internal modules real. "
     "Avoid live network requests or credentials. For a count, cover multiple and zero results. "
     "For configuration, cover unset, allowed bounds and invalid inputs, including an explicit "
-    "empty value when it is invalid."
+    "empty value when it is invalid. " + publication_text.INSTRUCTIONS
 )
 
 
@@ -69,6 +70,8 @@ class TemplateUpdate(BaseModel):
 class CandidateContents(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
     edits: dict[str, str | TemplateUpdate | None]
+    # Raw model text, cleaned by publication_text; optional so older replies still parse.
+    publication: dict[str, str] | None = None
 
 
 def _template_update(path: str, action: str) -> bool:
@@ -114,9 +117,10 @@ def candidate_text_config(context_json: str) -> dict:
                         "properties": properties,
                         "required": list(properties),
                         "additionalProperties": False,
-                    }
+                    },
+                    "publication": publication_text.SCHEMA,
                 },
-                "required": ["edits"],
+                "required": ["edits", "publication"],
                 "additionalProperties": False,
             },
         }
@@ -124,7 +128,8 @@ def candidate_text_config(context_json: str) -> dict:
 
 
 def patch_from_contents(workspace: "ApprovedWorkspace", text: str) -> CandidatePatch:
-    contents = CandidateContents.model_validate_json(text).edits
+    reply = CandidateContents.model_validate_json(text)
+    contents = reply.edits
     if set(contents) != {change.path for change in workspace.changes}:
         raise CandidatePatchError("The response did not include exactly the approved files.")
     edits = []
@@ -142,6 +147,7 @@ def patch_from_contents(workspace: "ApprovedWorkspace", text: str) -> CandidateP
         base_sha=workspace.base_sha,
         plan_sha256=workspace.sha256,
         edits=edits,
+        publication=publication_text.clean_publication_text(reply.publication),
     )
 
 

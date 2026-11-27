@@ -190,3 +190,22 @@ def test_existing_python_call_problem_does_not_block_an_unrelated_edit(tmp_path)
     )
     workspace = ApprovedWorkspace(tmp_path, BASE, 1, PLAN, 2, (change,))
     assert b"+# Existing route" in apply_candidate_patch(workspace, candidate)
+
+
+def test_a_reply_keeps_cleaned_publication_text_and_older_replies_still_parse(patch_fixture):
+    workspace, edits = patch_fixture
+    contents = {edit["path"]: edit["content"] for edit in edits}
+    publication = {
+        "branch_slug": "Cart Totals",
+        "commit_subject": "Fix cart totals",
+        "commit_body": "Body",
+        "pr_title": "Fix cart totals for @team",
+        "pr_summary": "Summary",
+    }
+    patch = patch_from_contents(
+        workspace, json.dumps({"edits": contents, "publication": publication})
+    )
+    assert patch.publication.branch_slug == "cart-totals"
+    assert patch.publication.pr_title == "Fix cart totals for @\u2060team"
+    assert CandidatePatch.model_validate_json(patch.model_dump_json()) == patch
+    assert patch_from_contents(workspace, json.dumps({"edits": contents})).publication is None
