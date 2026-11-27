@@ -124,10 +124,18 @@ class PublicationDestination(PlanRepository):
     head_branch: str
 
 
+class PublicationTextRead(BaseModel):
+    commit_message: str
+    pull_request_title: str
+    pull_request_body: str
+
+
 class PublicationTargetRead(BaseModel):
     sha256: str
     commit_sha: str
     destination: PublicationDestination
+    # The AI-written text the owner approves; absent for older candidates.
+    publication: PublicationTextRead | None = None
 
 
 class PublicationApprovalCreate(BaseModel):

@@ -265,6 +265,34 @@ test("candidate review explains when no publication worker is running", async ({
   await expect(result.getByRole("button", { name: "Approve publication" })).toBeEnabled();
 });
 
+test("the AI-written publication text is shown before approval", async ({ page }) => {
+  const publication = {
+    commit_message: "Extract the cart calculation\n\nMove it into a helper.\n",
+    pull_request_title: "Extract the cart calculation",
+    pull_request_body: "Moves the total into `cart_total()`.\n\n---\nPrepared by Refactra.",
+  };
+  const withText = {
+    ...RESULT,
+    publication_target: {
+      ...RESULT.publication_target, publication,
+      destination: { ...RESULT.publication_target.destination, head_branch: "refactra/extract-cart-367dfc44" },
+    },
+  };
+  await page.route(`**${PLAN_PATH}`, (route) => route.fulfill({ json: { ...PLAN, approval: { revision: 1 } } }));
+  await page.route(`**${RESULT_PATH}?progress=true`, (route) => route.fulfill({
+    json: { status: "idle", message: null, result: withText },
+  }));
+  await page.getByText("Open a saved run", { exact: true }).click();
+  await page.getByLabel("Run ID", { exact: true }).fill(RUN_ID);
+  await page.getByRole("button", { name: "Open run", exact: true }).click();
+  const result = page.getByRole("region", { name: "Candidate result" });
+  await expect(result.getByText("refactra/extract-cart-367dfc44")).toBeVisible();
+  await expect(result.getByText("Extract the cart calculation", { exact: true })).toBeVisible();
+  await expect(result.getByText("Move it into a helper.", { exact: false })).toBeVisible();
+  await expect(result.getByText("Moves the total into `cart_total()`.", { exact: false })).toBeVisible();
+  await expect(result.getByRole("button", { name: "Approve publication" })).toBeEnabled();
+});
+
 test("candidate polling backs off while progress stays the same", async ({ page }) => {
   await page.clock.install();
   await page.reload();

@@ -321,7 +321,10 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
         assert "synthetic-edit-secret" not in caplog.text
         return
     if scenario == "recover":
-        assert generate_candidate(session_factory, run.id, provider).model_dump() == patch
+        assert generate_candidate(session_factory, run.id, provider).model_dump() == {
+            **patch,
+            "publication": None,
+        }
         with session_factory.begin() as session:
             row = session.get(RunCommand, generation)
             row.lease_until = datetime.now(UTC) - timedelta(minutes=1)
@@ -369,12 +372,19 @@ def test_workspace_requires_verified_approval_and_stages_pinned_source(
             assert command.status == "DONE"
             assert saved.reservation_id in candidate_attempt_ids(run.id, plan.sha256)
             assert (saved.reservation_id != attempt_id) == retried
-            assert CandidatePatch.model_validate_json(saved.document).model_dump() == patch
+            # The fixture reply has no publication text, so none is saved.
+            assert CandidatePatch.model_validate_json(saved.document).model_dump() == {
+                **patch,
+                "publication": None,
+            }
     if scenario == "outside_scope":
         with pytest.raises(CandidatePatchError, match="attempt is already recorded"):
             generate_candidate(session_factory, run.id, provider)
     else:
-        assert generate_candidate(session_factory, run.id, provider).model_dump() == patch
+        assert generate_candidate(session_factory, run.id, provider).model_dump() == {
+            **patch,
+            "publication": None,
+        }
     assert len(requests) == len(recount) + (4 if retried else 2)
     if scenario.startswith("validation_"):
         _exercise_validation_repair(

@@ -381,6 +381,14 @@ To generate that JSON from a verified plan, run `uv run python -m refactra.repos
 
 The `--repository-candidate` worker verifies queued approvals and saves generated patches in PostgreSQL with model settlement. After migration `0014_candidate_validation`, run it on the Docker host with `--candidate-source <local-clone> --candidate-artifacts <existing-artifact-directory>` to process validation jobs too. It runs isolated pytest, saves passing evidence, and prepares the commit and publication target. A reclaimed job reuses saved validation evidence. Each artifact directory is named `<run-id>-r<result-revision>`. Use the approved repository's clone and a directory under an ignored location such as `.runtime`.
 
+The candidate call also asks the model for publication text: a branch slug, a commit subject and body, a pull request title, and a Markdown summary. This costs a few more output tokens and no extra call. The server treats the text as untrusted:
+- it caps the lengths;
+- it removes control and direction-changing characters;
+- it reduces the slug to lowercase letters, digits and hyphens;
+- it adds a word joiner after `@` so a draft PR cannot notify people.
+
+The branch becomes `refactra/<slug>-<first 8 characters of the run ID>`, with `-r<revision>` for later result revisions. The commit uses the subject and body. The PR body is the summary followed by Refactra's own sections: any validation warnings and the approved commit and base. The text is saved with the candidate, so a rebuilt commit gets the same hash. The commit message, PR title and PR body are also stored in the publication target, so **Approve publication** covers exactly what is published. The candidate panel shows them before approval. Candidates saved earlier, or replies without usable text, keep the original `refactra/<run-id>/r<revision>` branch and generic text.
+
 Add `--validate` with `--candidate` to run approved checks and report their results alongside the diff. Build `refactra-backend:local` before running pytest or TypeScript checks on the Docker host. The runner uses fixed commands and verifies the container's offline, non-root, read-only setup and resource limits before starting. A required check that fails or exceeds a limit blocks publication.
 
 For project-specific Python dependencies, commit a root `requirements.lock` with
