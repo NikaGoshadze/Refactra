@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
+from refactra import publication_text
 from refactra.candidate_commit import CandidateCommitError, _git, prepare_candidate_commit
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
@@ -47,7 +48,8 @@ def load_approved_target(session, run_id: UUID):
     ):
         raise PublicationTargetError("The approved result and target no longer match.")
     saved = json.loads(target.document)
-    head = f"refactra/{run_id}/r{result.revision}"
+    text = publication_text.publication_from_candidate(json.loads(result.document)["candidate"])
+    head = publication_text.head_branch(run_id, result.revision, text)
     expected_destination = {
         "repository_id": run.github_repository_id,
         "base_sha": run.base_sha,

@@ -39,6 +39,7 @@ from refactra.publication_target import (
     save_publication_target,
     waive_publication_check,
 )
+from refactra.publication_text import PublicationText
 from refactra.refactoring_plan import (
     APPLY_PLAN_APPROVAL,
     ASSET_CHECK,
@@ -645,10 +646,21 @@ def test_typescript_feature_discovery_through_review_and_draft(
     )
 
 
+AI_TEXT = PublicationText(
+    branch_slug="cart-returns-two",
+    commit_subject="Return two from cart",
+    commit_body="Change the cart total and add an empty test module.",
+    pr_title="Return two from the cart helper",
+    pr_summary="Changes `cart()` to return 2 and removes `old.py`.",
+)
+
+
 @pytest.mark.skipif(shutil.which("git") is None, reason="Requires local Git.")
-@pytest.mark.parametrize("lost_response", [False, True])
+@pytest.mark.parametrize(
+    "lost_response,text", [(False, None), (True, None), (False, AI_TEXT)], ids=["", "lost", "ai"]
+)
 def test_prepares_the_saved_diff_as_one_pinned_commit(
-    tmp_path, session_factory, proposal, monkeypatch, lost_response, pinned_source
+    tmp_path, session_factory, proposal, monkeypatch, lost_response, text, pinned_source
 ):
     source, base = pinned_source
     unrelated = b"# operator's uncommitted changes\n"
@@ -680,6 +692,7 @@ def test_prepares_the_saved_diff_as_one_pinned_commit(
                 {"path": "tests/test_cart.py", "action": "CREATE", "content": ""},
                 {"path": "old.py", "action": "DELETE", "content": None},
             ],
+            publication=text,
         )
         diff = (
             b"--- a/old.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-# no longer needed\n"
@@ -707,7 +720,7 @@ def test_prepares_the_saved_diff_as_one_pinned_commit(
     assert json.loads((output / "receipt.json").read_bytes()) == receipt
     assert receipt["result_sha256"] == saved.sha256
     assert receipt["diff_sha256"] == sha256(diff).hexdigest()
-    branch = f"refactra/{run.id}/r1"
+    branch = f"refactra/cart-returns-two-{str(run.id)[:8]}" if text else f"refactra/{run.id}/r1"
     assert receipt["destination"] == {
         "base_sha": base,
         "base_branch": "main",
@@ -717,6 +730,24 @@ def test_prepares_the_saved_diff_as_one_pinned_commit(
     repository = output / "repository.git"
     commit = receipt["commit_sha"]
     assert git(repository, "rev-parse", branch).strip() == commit.encode()
+    message = git(repository, "log", "-1", "--format=%B", commit).decode().strip()
+    if text:
+        assert (
+            message == "Return two from cart\n\nChange the cart total and add an empty test module."
+        )
+        expected_pr = {
+            "title": "Return two from the cart helper",
+            "body": "Changes `cart()` to return 2 and removes `old.py`.\n\n---\nPrepared by "
+            f"Refactra from approved commit `{commit}` on pinned base `{base}`.",
+        }
+        assert receipt["publication"] == {
+            "commit_message": message + "\n",
+            "pull_request_title": expected_pr["title"],
+            "pull_request_body": expected_pr["body"],
+        }
+    else:
+        assert message == f"Refactra candidate {run.id} r1" and "publication" not in receipt
+        expected_pr = {"title": f"Refactra candidate {commit[:12]}", "body": None}
     assert git(repository, "cat-file", "-p", commit).splitlines()[1] == f"parent {base}".encode()
     assert git(repository, "ls-tree", commit, "src/cart.py").startswith(b"100755 blob ")
     assert git(repository, "show", f"{commit}:src/cart.py") == b"def cart(): return 2\n"
@@ -753,7 +784,14 @@ def test_prepares_the_saved_diff_as_one_pinned_commit(
             save_publication_target(session, {**receipt, "commit_sha": "f" * 40})
 
     check_branch_publication(
-        session_factory, run, source, output, registered, monkeypatch, lost_response
+        session_factory,
+        run,
+        source,
+        output,
+        registered,
+        monkeypatch,
+        lost_response,
+        expected_pr=expected_pr,
     )
 
     (output / "receipt.json").write_text("{}", encoding="utf-8")
@@ -780,6 +818,7 @@ def check_branch_publication(
     lost_response,
     *,
     expected_warning=None,
+    expected_pr=None,
 ):
     push = publication.push_approved_branch
     with pytest.raises(PublicationTargetError, match="owner must approve"):
@@ -866,6 +905,7 @@ def check_branch_publication(
         lost_response,
         artifacts=artifact.parent,
         expected_warning=expected_warning,
+        expected_pr=expected_pr,
     )
     assert len(requested_scope) == (2 if lost_response else 3)
     ref = f"refs/heads/{pushed['head_branch']}"
@@ -876,7 +916,15 @@ def check_branch_publication(
 
 
 def check_draft_publication(
-    session_factory, run, pushed, monkeypatch, lost_response, *, artifacts, expected_warning
+    session_factory,
+    run,
+    pushed,
+    monkeypatch,
+    lost_response,
+    *,
+    artifacts,
+    expected_warning,
+    expected_pr=None,
 ):
     head = pushed["head_branch"]
     commit = pushed["commit_sha"]
@@ -911,6 +959,10 @@ def check_draft_publication(
         assert (body["head"], body["base"], body["draft"]) == (head, "main", True)
         if expected_warning:
             assert "Validation warnings" in body["body"] and expected_warning in body["body"]
+        if expected_pr:
+            assert body["title"] == expected_pr["title"]
+            if expected_pr["body"] is not None:
+                assert body["body"] == expected_pr["body"]
         methods.append("POST")
         if lost_response:
             raise httpx.ReadTimeout("Fixture lost the creation response", request=request)

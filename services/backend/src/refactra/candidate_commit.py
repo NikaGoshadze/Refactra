@@ -14,9 +14,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
+from refactra import publication_text
 from refactra.candidate_patch import MAX_EDIT_FILE_BYTES, CandidatePatch, apply_candidate_patch
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
+from refactra.diagnostics import diagnostic_id
 from refactra.environment_template import append_template_entries
 from refactra.models import Run, RunCandidateResult
 from refactra.publication_target import PublicationTargetError, save_publication_target
@@ -89,7 +91,6 @@ def _git(
 def prepare_candidate_commit(
     session_factory, run_id: UUID, revision: int, source: Path, output: Path, *, save_target=False
 ) -> dict:
-    head_branch = f"refactra/{run_id}/r{revision}"
     with session_factory() as session:
         run = session.get(Run, run_id)
         result = session.scalar(
@@ -116,6 +117,8 @@ def prepare_candidate_commit(
             plan.sha256,
         ):
             raise CandidateCommitError("The candidate does not match the approved commit and plan.")
+        text = candidate.publication
+        head_branch = publication_text.head_branch(run_id, revision, text)
         diff_sha = saved["diff_sha256"]
         receipt = {
             "run_id": str(run_id),
@@ -236,10 +239,23 @@ def prepare_candidate_commit(
             "-p",
             base,
             "-m",
-            f"Refactra candidate {run_id} r{revision}",
+            publication_text.commit_message(run_id, revision, text),
             date=date,
         )
         receipt["commit_sha"] = commit.strip().decode()
+        if text is not None:
+            # Part of the approved target, so the owner approves the exact published text.
+            pull_request = publication_text.pull_request_text(
+                text,
+                commit=receipt["commit_sha"],
+                base_sha=base,
+                warnings=publication_text.validation_warnings(saved["validation"], diagnostic_id),
+            )
+            receipt["publication"] = {
+                "commit_message": publication_text.commit_message(run_id, revision, text),
+                "pull_request_title": pull_request["title"],
+                "pull_request_body": pull_request["body"],
+            }
         head_ref = f"refs/heads/{head_branch}"
         receipt_text = json.dumps(receipt, indent=2) + "\n"
         if reuse_output:
