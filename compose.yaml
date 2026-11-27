@@ -15,6 +15,8 @@ x-backend: &backend
     REFACTRA_USER_DAILY_RUNS: ${REFACTRA_USER_DAILY_RUNS:-5}
     REFACTRA_USER_MONTHLY_USD: ${REFACTRA_USER_MONTHLY_USD:-3}
     REFACTRA_MONTHLY_USD: ${REFACTRA_MONTHLY_USD:-12}
+    # runsc (gVisor) in production; empty uses Docker's default runtime (Docker Desktop).
+    REFACTRA_VALIDATION_RUNTIME: ${REFACTRA_VALIDATION_RUNTIME:-}
 
 services:
   postgres:
