@@ -58,6 +58,8 @@ def test_status_exposes_only_an_active_sessions_identity(browser, session_factor
     assert response.json() == {
         "authenticated": state == "valid",
         "user": {"user_id": 12345, "login": "session-user"} if state == "valid" else None,
+        # Not an owner and not invited, so a signed-in fixture user is denied.
+        "access": "denied" if state == "valid" else None,
     }
     assert response.headers["cache-control"] == "no-store"
     if state not in {"valid", "missing"}:
@@ -79,7 +81,11 @@ def test_logout_revokes_the_server_session_and_clears_cookies(browser, session_f
     )
     with session_factory() as session:
         assert resolve_session(session, token) is None
-    assert client.get("/api/v1/auth/session").json() == {"authenticated": False, "user": None}
+    assert client.get("/api/v1/auth/session").json() == {
+        "authenticated": False,
+        "user": None,
+        "access": None,
+    }
     assert client.post("/api/v1/auth/logout", headers=LOGOUT_HEADERS).status_code == 204
 
 

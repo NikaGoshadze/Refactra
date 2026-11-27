@@ -152,7 +152,7 @@ class RepositoryAuthorizer:
     def for_run(self, run: Run) -> RepositoryGrant:
         """Recheck a queued run's owner and installation, then the owner's GitHub permission."""
         policy = RepositoryAccessPolicy.from_env()
-        if run.requested_by not in policy.allowed_user_ids:
+        if not policy.allows(run.requested_by):
             raise RunAccessDenied("Repository access is not allowed.")
         app = self._app()
         try:

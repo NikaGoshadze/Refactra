@@ -5,7 +5,7 @@ import Link from "next/link";
 import { AuthControls } from "@/components/auth-controls";
 import { STAGE_LABELS, formatDate, type RunSummary, type Stage } from "@/components/run-history";
 import { SavedPlanPanel } from "@/components/saved-plan-panel";
-import { request, type SessionStatus } from "@/lib/api";
+import { accessNotice, request, type SessionStatus } from "@/lib/api";
 import { nextUnchanged, pollDelay } from "@/lib/polling";
 
 type Detail = {
@@ -100,9 +100,11 @@ function RunDetailBody({ runId }: { runId: string }) {
 
 export function RunDetail({ runId }: { runId: string }) {
   const [session, setSession] = useState<SessionStatus | null>(null);
+  const notice = accessNotice(session);
   return <>
     <AuthControls session={session} onSessionChange={setSession} />
-    {session?.authenticated ? <RunDetailBody key={session.user.user_id} runId={runId} />
+    {notice ? <p className="repository-state" role="status">{notice}</p>
+      : session?.authenticated ? <RunDetailBody key={session.user.user_id} runId={runId} />
       : session ? <p className="repository-state" role="status">Sign in with GitHub to see this run.</p> : null}
   </>;
 }

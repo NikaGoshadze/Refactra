@@ -486,6 +486,25 @@ To see persistence directly, stop the worker with `docker compose stop worker`, 
 | `REFACTRA_TOKEN_ENCRYPTION_KEY` | 32 random bytes in URL-safe base64 | API |
 | `REFACTRA_GITHUB_APP_SLUG` | the App's URL name | API |
 
+### Invites and the waitlist
+
+Anyone can sign in with GitHub, but only owners and invited users can use Refactra.
+- **Owners** are listed in `REFACTRA_ALLOWED_GITHUB_USER_IDS` and always have access.
+- **Everyone else** needs an `invited` row in the `user_access` table (migration `0022_user_access`).
+- **Signing in without access** adds the user to the waitlist. The workspace, History and run pages then show "You're on the Refactra waitlist" instead of repositories, and repository and run endpoints answer `403` with `waitlisted`.
+- **Removed users** are refused (`repository_access_denied`) and are not put back on the waitlist when they sign in again.
+- **Session status:** `GET /api/v1/auth/session` reports `access` as `allowed`, `waitlisted` or `denied`.
+- **Queued runs:** workers re-check access for each queued run, including invites, so removing someone stops their queued work.
+
+Manage access with the command. It resolves logins case-insensitively from the waitlist, or through GitHub's public user API for people who have not signed in yet:
+
+```powershell
+docker compose exec api uv run --no-sync python -m refactra.access waitlist
+docker compose exec api uv run --no-sync python -m refactra.access invite octocat
+docker compose exec api uv run --no-sync python -m refactra.access remove octocat
+docker compose exec api uv run --no-sync python -m refactra.access list
+```
+
 ### Usage limits
 
 The owner pays for model usage, so three settings cap spending. Days and months are UTC.

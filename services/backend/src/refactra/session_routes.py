@@ -12,11 +12,14 @@ from pydantic import BaseModel
 
 from refactra.auth_sessions import GitHubIdentity, resolve_session, revoke_session
 from refactra.github_auth import GitHubOAuthConfig
+from refactra.repository_access import Access, RepositoryAccessPolicy
 
 
 class SessionStatus(BaseModel):
     authenticated: bool
     user: GitHubIdentity | None
+    # allowed, waitlisted or denied; None when signed out.
+    access: Access | None = None
 
 
 def is_trusted_mutation(request: Request, config: GitHubOAuthConfig) -> bool:
@@ -40,6 +43,11 @@ def create_session_router(session_factory, config: GitHubOAuthConfig | None = No
         token = request.cookies.get(config.session_cookie_name)
         with session_factory() as session:
             identity = resolve_session(session, token)
+            access = (
+                RepositoryAccessPolicy.from_env().access(session, identity.user_id)
+                if identity
+                else None
+            )
         response.headers["Cache-Control"] = "no-store"
         if identity is None and token is not None:
             response.delete_cookie(
@@ -49,7 +57,7 @@ def create_session_router(session_factory, config: GitHubOAuthConfig | None = No
                 httponly=True,
                 samesite="lax",
             )
-        return SessionStatus(authenticated=identity is not None, user=identity)
+        return SessionStatus(authenticated=identity is not None, user=identity, access=access)
 
     @router.post("/logout", status_code=204, response_class=Response)
     def logout(request: Request):

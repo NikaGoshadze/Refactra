@@ -49,6 +49,27 @@ class AuthSession(Base):
     github_refresh_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class UserAccess(Base):
+    """Invite status for users outside the operator list in REFACTRA_ALLOWED_GITHUB_USER_IDS."""
+
+    __tablename__ = "user_access"
+    __table_args__ = (
+        CheckConstraint("github_user_id > 0", name="ck_user_access_user"),
+        CheckConstraint(
+            "status IN ('invited', 'waitlisted', 'removed')", name="ck_user_access_status"
+        ),
+        Index("ix_user_access_status_requested", "status", "requested_at"),
+    )
+
+    github_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    github_login: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(16))
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class Run(Base):
     __tablename__ = "runs"
     __table_args__ = (

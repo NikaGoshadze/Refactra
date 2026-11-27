@@ -17,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from refactra.auth_sessions import SESSION_TTL, GitHubIdentity, issue_session, revoke_session
 from refactra.diagnostics import database_error_details, workflow_log
 from refactra.github_user_tokens import GitHubUserToken, TokenCipher, TokenRejected
+from refactra.repository_access import RepositoryAccessPolicy
 
 OAUTH_TTL_SECONDS = 600
 CALLBACK_PATH = "/api/v1/auth/github/callback"
@@ -266,6 +267,8 @@ def create_github_auth_router(
             with session_factory.begin() as session:
                 revoke_session(session, request.cookies.get(config.session_cookie_name))
                 token = issue_session(session, identity, user_token, cipher)
+                # Anyone may sign in; users who are not invited yet join the waitlist.
+                RepositoryAccessPolicy.from_env().join_waitlist(session, identity)
             # The transaction has committed before an authenticated cookie is issued.
             destination = urlsplit(config.callback_url)._replace(path="/").geturl()
             response = RedirectResponse(destination, status_code=302)

@@ -19,9 +19,18 @@ export type RunEvent = {
   occurred_at: string;
 };
 
+export type Access = "allowed" | "waitlisted" | "denied";
 export type SessionStatus =
-  | { authenticated: false; user: null }
-  | { authenticated: true; user: { user_id: number; login: string } };
+  | { authenticated: false; user: null; access?: null }
+  | { authenticated: true; user: { user_id: number; login: string }; access?: Access };
+
+/** What a signed-in user without access sees instead of the workspace, or null if allowed. */
+export function accessNotice(session: SessionStatus | null): string | null {
+  if (!session?.authenticated || !session.access || session.access === "allowed") return null;
+  return session.access === "waitlisted"
+    ? "You're on the Refactra waitlist. You'll get access once the owner invites you."
+    : "Your account does not have access to Refactra.";
+}
 
 export class ApiError extends Error {
   constructor(message: string, readonly code: string | undefined) {

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { UsageSummary } from "@/components/usage-summary";
-import { request, type SessionStatus } from "@/lib/api";
+import { accessNotice, request, type SessionStatus } from "@/lib/api";
 
 export function AuthControls({ session, onSessionChange }: {
   session: SessionStatus | null; onSessionChange: (session: SessionStatus) => void;
@@ -44,7 +44,7 @@ export function AuthControls({ session, onSessionChange }: {
     <section className="account-bar" aria-label="GitHub account">
       {loading ? <span role="status">Checking account…</span> : session?.authenticated ? <>
         <span role="status">Signed in as <strong>{session.user.login}</strong></span>
-        <UsageSummary key={session.user.user_id} />
+        {!accessNotice(session) && <UsageSummary key={session.user.user_id} />}
         <button type="button" disabled={busy} onClick={signOut}>{busy ? "Signing out…" : "Sign out"}</button>
       </> : session ? <>
         <span role="status">Not signed in</span>
