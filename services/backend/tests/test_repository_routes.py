@@ -329,6 +329,23 @@ def submit(client, key=None, *, origin="https://refactra.example", prepare=True,
     return response
 
 
+def test_a_new_run_over_the_daily_limit_is_refused_but_a_retry_is_not(browser, monkeypatch):
+    client, _, _, _ = browser
+    monkeypatch.setenv("REFACTRA_USER_DAILY_RUNS", "1")
+    key = uuid4()
+    first = submit(client, key)
+    assert first.status_code == 202
+    refused = submit(client)
+    assert refused.status_code == 429
+    assert refused.json()["error"]["code"] == "daily_run_limit"
+    assert "midnight UTC" in refused.json()["error"]["message"]
+    assert int(refused.headers["retry-after"]) > 0
+    assert refused.headers["cache-control"] == "no-store"
+    # Retrying the accepted submission with its key still returns that run.
+    retry = submit(client, key)
+    assert retry.status_code == 202 and retry.headers["Location"] == first.headers["Location"]
+
+
 def test_the_run_page_gets_its_summary_and_timeline(browser):
     client, _, _, _ = browser
     url = submit(client).headers["Location"]

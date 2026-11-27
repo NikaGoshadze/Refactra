@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session
 from refactra.analysis_context import compact_read_only_context, load_analysis_context
 from refactra.analysis_request import (
     INSTRUCTIONS,
-    MAX_MONTH_USD,
     MAX_REQUEST_INPUT,
     MAX_REQUEST_OUTPUT,
     MAX_RUN_ATTEMPTS,
@@ -27,8 +26,9 @@ from refactra.candidate_request import (
     candidate_text_config,
     check_candidate_context,
 )
-from refactra.models import ModelReservation, RunEvent
+from refactra.models import ModelReservation, Run, RunEvent
 from refactra.planning_request import PLAN_INSTRUCTIONS, PLAN_TEXT_CONFIG, load_planning_context
+from refactra.usage_limits import UsageLimits, monthly_cost
 
 BUDGET_LOCK = 72341002  # Separate from the mock worker's session-scoped execution lock.
 
@@ -188,6 +188,13 @@ def reserve_analysis_request(
             )
         ).where(ModelReservation.budget_month == month)
     )
+    # The run owner's monthly allowance covers every model call, including plan revisions and
+    # repairs. Mock runs have no owner (0); benchmarks use their own ledger limit instead.
+    limits = UsageLimits.from_env()
+    owner = session.scalar(select(Run.requested_by).where(Run.id == request.run_id)) or 0
+    if ledger_limit_usd is not None:
+        owner = 0
+    user_cost = monthly_cost(session, month, owner) if owner > 0 else Decimal(0)
     # A saved plan needs enough of the same ledger left for its implementation.
     planning = instructions == PLAN_INSTRUCTIONS
     input_limit = MAX_RUN_INPUT - (MAX_REQUEST_INPUT if planning else 0)
@@ -197,7 +204,8 @@ def reserve_analysis_request(
         (inputs + request.input_tokens <= input_limit, "run_input_tokens"),
         (outputs + request.model_input.max_output_tokens <= output_limit, "run_output_tokens"),
         (run_cost + cost <= MAX_RUN_USD, "run_cost"),
-        (month_cost + cost <= MAX_MONTH_USD, "monthly_cost"),
+        (month_cost + cost <= limits.monthly_usd, "monthly_cost"),
+        (owner <= 0 or user_cost + cost <= limits.user_monthly_usd, "user_monthly_cost"),
     )
     for allowed, code in checks:
         if not allowed:

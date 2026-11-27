@@ -331,3 +331,15 @@ test("shows a worker failure when reopening an approved run", async ({ page }) =
   await expect(result.getByRole("alert")).toHaveText("Candidate validation failed.");
   await expect(result.getByRole("button", { name: "Approve publication" })).toHaveCount(0);
 });
+
+test("a refused submission explains the limit", async ({ page }) => {
+  await page.route("**/api/v1/runs", (route) => route.fulfill({
+    status: 429,
+    headers: { "Retry-After": "3600" },
+    json: { error: { code: "daily_run_limit", message: "You have started 5 runs today, the daily limit. You can start more after midnight UTC." } },
+  }));
+  const panel = page.getByRole("region", { name: "Repository analysis" });
+  await panel.getByLabel("What would you like to refactor?").fill("Review cart");
+  await panel.getByRole("button", { name: "Start analysis" }).click();
+  await expect(panel.getByRole("alert")).toHaveText(/the daily limit\. You can start more after midnight UTC\./);
+});

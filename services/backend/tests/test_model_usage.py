@@ -69,7 +69,9 @@ def test_unknown_usage_keeps_hold_and_rollbacks_do_not_release_it(session_factor
         )
 
 
-def test_monthly_admission_uses_actual_estimates_after_settlement(session_factory):
+def test_monthly_admission_uses_actual_estimates_after_settlement(session_factory, monkeypatch):
+    # One fixture user spends the whole overall budget, so lift the per-user allowance.
+    monkeypatch.setenv("REFACTRA_USER_MONTHLY_USD", "100")
     keys = []
     for _ in range(16):
         key = uuid4()

@@ -75,3 +75,19 @@ test("the proxy forwards history reads with only the session cookie", async ({ a
   expect(authProxy.calls[0].headers.cookie).toBe("refactra_session=fixture-session");
   expect(authProxy.calls[0].headers.authorization).toBeUndefined();
 });
+
+test("the account bar shows the remaining allowance", async ({ page, context, authProxy }) => {
+  await signIn(context, authProxy.origin);
+  await page.goto(`${authProxy.origin}/history`);
+  await expect(page.getByRole("region", { name: "GitHub account" }))
+    .toContainText("Today: 2 of 5 runs · This month: $0.40 of $3.00");
+});
+
+test("the proxy forwards usage reads with only the session cookie", async ({ authProxy, request }) => {
+  const response = await request.get(`${authProxy.origin}/api/v1/usage`, {
+    headers: { Cookie: "refactra_session=fixture-session; analytics=private" },
+  });
+  expect(response.status()).toBe(200);
+  expect(response.headers()["cache-control"]).toBe("no-store");
+  expect(authProxy.calls[0].headers.cookie).toBe("refactra_session=fixture-session");
+});

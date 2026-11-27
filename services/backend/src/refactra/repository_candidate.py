@@ -245,6 +245,7 @@ def generate_candidate(
                 "run_input_tokens",
                 "run_cost",
                 "monthly_cost",
+                "user_monthly_cost",
             }:
                 raise
             smaller_context = without_candidate_references(context)

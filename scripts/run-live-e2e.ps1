@@ -81,6 +81,12 @@ try {
     $baseCreated = $true
     Invoke-Checked 'Fetching the base branch' { git -C $Source fetch --quiet origin $baseBranch }
 
+    # This harness runs many times a day as the same user, so it raises the per-user limits for
+    # its own stack unless they are set. REFACTRA_MONTHLY_USD, the overall budget, still applies.
+    foreach ($limit in @{ REFACTRA_USER_DAILY_RUNS = '100'; REFACTRA_USER_MONTHLY_USD = '50' }.GetEnumerator()) {
+        if (-not [Environment]::GetEnvironmentVariable($limit.Key)) { Set-Item "env:$($limit.Key)" $limit.Value }
+    }
+
     if (-not $SkipStart) {
         Invoke-Checked 'Stopping the Compose worker' { docker compose stop worker }
         $env:REFACTRA_ENABLE_REPOSITORY_ANALYSIS = 'true'

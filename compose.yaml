@@ -11,6 +11,10 @@ x-backend: &backend
     REFACTRA_ENABLE_MOCK: ${REFACTRA_ENABLE_MOCK:-true}
     # production makes the API and worker refuse unsafe settings at startup.
     REFACTRA_ENVIRONMENT: ${REFACTRA_ENVIRONMENT:-development}
+    # Spending limits (UTC days and months); see the README's usage limits section.
+    REFACTRA_USER_DAILY_RUNS: ${REFACTRA_USER_DAILY_RUNS:-5}
+    REFACTRA_USER_MONTHLY_USD: ${REFACTRA_USER_MONTHLY_USD:-3}
+    REFACTRA_MONTHLY_USD: ${REFACTRA_MONTHLY_USD:-12}
 
 services:
   postgres:
