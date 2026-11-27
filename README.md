@@ -131,6 +131,14 @@ The workspace's Repository connection panel is the repository picker. After sign
 - the model cost, from settled usage or the reserved maximum while unsettled;
 - the start and last-activity times.
 
+Each History entry links to its run page, `/runs/<id>`. The page loads `GET /api/v1/runs/{id}/timeline`, which applies the same access recheck as the other run reads. It returns the run's summary, its full task and a plain-language timeline of what happened:
+- run started, snapshot prepared, analysis started and finished (or stopped, with the reason);
+- plan revisions saved and approved, and plan changes requested;
+- change generated and validated, checks repaired or waived;
+- publication approved, branch pushed, and the draft PR opened, with its link.
+
+Internal events such as budget reservations and worker claims are left out. While the run is analyzing, generating or publishing, the page keeps checking for progress. Once a plan exists, the page shows the saved plan panel, so you can continue through plan approval, the candidate review and publication. **Start a similar task** opens the workspace with `?repository=&branch=&task=`. After the repository list loads, the workspace selects that repository if you can still write to it, picks the branch if it still exists, and fills in the task for you to edit.
+
 `q` searches task text and repository names. Pages hold up to 50 runs (`limit`, default 20) and continue with the returned `next_cursor`. Only invited signed-in users get the list, and it never includes other users' runs. The list reads only Refactra's records, so it makes no GitHub call; opening a run still rechecks repository access. Migration `0021_run_history` adds the repository name column and the owner index.
 
 `GET /api/v1/capabilities` reports what the deployment accepts and whether a worker can act on it:
