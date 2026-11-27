@@ -15,6 +15,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from refactra.account import clean_deleted_artifacts
 from refactra.candidate_validation_worker import process_candidate_validation
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
@@ -298,9 +299,13 @@ def main():
             if args.candidate_artifacts:
                 reconcile_validation_containers(session_factory)
             last_beat = monotonic()
+            next_cleanup = last_beat
             logger.info(json.dumps({"event": "worker_started", "mode": mode}))
             while not stopped.is_set():
                 guard.execute(text("SELECT 1"))  # Loss of the lock connection stops this worker.
+                if args.candidate_artifacts and monotonic() >= next_cleanup:
+                    clean_deleted_artifacts(session_factory, args.candidate_artifacts)
+                    next_cleanup = monotonic() + 60
                 if monotonic() - last_beat >= HEARTBEAT_INTERVAL_SECONDS:
                     record_heartbeat(session_factory, worker_id, mode)
                     last_beat = monotonic()

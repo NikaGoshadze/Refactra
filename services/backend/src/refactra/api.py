@@ -11,6 +11,7 @@ from sqlalchemy import Engine, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from refactra.access_logs import install_auth_query_redaction
+from refactra.account import create_account_router
 from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.diagnostics import database_error_details, workflow_log
@@ -74,6 +75,7 @@ def create_app(
     app.include_router(create_run_history_router(session_factory))
     app.include_router(create_usage_router(session_factory))
     app.include_router(create_github_webhook_router(session_factory))
+    app.include_router(create_account_router(session_factory))
 
     @app.exception_handler(HTTPException)
     async def http_error(_, exc: HTTPException):
