@@ -64,6 +64,19 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - name: Install gVisor
+        # Repository tests run under gVisor (runsc), as in production. Same pinned release as CI.
+        env:
+          GVISOR_RELEASE: "20261109"
+          GVISOR_SHA512: 1a6b8f74c37b4931ef473f67ec1f601690855bedc52ac709f2fac965c69677aa0426ef44598d8eee1aed72cfdb9df87a2a5f352cb3348880fc61a7732bc10f2a
+        run: |
+          curl -fsSLo /tmp/gvisor.tar.bz2 \
+            "https://storage.googleapis.com/gvisor/releases/release/${GVISOR_RELEASE}/x86_64/gvisor.tar.bz2"
+          echo "${GVISOR_SHA512}  /tmp/gvisor.tar.bz2" | sha512sum -c -
+          sudo tar -xjf /tmp/gvisor.tar.bz2 -C /usr/local/bin
+          sudo /usr/local/bin/runsc install
+          sudo systemctl restart docker
+          docker info --format '{{json .Runtimes}}' | grep -q '"runsc"'
       - name: Install browser test dependencies
         run: |
           npm ci
@@ -105,6 +118,8 @@ jobs:
           TASK: ${{ inputs.task }}
           KEEP_PULL_REQUEST: ${{ inputs.keep_pull_request }}
           ALLOW_WAIVERS: ${{ inputs.allow_waivers }}
+          # The host worker starts check containers under gVisor and verifies the runtime.
+          REFACTRA_VALIDATION_RUNTIME: runsc
         run: |
           $options = @{ Source = "$env:RUNNER_TEMP/AI-Hub"; Repository = $env:SUBJECT_REPOSITORY }
           if ($env:TASK) { $options.Task = $env:TASK }

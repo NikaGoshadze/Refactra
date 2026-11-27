@@ -480,11 +480,29 @@ To see persistence directly, stop the worker with `docker compose stop worker`, 
 | `REFACTRA_ALLOWED_GITHUB_USER_IDS` | at least one numeric user ID | API, worker |
 | `REFACTRA_GITHUB_CLIENT_ID` | set | API, worker |
 | `REFACTRA_GITHUB_PRIVATE_KEY_PATH` | an existing file | API, worker |
+| `REFACTRA_VALIDATION_RUNTIME` | `runsc` (gVisor), which a validation worker also confirms Docker provides before taking work | worker |
 | `REFACTRA_GITHUB_CALLBACK_URL` | a public `https://` URL, which makes session cookies `Secure` with the `__Host-` prefix | API |
 | `REFACTRA_GITHUB_CLIENT_SECRET` | set | API |
 | `REFACTRA_OAUTH_STATE_SECRET` | at least 32 random characters | API |
 | `REFACTRA_TOKEN_ENCRYPTION_KEY` | 32 random bytes in URL-safe base64 | API |
 | `REFACTRA_GITHUB_APP_SLUG` | the App's URL name | API |
+
+### Sandbox for repository tests
+
+Validation runs each repository's own tests, which is untrusted code. Every check container already runs:
+- with no network and a read-only root filesystem;
+- with all capabilities dropped and a non-root user;
+- with `no-new-privileges` and the default seccomp profile;
+- with CPU, memory, process and output limits;
+- under a hard kill deadline.
+
+Containers still share the host's Linux kernel, so production adds **gVisor**. With `REFACTRA_VALIDATION_RUNTIME=runsc`, each check container starts with `--runtime runsc`, and test code then talks to gVisor's user-space kernel instead of the host's. The worker checks the setting in two ways:
+- At startup, a validation worker refuses to run (exit code 2) if Docker lists no `runsc` runtime.
+- After creating each container, it confirms Docker really used that runtime, never silently falling back to the default.
+
+Leave the setting empty on Docker Desktop, which cannot run gVisor. Production mode requires `runsc`.
+
+To install gVisor on a Linux host, use a release from [gVisor's install guide](https://gvisor.dev/docs/user_guide/install/), then run `sudo runsc install` and restart Docker. CI and the live workflow install a pinned release, check its SHA-512, and run the Docker validation tests and the live run under gVisor. Building the Python dependency cache does not use gVisor. It only installs hash-pinned binary wheels from PyPI, which runs no repository code.
 
 ### Invites and the waitlist
 

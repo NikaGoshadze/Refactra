@@ -286,6 +286,56 @@ def test_failed_lock_preparation_leaves_patch_review_available(tmp_path, monkeyp
     assert checks[1].status == "PASSED" and not validation.blocks_candidate(checks)
 
 
+@pytest.mark.parametrize("runtime", [None, "runsc"])
+def test_a_configured_runtime_is_requested_and_verified(tmp_path, monkeypatch, runtime):
+    calls = []
+    inspected = {"runtime": "runc"}
+
+    def docker(*args, **_kwargs):
+        calls.append(args)
+        if args[0] == "create":
+            return "runner-id"
+        if args[0] == "inspect":
+            return json.dumps({"HostConfig": {"Runtime": inspected["runtime"]}, "Mounts": []})
+        return ""
+
+    if runtime:
+        monkeypatch.setenv(validation.RUNTIME_ENV, runtime)
+    else:
+        monkeypatch.delenv(validation.RUNTIME_ENV, raising=False)
+    monkeypatch.setattr(validation, "_docker", docker)
+    workspace = ApprovedWorkspace(tmp_path, "a" * 40, 1, "b" * 64, 0, ())
+    check = validation.CandidateCheck("typescript.tsc", ["tsconfig.json"], True)
+    owner = validation.ContainerOwner("instance-a", "command-1", 1)
+    with pytest.raises(validation.RepositoryValidationError, match="isolation"):
+        validation._validate_check(workspace, check, ["./tsconfig.json"], "sha256:image", owner)
+    create = calls[0]
+    if runtime:
+        assert create[create.index("--runtime") + 1] == "runsc"
+    else:
+        assert "--runtime" not in create
+    # A container that ended up on another runtime is rejected before it runs.
+    if runtime:
+        info = {"HostConfig": {"Runtime": "runc"}}
+        with pytest.raises(validation.RepositoryValidationError, match="isolation"):
+            validation._verify_isolation({**info, "Mounts": [], "Config": {"User": ""}})
+
+
+def test_the_runtime_setting_is_validated_and_checked_against_docker(monkeypatch):
+    monkeypatch.setenv(validation.RUNTIME_ENV, "runsc; rm -rf /")
+    with pytest.raises(validation.RepositoryValidationError, match="runtime name"):
+        validation.validation_runtime()
+    monkeypatch.setenv(validation.RUNTIME_ENV, "runsc")
+    runtimes = {"runc": {}, "io.containerd.runc.v2": {}}
+    monkeypatch.setattr(validation, "_docker", lambda *args, **_kw: json.dumps(runtimes))
+    with pytest.raises(validation.RepositoryValidationError, match="no runsc runtime"):
+        validation.require_runtime_available()
+    runtimes["runsc"] = {"path": "/usr/local/bin/runsc"}
+    assert validation.require_runtime_available() == "runsc"
+    monkeypatch.delenv(validation.RUNTIME_ENV)
+    assert validation.require_runtime_available() is None
+
+
 def test_runners_are_labeled_for_reconciliation_and_stop_themselves(tmp_path, monkeypatch):
     calls = []
 

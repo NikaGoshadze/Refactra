@@ -1,6 +1,7 @@
 """Check approved text edits and run pytest in a restricted Docker container."""
 
 import json
+import os
 import re
 import subprocess
 import tomllib
@@ -51,6 +52,11 @@ _CACHE_LABEL = "org.refactra.python-lock-cache"
 USER = "10001:10001"
 TMPFS = "rw,noexec,nosuid,nodev,size=64m"
 SECURITY_OPTIONS = ["no-new-privileges", "seccomp=builtin"]
+# A Docker runtime for check containers. Production uses gVisor ("runsc"): repository tests
+# then run against gVisor's user-space kernel instead of the host kernel. Unset uses Docker's
+# default runtime, which Docker Desktop requires.
+RUNTIME_ENV = "REFACTRA_VALIDATION_RUNTIME"
+_RUNTIME_NAME = re.compile(r"[a-z][a-z0-9_.-]{0,63}")
 _PYTHON_CHECKS = {"python.pytest", FLASK_CHECK}
 CONTAINER_LABEL = "org.refactra.validation"
 # The runner kills its own command after this many seconds, so a container started by a
@@ -65,6 +71,31 @@ class RepositoryValidationError(ValueError):
 
 class ValidationCleanupError(RepositoryValidationError):
     """The isolated runner could not be removed after use."""
+
+
+def validation_runtime() -> str | None:
+    """The configured check-container runtime, or None for Docker's default."""
+    value = os.getenv(RUNTIME_ENV, "").strip()
+    if not value:
+        return None
+    if _RUNTIME_NAME.fullmatch(value) is None:
+        raise RepositoryValidationError(f"{RUNTIME_ENV} must be a Docker runtime name.")
+    return value
+
+
+def require_runtime_available() -> str | None:
+    """Fail before claiming validation work if Docker lacks the configured runtime."""
+    runtime = validation_runtime()
+    if runtime is not None:
+        try:
+            available = json.loads(_docker("info", "--format", "{{json .Runtimes}}"))
+        except (RepositoryValidationError, ValueError):
+            raise RepositoryValidationError("Docker could not list its runtimes.") from None
+        if not isinstance(available, dict) or runtime not in available:
+            raise RepositoryValidationError(
+                f"Docker has no {runtime} runtime; install it or unset {RUNTIME_ENV}."
+            )
+    return runtime
 
 
 @dataclass(frozen=True)
@@ -314,8 +345,11 @@ def _verify_isolation(info: dict, tmpfs: str = TMPFS) -> None:
     }
     host = info["HostConfig"]
     mounts = [(item["Type"], item["Destination"], item["RW"]) for item in info["Mounts"]]
+    runtime = validation_runtime()
     if (
         any(host.get(key) != value for key, value in limits.items())
+        # A configured runtime must really be in use, never a silent fallback to runc.
+        or (runtime is not None and host.get("Runtime") != runtime)
         or any(host.get(key) for key in ("CapAdd", "Devices", "DeviceRequests"))
         or info["Config"]["User"] != USER
         or host["LogConfig"]["Type"] != "none"
@@ -414,10 +448,12 @@ def _validate_check(
         # Reconciliation may remove the runner after its own deadline plus a margin.
         f"{CONTAINER_LABEL}.deadline": str(int(time()) + CONTAINER_DEADLINE + 30),
     }
+    runtime = validation_runtime()
     container = _docker(
         "create",
         "--pull",
         "never",
+        *(("--runtime", runtime) if runtime else ()),
         "--init",
         *(
             argument

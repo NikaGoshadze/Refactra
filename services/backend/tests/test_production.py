@@ -35,6 +35,7 @@ def production(monkeypatch, tmp_path):
         "REFACTRA_GITHUB_PRIVATE_KEY_PATH": str(key),
         "REFACTRA_GITHUB_CALLBACK_URL": "https://refactra.example/api/v1/auth/github/callback",
         "REFACTRA_GITHUB_APP_SLUG": "refactra-app",
+        "REFACTRA_VALIDATION_RUNTIME": "runsc",
         **SECRETS,
     }
     for name, value in settings.items():
@@ -91,6 +92,15 @@ def test_the_worker_needs_only_its_own_settings(production):
         production.delenv(name)
     assert production_problems("worker") == []
     assert len(production_problems("api")) == 2
+
+
+@pytest.mark.parametrize("value", ["", "runc"])
+def test_the_production_worker_requires_gvisor(production, value):
+    production.setenv("REFACTRA_VALIDATION_RUNTIME", value)
+    assert any(
+        "REFACTRA_VALIDATION_RUNTIME" in problem for problem in production_problems("worker")
+    )
+    assert not any("VALIDATION_RUNTIME" in problem for problem in production_problems("api"))
 
 
 def test_the_api_refuses_to_start_and_reports_its_environment(production, database):
