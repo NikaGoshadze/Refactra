@@ -7,11 +7,17 @@ from fastapi import HTTPException
 
 DEFAULT_BODY_LIMIT = 16 * 1024
 PLAN_BODY_LIMIT = 128 * 1024  # A full plan edit; saved plans are at most 64 KiB.
+# GitHub's installation events list repositories; larger deliveries are refused, and queued
+# runs are still stopped by the workers' own access checks.
+WEBHOOK_BODY_LIMIT = 1024 * 1024
+WEBHOOK_PATH = "/api/v1/github/webhook"
 BODY_READ_TIMEOUT_SECONDS = 10.0
 _READ_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
 def body_limit(path: str) -> int:
+    if path == WEBHOOK_PATH:
+        return WEBHOOK_BODY_LIMIT
     return (
         PLAN_BODY_LIMIT
         if path.startswith("/api/v1/runs/") and path.endswith("/plan")

@@ -18,6 +18,7 @@ ANALYSIS_FAILURE_MESSAGES = {
     "analysis_outcome_unknown": "The model request outcome could not be confirmed.",
     "analysis_provider_failed": "The model did not return a complete analysis.",
     "analysis_result_missing": "The model request was recorded, but the analysis was not saved.",
+    "github_access_removed": "Refactra's GitHub App was removed from this repository.",
 }
 
 # Candidate command kind -> (progress state, failure message).

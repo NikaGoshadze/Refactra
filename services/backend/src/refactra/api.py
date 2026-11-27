@@ -15,6 +15,7 @@ from refactra.config import Settings
 from refactra.db import make_engine, sessions
 from refactra.diagnostics import database_error_details, workflow_log
 from refactra.github_auth import create_github_auth_router
+from refactra.github_webhooks import create_github_webhook_router
 from refactra.models import Run, RunCommand, RunEvent
 from refactra.production import require_production_ready
 from refactra.repository_routes import create_repository_router
@@ -72,6 +73,7 @@ def create_app(
     app.include_router(create_user_repository_router(session_factory))
     app.include_router(create_run_history_router(session_factory))
     app.include_router(create_usage_router(session_factory))
+    app.include_router(create_github_webhook_router(session_factory))
 
     @app.exception_handler(HTTPException)
     async def http_error(_, exc: HTTPException):
