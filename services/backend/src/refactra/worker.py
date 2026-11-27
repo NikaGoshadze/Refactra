@@ -35,7 +35,11 @@ from refactra.repository_analysis_worker import (
 )
 from refactra.repository_candidate import VALIDATE_CANDIDATE, process_repository_candidate
 from refactra.repository_plan_worker import process_initial_plan
-from refactra.repository_validation import reconcile_validation_containers
+from refactra.repository_validation import (
+    RepositoryValidationError,
+    reconcile_validation_containers,
+    require_runtime_available,
+)
 from refactra.snapshot_preparation import PREPARE_SNAPSHOT, process_snapshot_preparation
 from refactra.worker_health import (
     HEARTBEAT_INTERVAL_SECONDS,
@@ -200,7 +204,10 @@ def main():
             )
     try:
         require_production_ready("worker")
-    except ProductionConfigError as error:
+        if args.candidate_artifacts:
+            # Check the sandbox runtime before claiming any validation work.
+            require_runtime_available()
+    except (ProductionConfigError, RepositoryValidationError) as error:
         # Exit code 2 tells run-worker.ps1 not to restart: a restart cannot fix settings.
         print(error, file=sys.stderr)
         raise SystemExit(2) from None

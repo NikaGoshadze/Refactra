@@ -55,6 +55,11 @@ def production_problems(role: str) -> list[str]:
     if not key or not Path(key).is_file():
         problems.append("REFACTRA_GITHUB_PRIVATE_KEY_PATH must name the App's private key file.")
     if role == "worker":
+        if _setting("REFACTRA_VALIDATION_RUNTIME") != "runsc":
+            problems.append(
+                "REFACTRA_VALIDATION_RUNTIME must be runsc: repository tests are untrusted code "
+                "and run under gVisor in production."
+            )
         return problems
 
     callback = urlsplit(_setting("REFACTRA_GITHUB_CALLBACK_URL"))
