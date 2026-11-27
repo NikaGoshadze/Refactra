@@ -166,6 +166,14 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
         if (id === 46) setTimeout(() => response.end(JSON.stringify(body)), 5500);
         else response.end(JSON.stringify(body));
         return;
+      } else if (route === "/api/v1/usage" && request.method === "GET") {
+        const authenticated = request.headers.cookie?.includes("refactra_session=fixture-session") ?? false;
+        response.writeHead(authenticated ? 200 : 401, { "Cache-Control": "public, max-age=3600" });
+        response.end(JSON.stringify(authenticated
+          ? { runs_today: 2, daily_run_limit: 5, month_cost_usd: "0.40", monthly_limit_usd: "3.00",
+            day_resets_at: "2026-11-21T00:00:00+00:00", month_resets_at: "2026-12-01T00:00:00+00:00" }
+          : { error: { code: "authentication_required", message: "Sign in to access repositories." } }));
+        return;
       } else if (route === `${RUN_PATH}/timeline` && request.method === "GET") {
         const authenticated = request.headers.cookie?.includes("refactra_session=fixture-session") ?? false;
         response.writeHead(authenticated ? 200 : 401, { "Cache-Control": "public, max-age=3600" });
