@@ -484,6 +484,7 @@ To see persistence directly, stop the worker with `docker compose stop worker`, 
 | `REFACTRA_GITHUB_CALLBACK_URL` | a public `https://` URL, which makes session cookies `Secure` with the `__Host-` prefix | API |
 | `REFACTRA_GITHUB_CLIENT_SECRET` | set | API |
 | `REFACTRA_OAUTH_STATE_SECRET` | at least 32 random characters | API |
+| `REFACTRA_GITHUB_WEBHOOK_SECRET` | at least 32 random characters, the same as the App's webhook secret | API |
 | `REFACTRA_TOKEN_ENCRYPTION_KEY` | 32 random bytes in URL-safe base64 | API |
 | `REFACTRA_GITHUB_APP_SLUG` | the App's URL name | API |
 
@@ -503,6 +504,24 @@ Containers still share the host's Linux kernel, so production adds **gVisor**. W
 Leave the setting empty on Docker Desktop, which cannot run gVisor. Production mode requires `runsc`.
 
 To install gVisor on a Linux host, use a release from [gVisor's install guide](https://gvisor.dev/docs/user_guide/install/), then run `sudo runsc install` and restart Docker. CI and the live workflow install a pinned release, check its SHA-512, and run the Docker validation tests and the live run under gVisor. Building the Python dependency cache does not use gVisor. It only installs hash-pinned binary wheels from PyPI, which runs no repository code.
+
+### GitHub App events
+
+`POST /api/v1/github/webhook` receives GitHub App events that end repository access:
+- the App is uninstalled (`installation` / `deleted`);
+- the App is suspended (`installation` / `suspend`);
+- a repository is removed from an installation (`installation_repositories` / `removed`).
+
+For each, Refactra stops the affected unfinished runs at once. It marks them failed with "Refactra's GitHub App was removed from this repository." and fails their queued worker commands. Runs that already opened their draft PR, or had already failed, are left as they are. A command a worker is already running finishes or stops at its own access re-check, which would refuse these runs anyway. Other events get `202` and are ignored. Redeliveries are harmless.
+
+Every delivery must carry a valid `X-Hub-Signature-256` for `REFACTRA_GITHUB_WEBHOOK_SECRET`. Unsigned or wrongly signed deliveries get `401`, and without a secret the endpoint answers `503`. Deliveries may be up to 1 MiB, enough for long repository lists. Production mode requires the secret.
+
+To set it up, generate a secret (for example `python -c "import secrets; print(secrets.token_urlsafe(32))"`) and put it in the API's settings. Then, in the GitHub App's settings:
+1. Under **Webhook**, tick **Active**.
+2. Set the URL to the API's public address followed by `/api/v1/github/webhook`. This must be the API itself, not the web proxy, so the signed bytes arrive unchanged.
+3. Enter the same secret.
+
+GitHub Apps receive installation events without subscribing to them. GitHub's **Recent Deliveries** page shows each delivery and Refactra's response.
 
 ### Invites and the waitlist
 
