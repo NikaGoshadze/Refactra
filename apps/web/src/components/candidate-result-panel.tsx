@@ -10,6 +10,8 @@ type PublicationTarget = {
   sha256: string;
   commit_sha: string;
   destination: { repository_id: number; base_branch: string; head_branch: string };
+  // AI-written text the approval covers; absent for older candidates.
+  publication?: { commit_message: string; pull_request_title: string; pull_request_body: string } | null;
 };
 
 type CandidateResult = {
@@ -264,6 +266,14 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
             <div><dt>Base branch</dt><dd><code>{target.destination.base_branch}</code></dd></div>
             <div><dt>Head branch</dt><dd><code>{target.destination.head_branch}</code></dd></div>
           </dl>
+          {target.publication && <div className="publication-text">
+            <h5>Pull request title</h5>
+            <p>{target.publication.pull_request_title}</p>
+            <h5>Commit message</h5>
+            <pre className="analysis-result">{target.publication.commit_message}</pre>
+            <h5>Pull request description</h5>
+            <pre className="analysis-result">{target.publication.pull_request_body}</pre>
+          </div>}
         </>}
         {publication?.status === "branch_pushed" && <p role="status">
           {status === "publishing" && !loadError ? "Branch pushed. Waiting for the draft PR." : "Branch pushed."}
