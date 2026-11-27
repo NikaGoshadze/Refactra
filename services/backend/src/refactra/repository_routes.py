@@ -42,7 +42,6 @@ from refactra.publication_target import (
     waive_publication_check,
 )
 from refactra.refactoring_plan import (
-    APPLY_PLAN_APPROVAL,
     PlanContent,
     PlanFeedback,
     PlanProposal,
@@ -67,6 +66,8 @@ from refactra.repository_revision import resolve_revision
 from refactra.repository_runs import create_repository_run
 from refactra.repository_validation import ValidationResult
 from refactra.run_access import RepositoryAuthorizer, RepositoryGrant
+from refactra.run_history import RunDetail, load_run_detail
+from refactra.run_stages import ANALYSIS_FAILURE_MESSAGES, CANDIDATE_STAGES
 from refactra.schemas import (
     RepositoryRunCreate,
     RepositoryRunRead,
@@ -76,20 +77,6 @@ from refactra.schemas import (
 from refactra.session_routes import is_trusted_mutation
 from refactra.snapshot_preparation import enqueue_snapshot_preparation
 
-ANALYSIS_FAILURE_MESSAGES = {
-    "analysis_access_revoked": "The run owner no longer has access to this repository.",
-    "analysis_access_unavailable": "GitHub access could not be verified. Submit the run again.",
-    "analysis_access_unconfigured": "The worker's repository access settings are unavailable.",
-    "snapshot_unavailable": "The pinned source could not be retrieved. Submit the run again.",
-    "snapshot_unsupported": "The pinned source exceeds the supported analysis limits.",
-    "worker_command_failed": "The worker stopped this run after an unexpected error.",
-    "command_attempts_exhausted": "The worker stopped this run after repeated interruptions.",
-    "analysis_budget_exceeded": "The run reached an analysis budget limit.",
-    "analysis_input_invalid": "The saved input could not be analyzed.",
-    "analysis_outcome_unknown": "The model request outcome could not be confirmed.",
-    "analysis_provider_failed": "The model did not return a complete analysis.",
-    "analysis_result_missing": "The model request was recorded, but the analysis was not saved.",
-}
 RUN_NOT_FOUND = {"code": "not_found", "message": "Repository run not found."}
 
 
@@ -178,14 +165,6 @@ class CandidateProgressRead(BaseModel):
     ]
     message: str | None = None
     result: CandidateResultRead | None
-
-
-CANDIDATE_STAGES = {
-    APPLY_PLAN_APPROVAL: ("queued", "The worker could not verify the approved plan."),
-    GENERATE_CANDIDATE: ("generating", "The worker could not generate the candidate patch."),
-    VALIDATE_CANDIDATE: ("validating", "Candidate validation failed."),
-    PUBLISH_CANDIDATE: ("publishing", "The worker could not finish publishing the draft PR."),
-}
 
 
 def candidate_failure_message(session, run_id: UUID) -> str | None:
@@ -510,6 +489,21 @@ def create_repository_router(
                 },
             ) from None
         return repository_id
+
+    @router.get("/runs/{run_id}/timeline", response_model=RunDetail)
+    def read_run_detail(run_id: UUID, request: Request, response: Response):
+        """The run page's header and timeline, after the same access recheck as other reads."""
+        try:
+            require_run_access(request, run_id, polling=True)
+            with session_factory() as session:
+                identity = resolve_session(session, request.cookies.get(oauth.session_cookie_name))
+                detail = identity and load_run_detail(session, identity.user_id, run_id)
+            if detail is None:
+                return error(404, RUN_NOT_FOUND)
+            response.headers["Cache-Control"] = "no-store"
+            return detail
+        except HTTPException as exc:
+            return error(exc.status_code, exc.detail)
 
     @router.get("/runs/{run_id}", response_model=RepositoryRunRead)
     def read_analysis(run_id: UUID, request: Request, response: Response):

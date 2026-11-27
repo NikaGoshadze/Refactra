@@ -70,7 +70,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   const isRun = resource === "runs" && RUN_ID_PATTERN.test(id ?? "");
   const isPlan = isRun && section === "plan";
   const isRunRead = isRun && (path.length === 2
-    || (path.length === 3 && (isPlan || section === "result")));
+    || (path.length === 3 && (isPlan || section === "result" || section === "timeline")));
   const isPlanWrite = isPlan && request.method === "POST"
     && (path.length === 3 || (path.length === 4 && action === "approve"));
   const isPublicationApproval = isRun && section === "result" && action === "approve"

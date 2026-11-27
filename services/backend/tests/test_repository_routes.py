@@ -329,6 +329,21 @@ def submit(client, key=None, *, origin="https://refactra.example", prepare=True,
     return response
 
 
+def test_the_run_page_gets_its_summary_and_timeline(browser):
+    client, _, _, _ = browser
+    url = submit(client).headers["Location"]
+    response = client.get(f"{url}/timeline")
+    assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
+    body = response.json()
+    assert body["task_text"] == "Review cart"
+    assert body["summary"]["repository_full_name"] == "fixture/example"
+    assert body["summary"]["stage"] == "analyzing"
+    assert [entry["label"] for entry in body["timeline"]][:2] == [
+        "Run started",
+        "Repository snapshot prepared",
+    ]
+
+
 def test_submission_returns_once_pinned_and_the_worker_prepares_source(browser, session_factory):
     client, calls, switches, _ = browser
     key = uuid4()
@@ -888,6 +903,7 @@ def test_read_saved_candidate_result(browser, session_factory, proposal):
     ("method", "suffix"),
     [
         ("GET", ""),
+        ("GET", "/timeline"),
         ("GET", "/plan"),
         ("GET", "/result"),
         ("GET", "/result?progress=true"),

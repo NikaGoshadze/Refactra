@@ -15,7 +15,7 @@ from refactra.repository_analysis_worker import enqueue_repository_analysis
 from refactra.repository_candidate import GENERATE_CANDIDATE
 from refactra.repository_revision import RepositoryRevision
 from refactra.repository_runs import create_repository_run
-from refactra.run_history import list_runs
+from refactra.run_history import list_runs, load_run_detail
 
 from .test_analysis_context import prepare
 from .test_refactoring_plan import analyze_fixture_run
@@ -178,3 +178,48 @@ def test_new_runs_store_the_repository_name(session_factory):
             "fixture/repo"
         )
         assert session.scalar(select(RunPlan.id).where(RunPlan.run_id == run.id)) is None
+
+
+def test_the_detail_timeline_uses_plain_labels_and_stays_private(session_factory, proposal):
+    run, _, context = prepare(session_factory, task_text="Extract   the cart\ncalculation")
+    with session_factory.begin() as session:
+        save_analysis_context(session, context)
+        enqueue_repository_analysis(session, run.id)
+    analyze_fixture_run(session_factory)
+    with session_factory.begin() as session:
+        save_refactoring_plan(session, run.id, proposal, expected_revision=0)
+    add_event(
+        session_factory,
+        run.id,
+        PUBLICATION_PR_OPENED,
+        {"pull_request_number": 9, "pull_request_url": "https://github.com/fixture/repo/pull/9"},
+    )
+    add_event(session_factory, run.id, "WORKER_CLAIMED", {"worker": "internal"})
+    with session_factory() as session:
+        detail = load_run_detail(session, OWNER, run.id)
+        assert load_run_detail(session, 999, run.id) is None
+    labels = [entry.label for entry in detail.timeline]
+    assert labels[:4] == [
+        "Run started",
+        "Repository snapshot prepared",
+        "Analysis started",
+        "Analysis finished",
+    ]
+    assert "Plan revision 1 saved" in labels and labels[-1] == "Draft PR #9 opened"
+    assert detail.timeline[-1].link == "https://github.com/fixture/repo/pull/9"
+    assert not any("WORKER" in label or "BUDGET" in label for label in labels)
+    assert detail.task_text == "Extract   the cart\ncalculation"
+    assert detail.summary.task_summary == "Extract the cart calculation"
+    assert detail.summary.stage == "published"
+
+
+def test_a_failed_analysis_explains_the_stop(session_factory):
+    run, _, _ = prepare(session_factory)
+    add_event(session_factory, run.id, "RUN_STOPPED", {"code": "snapshot_unavailable"})
+    with session_factory.begin() as session:
+        session.get(Run, run.id).status = "FAILED"
+    with session_factory() as session:
+        detail = load_run_detail(session, OWNER, run.id)
+    assert detail.timeline[-1].label == (
+        "Analysis stopped: The pinned source could not be retrieved. Submit the run again."
+    )

@@ -5,15 +5,15 @@ import Link from "next/link";
 import { AuthControls } from "@/components/auth-controls";
 import { request, type SessionStatus } from "@/lib/api";
 
-type Stage = "analyzing" | "plan_ready" | "generating" | "ready_to_publish" | "publishing" | "published" | "failed";
-type RunSummary = {
+export type Stage = "analyzing" | "plan_ready" | "generating" | "ready_to_publish" | "publishing" | "published" | "failed";
+export type RunSummary = {
   run_id: string; repository_id: number; repository_full_name: string | null; base_branch: string; base_sha: string;
   task_summary: string; stage: Stage; stop_reason: string | null; plan_revisions: number;
   pull_request: { number: number; url: string } | null; cost_usd: string; created_at: string; last_activity_at: string;
 };
 type Page = { runs: RunSummary[]; next_cursor: string | null };
 
-const STAGE_LABELS: Record<Stage, string> = {
+export const STAGE_LABELS: Record<Stage, string> = {
   analyzing: "Analyzing",
   plan_ready: "Plan ready for review",
   generating: "Generating and validating",
@@ -22,7 +22,7 @@ const STAGE_LABELS: Record<Stage, string> = {
   published: "Published",
   failed: "Failed",
 };
-const formatDate = (value: string) => new Date(value).toLocaleString();
+export const formatDate = (value: string) => new Date(value).toLocaleString();
 
 function HistoryList() {
   const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -87,7 +87,7 @@ function HistoryList() {
         {runs.map((run) => <li key={run.run_id}>
           <article aria-label={`Run ${run.run_id}`}>
             <p className="history-repository">{run.repository_full_name ?? `Repository ${run.repository_id}`}</p>
-            <p className="history-task">{run.task_summary}</p>
+            <p className="history-task"><Link href={`/runs/${run.run_id}`}>{run.task_summary}</Link></p>
             <p><strong className={`history-stage stage-${run.stage}`}>{STAGE_LABELS[run.stage]}</strong>
               {run.stop_reason && <> — {run.stop_reason}</>}
               {run.pull_request && <> — <a href={run.pull_request.url}>Draft PR #{run.pull_request.number}</a></>}</p>

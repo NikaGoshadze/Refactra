@@ -30,7 +30,7 @@ from refactra.models import (
 from refactra.publication_target import PUBLICATION_APPROVED, PUBLICATION_PR_OPENED
 from refactra.repository_access import RepositoryAccessPolicy
 from refactra.repository_analysis_worker import WORKFLOW
-from refactra.repository_routes import ANALYSIS_FAILURE_MESSAGES, CANDIDATE_STAGES
+from refactra.run_stages import ANALYSIS_FAILURE_MESSAGES, CANDIDATE_STAGES
 
 Stage = Literal[
     "analyzing", "plan_ready", "generating", "ready_to_publish", "publishing", "published", "failed"
@@ -104,10 +104,17 @@ def list_runs(
         statement.order_by(Run.created_at.desc(), Run.id.desc()).limit(limit + 1)
     ).all()
     page, more = runs[:limit], len(runs) > limit
+    return RunHistoryPage(
+        runs=summarize_runs(session, page),
+        next_cursor=_encode_cursor(page[-1]) if more else None,
+    )
+
+
+def summarize_runs(session: Session, page: list[Run]) -> list[RunSummary]:
+    """Summaries for already-authorized runs, with a few batched queries per page."""
     ids = [run.id for run in page]
     if not ids:
-        return RunHistoryPage(runs=[], next_cursor=None)
-
+        return []
     revisions = dict(
         session.execute(
             select(RunPlan.run_id, func.max(RunPlan.revision))
@@ -214,7 +221,82 @@ def list_runs(
                 last_activity_at=max(run.created_at, activity.get(run.id) or run.created_at),
             )
         )
-    return RunHistoryPage(runs=summaries, next_cursor=_encode_cursor(page[-1]) if more else None)
+    return summaries
+
+
+class TimelineEntry(BaseModel):
+    at: datetime
+    label: str
+    link: str | None = None
+
+
+class RunDetail(BaseModel):
+    summary: RunSummary
+    task_text: str
+    timeline: list[TimelineEntry]
+
+
+def _revision(payload: dict) -> str:
+    revision = payload.get("revision")
+    return f" {revision}" if type(revision) is int else ""
+
+
+def _timeline_entry(kind: str, payload: dict, succeeded: bool) -> tuple[str, str | None] | None:
+    """A plain-language label for events users care about; internal events return None."""
+    if kind == "RUN_STOPPED":
+        code = payload.get("code")
+        if not succeeded and code in ANALYSIS_FAILURE_MESSAGES:
+            return f"Analysis stopped: {ANALYSIS_FAILURE_MESSAGES[code]}", None
+        return "Analysis finished", None
+    if kind == "PUBLICATION_PR_OPENED":
+        number, url = payload.get("pull_request_number"), payload.get("pull_request_url")
+        if type(number) is int and isinstance(url, str) and url.startswith("https://github.com/"):
+            return f"Draft PR #{number} opened", url
+        return "Draft PR opened", None
+    labels = {
+        "RUN_CREATED": "Run started",
+        "ANALYSIS_CONTEXT_SAVED": "Repository snapshot prepared",
+        "ANALYSIS_STARTED": "Analysis started",
+        "PLAN_SAVED": f"Plan revision{_revision(payload)} saved",
+        "PLAN_FEEDBACK_REQUESTED": "Plan changes requested",
+        "PLAN_GENERATION_FAILED": "Plan generation failed",
+        "PLAN_APPROVED": f"Plan revision{_revision(payload)} approved",
+        "CANDIDATE_GENERATION_FAILED": "Change generation failed",
+        "CANDIDATE_VALIDATION_REPAIR_QUEUED": "A failed check is being repaired",
+        "CANDIDATE_RESULT_SAVED": "Change generated and validated",
+        "CANDIDATE_REVIEW_READY": "Ready for publication review",
+        "PUBLICATION_CHECK_WAIVED": "A required check was waived",
+        "PUBLICATION_APPROVED": "Publication approved",
+        "PUBLICATION_RETRY_SCHEDULED": "Publication will be retried",
+        "PUBLICATION_BRANCH_PUSHED": "Branch pushed to GitHub",
+        "COMMAND_FAILED": "A worker step failed",
+    }
+    label = labels.get(kind)
+    return (label, None) if label else None
+
+
+def load_run_detail(session: Session, user_id: int, run_id: UUID) -> RunDetail | None:
+    """The full record of one of the user's runs; the caller has rechecked access."""
+    run = session.scalar(
+        select(Run).where(
+            Run.id == run_id, Run.requested_by == user_id, Run.workflow_version == WORKFLOW
+        )
+    )
+    if run is None:
+        return None
+    timeline = []
+    for kind, payload, at in session.execute(
+        select(RunEvent.event_type, RunEvent.payload, RunEvent.occurred_at)
+        .where(RunEvent.run_id == run_id)
+        .order_by(RunEvent.id)
+    ):
+        entry = _timeline_entry(
+            kind, payload if isinstance(payload, dict) else {}, run.status != "FAILED"
+        )
+        if entry is not None:
+            timeline.append(TimelineEntry(at=at, label=entry[0], link=entry[1]))
+    (summary,) = summarize_runs(session, [run])
+    return RunDetail(summary=summary, task_text=run.task_text, timeline=timeline)
 
 
 def create_run_history_router(session_factory) -> APIRouter:
