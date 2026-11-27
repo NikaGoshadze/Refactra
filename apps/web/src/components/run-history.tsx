@@ -3,7 +3,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { AuthControls } from "@/components/auth-controls";
-import { request, type SessionStatus } from "@/lib/api";
+import { accessNotice, request, type SessionStatus } from "@/lib/api";
 
 export type Stage = "analyzing" | "plan_ready" | "generating" | "ready_to_publish" | "publishing" | "published" | "failed";
 export type RunSummary = {
@@ -111,9 +111,11 @@ function HistoryList() {
 
 export function RunHistory() {
   const [session, setSession] = useState<SessionStatus | null>(null);
+  const notice = accessNotice(session);
   return <>
     <AuthControls session={session} onSessionChange={setSession} />
-    {session?.authenticated ? <HistoryList key={session.user.user_id} />
+    {notice ? <p className="repository-state" role="status">{notice}</p>
+      : session?.authenticated ? <HistoryList key={session.user.user_id} />
       : session ? <p className="repository-state" role="status">Sign in with GitHub to see your runs.</p> : null}
   </>;
 }

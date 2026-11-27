@@ -162,3 +162,20 @@ test("the analysis form explains when no analysis worker is running", async ({ p
   await expect(analysis.getByText("No analysis worker is running.", { exact: false })).toBeVisible();
   await expect(analysis.getByRole("button", { name: "Start analysis" })).toBeVisible();
 });
+
+test("a waitlisted user sees the waitlist notice instead of repositories", async ({ page, context, authProxy }) => {
+  await signIn(context, authProxy.origin);
+  await page.route("**/api/v1/auth/session", (route) => route.fulfill({
+    json: { authenticated: true, user: { user_id: 777, login: "newcomer" }, access: "waitlisted" },
+  }));
+  await page.goto(authProxy.origin);
+  const panel = page.getByRole("region", { name: "Repository connection" });
+  await expect(panel.getByRole("status")).toHaveText(
+    "You're on the Refactra waitlist. You'll get access once the owner invites you.",
+  );
+  await expect(panel.getByLabel("Repository", { exact: true })).toHaveCount(0);
+  await page.goto(`${authProxy.origin}/history`);
+  await expect(page.getByText("You're on the Refactra waitlist.", { exact: false })).toBeVisible();
+  expect(authProxy.calls.some((call) => call.url.startsWith("/api/v1/user/repositories")
+    || call.url.startsWith("/api/v1/runs") || call.url === "/api/v1/usage")).toBe(false);
+});

@@ -3,7 +3,7 @@
 import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 import { AnalysisRunPanel } from "@/components/analysis-run-panel";
 import { AuthControls } from "@/components/auth-controls";
-import { request, type SessionStatus } from "@/lib/api";
+import { accessNotice, request, type SessionStatus } from "@/lib/api";
 
 type UserRepository = {
   id: number; full_name: string; private: boolean; default_branch: string; installation_id: number; writable: boolean;
@@ -25,7 +25,7 @@ function failure(error: unknown, timeout: string, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
-function RepositoryPanel({ authenticated }: { authenticated: boolean }) {
+function RepositoryPanel({ authenticated, notice }: { authenticated: boolean; notice: string | null }) {
   const [listing, setListing] = useState<Load<Listing>>({ status: authenticated ? "loading" : "idle" });
   const [filter, setFilter] = useState("");
   const [selected, setSelected] = useState("");
@@ -89,7 +89,7 @@ function RepositoryPanel({ authenticated }: { authenticated: boolean }) {
   const repositories = listing.status === "ready" ? listing.value.repositories : [];
   const shown = repositories.filter((item) => item.full_name.toLowerCase().includes(filter.trim().toLowerCase()));
   const usable = repositories.some((item) => item.writable);
-  const status = !authenticated ? "Sign in with GitHub to choose a repository."
+  const status = !authenticated ? notice ?? "Sign in with GitHub to choose a repository."
     : listing.status === "loading" || listing.status === "idle" ? "Loading your repositories…"
     : listing.status === "error" ? null
     : !usable ? "No repositories are available yet. Install Refactra on the repositories you want to refactor."
@@ -153,10 +153,12 @@ function RepositoryPanel({ authenticated }: { authenticated: boolean }) {
 
 export function RepositoryConnection({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<SessionStatus | null>(null);
+  // Waitlisted users are signed in but get the waitlist notice instead of their repositories.
+  const notice = accessNotice(session);
   return <>
     <AuthControls session={session} onSessionChange={setSession} />
     {children}
-    <RepositoryPanel key={session?.authenticated ? session.user.user_id : "anonymous"}
-      authenticated={session?.authenticated === true} />
+    <RepositoryPanel key={session?.authenticated ? `${session.user.user_id}-${notice ? "notice" : "ok"}` : "anonymous"}
+      authenticated={session?.authenticated === true && !notice} notice={notice} />
   </>;
 }
