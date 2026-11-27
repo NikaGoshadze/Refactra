@@ -9,10 +9,11 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from refactra.account import lock_account
 from refactra.auth_sessions import resolve_session
 from refactra.diff_review import DiffReview
 from refactra.github_app import GitHubAppError
@@ -79,7 +80,6 @@ from refactra.snapshot_preparation import enqueue_snapshot_preparation
 from refactra.usage_limits import UsageLimitReached, UsageLimits, check_new_run, limit_response
 
 RUN_NOT_FOUND = {"code": "not_found", "message": "Repository run not found."}
-USAGE_LOCK = 72341003  # With the user ID, serializes one user's run submissions.
 
 
 def _analysis_stop_reason(session, run_id: UUID) -> StopReason:
@@ -405,9 +405,18 @@ def create_repository_router(
                     with session_factory.begin() as session:
                         # One lock per user makes simultaneous submissions take turns, so
                         # they cannot both pass the daily limit.
-                        session.execute(
-                            select(func.pg_advisory_xact_lock(USAGE_LOCK, identity.user_id % 2**31))
-                        )
+                        lock_account(session, identity.user_id)
+                        if (
+                            resolve_session(session, request.cookies.get(oauth.session_cookie_name))
+                            is None
+                        ):
+                            return error(
+                                401,
+                                {
+                                    "code": "authentication_required",
+                                    "message": "Sign in to start a run.",
+                                },
+                            )
                         check_new_run(session, identity.user_id, UsageLimits.from_env())
                         run = create_repository_run(
                             session,
@@ -442,7 +451,9 @@ def create_repository_router(
                 )
             # A run pinned before queued preparation may have no context or command yet.
             with session_factory.begin() as session:
-                session.get(Run, run_id, with_for_update=True)
+                run = session.get(Run, run_id, with_for_update=True)
+                if run.requested_by != identity.user_id:
+                    return error(404, RUN_NOT_FOUND)
                 if session.get(RunAnalysisContext, run_id) is None:
                     enqueue_snapshot_preparation(session, run_id)
             response.headers["Cache-Control"] = "no-store"

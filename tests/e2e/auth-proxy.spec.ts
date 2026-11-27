@@ -79,6 +79,33 @@ test.describe("account controls", () => {
     await page.route("**/api/v1/capabilities", (route) => route.fulfill({ json: { mock_enabled: true } }));
   });
 
+  test("privacy is public and only the confirmed login can delete the account", async ({ authProxy, page, context }) => {
+    await page.goto(authProxy.origin);
+    await page.getByRole("link", { name: "Privacy" }).click();
+    await expect(page.getByRole("heading", { name: "Privacy and account data" })).toBeVisible();
+    await expect(page.getByText("Sign in with GitHub above to delete your account.")).toBeVisible();
+    await context.addCookies([{ name: "refactra_session", value: "fixture-session", url: authProxy.origin, httpOnly: true }]);
+    await page.reload();
+    const button = page.getByRole("button", { name: "Permanently delete my account" });
+    await page.getByLabel("Type your GitHub login").fill("someone-else");
+    await expect(button).toBeDisabled();
+    await page.getByLabel("Type your GitHub login").fill("FIXTURE-USER");
+    // Let the first call reach the upstream fixture to exercise the real proxy.
+    await button.click();
+    await expect(page.getByRole("region", { name: "Delete your Refactra account" }).getByRole("alert")).toBeVisible();
+    const deletion = authProxy.calls.find((call) => call.url === "/api/v1/account/delete");
+    expect(deletion?.headers.origin).toBe(authProxy.origin);
+    expect(deletion?.headers["x-refactra-csrf"]).toBe("1");
+    expect(deletion?.headers.cookie).toBe("refactra_session=fixture-session");
+    await page.route("**/api/v1/account/delete", (route) => {
+      expect(route.request().postDataJSON()).toEqual({ confirm_login: "FIXTURE-USER" });
+      return route.fulfill({ json: { deleted: true, runs_cleared: 1 } });
+    });
+    await button.click();
+    await expect(page.getByText("Your Refactra account has been deleted.")).toBeVisible();
+    await expect(button).toHaveCount(0);
+  });
+
   test("anonymous users can start GitHub sign-in", async ({ authProxy, page }, testInfo) => {
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));

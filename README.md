@@ -34,6 +34,14 @@ The named PostgreSQL volume survives `down`. Removing that volume deletes local 
 
 ## Optional local GitHub sign-in
 
+### Privacy and account deletion
+
+Open **Privacy** in the navigation to see what Refactra stores and shares with GitHub and OpenAI. To delete your account, sign in, type your GitHub login, and select **Permanently delete my account**. This also works for waitlisted users. If a worker is processing one of your runs, wait for it to finish and retry.
+
+Deletion clears saved run content, queued work, sessions, stored GitHub tokens and the database invite or waitlist entry. Run IDs and model usage records remain for the shared budget with the owner and repository fields cleared. Workers clean prepared commits and staged assets in their configured artifact directory after deletion, on startup and during polling. Operators should reuse that directory across restarts and retire any offline artifact copies, logs and backups according to their retention policy. Existing GitHub branches, pull requests, grants and installations are managed separately on GitHub.
+
+### Configure sign-in
+
 GitHub sign-in establishes the identity used for protected repository access and approvals. The local mock queue is available without signing in.
 
 Create your local configuration from the repository root with Python 3.12:
