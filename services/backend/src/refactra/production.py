@@ -72,6 +72,11 @@ def production_problems(role: str) -> list[str]:
         problems.append("REFACTRA_GITHUB_CLIENT_SECRET must be set.")
     if len(_setting("REFACTRA_OAUTH_STATE_SECRET")) < 32:
         problems.append("REFACTRA_OAUTH_STATE_SECRET must be at least 32 random characters.")
+    if len(_setting("REFACTRA_GITHUB_WEBHOOK_SECRET")) < 32:
+        problems.append(
+            "REFACTRA_GITHUB_WEBHOOK_SECRET must be at least 32 random characters, matching the "
+            "App's webhook secret, so uninstalls stop runs at once."
+        )
     try:
         if TokenCipher.from_env() is None:
             problems.append(f"{KEY_ENV} must be set so users can list their repositories.")

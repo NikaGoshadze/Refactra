@@ -19,6 +19,7 @@ SECRETS = {
     "REFACTRA_DATABASE_URL": "postgresql+psycopg://refactra:prod-password-123@db:5432/refactra",
     "REFACTRA_GITHUB_CLIENT_SECRET": "client-secret-value",
     "REFACTRA_OAUTH_STATE_SECRET": "s" * 43,
+    "REFACTRA_GITHUB_WEBHOOK_SECRET": "w" * 43,
     "REFACTRA_TOKEN_ENCRYPTION_KEY": urlsafe_b64encode(bytes(range(32))).decode(),
 }
 
@@ -73,6 +74,7 @@ def test_safe_production_settings_start(production):
         ("REFACTRA_GITHUB_CALLBACK_URL", "https://localhost/cb", "https://"),
         ("REFACTRA_GITHUB_CLIENT_SECRET", "", "CLIENT_SECRET"),
         ("REFACTRA_OAUTH_STATE_SECRET", "short", "32 random"),
+        ("REFACTRA_GITHUB_WEBHOOK_SECRET", "short", "WEBHOOK_SECRET"),
         ("REFACTRA_TOKEN_ENCRYPTION_KEY", "", "TOKEN_ENCRYPTION_KEY must be set"),
         ("REFACTRA_TOKEN_ENCRYPTION_KEY", "bad", "URL-safe base64"),
         ("REFACTRA_GITHUB_APP_SLUG", "", "APP_SLUG must be set"),
