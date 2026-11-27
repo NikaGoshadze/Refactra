@@ -16,6 +16,7 @@ from refactra.db import make_engine, sessions
 from refactra.diagnostics import database_error_details, workflow_log
 from refactra.github_auth import create_github_auth_router
 from refactra.models import Run, RunCommand, RunEvent
+from refactra.production import require_production_ready
 from refactra.repository_routes import create_repository_router
 from refactra.request_limits import BodyLimitMiddleware
 from refactra.run_access import RepositoryAuthorizer
@@ -39,6 +40,8 @@ def create_app(
     repository_authorizer: RepositoryAuthorizer | None = None,
 ) -> FastAPI:
     install_auth_query_redaction()
+    # In production, unsafe settings stop the API here instead of on a user's first request.
+    environment = require_production_ready("api")
     settings = settings or Settings.from_env()
     owns_engine = engine is None
     engine = engine or make_engine(settings.database_url)
@@ -188,6 +191,7 @@ def create_app(
             status, mode = "unknown", None
         running = status == "running"
         return {
+            "environment": environment,
             "mock_enabled": settings.enable_mock,
             "repository_analysis_enabled": settings.enable_repository_analysis,
             # Plan, waiver and publication approval routes are always served for existing runs.
