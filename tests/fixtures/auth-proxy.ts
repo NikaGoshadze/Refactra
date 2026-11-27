@@ -66,6 +66,16 @@ export const RUN_HISTORY = {
   next_cursor: null,
 };
 
+export const RUN_DETAIL = {
+  summary: HISTORY_ITEM,
+  task_text: "Extract the cart calculation\ninto a helper.",
+  timeline: [
+    { at: "2026-11-20T01:00:00Z", label: "Run started", link: null },
+    { at: "2026-11-20T01:05:00Z", label: "Plan revision 1 saved", link: null },
+    { at: "2026-11-20T01:30:00Z", label: "Draft PR #7 opened", link: "https://github.com/fixture/example/pull/7" },
+  ],
+};
+
 /** Choose the fixture repository in the picker and wait for its access check. */
 export async function chooseRepository(page: import("@playwright/test").Page, name = "fixture/example") {
   const panel = page.getByRole("region", { name: "Repository connection" });
@@ -155,6 +165,12 @@ export const test = base.extend<{}, { authProxy: Proxy }>({
         });
         if (id === 46) setTimeout(() => response.end(JSON.stringify(body)), 5500);
         else response.end(JSON.stringify(body));
+        return;
+      } else if (route === `${RUN_PATH}/timeline` && request.method === "GET") {
+        const authenticated = request.headers.cookie?.includes("refactra_session=fixture-session") ?? false;
+        response.writeHead(authenticated ? 200 : 401, { "Cache-Control": "public, max-age=3600" });
+        response.end(JSON.stringify(authenticated ? RUN_DETAIL
+          : { error: { code: "authentication_required", message: "Sign in to access runs." } }));
         return;
       } else if (route === "/api/v1/runs" && request.method === "GET") {
         const authenticated = request.headers.cookie?.includes("refactra_session=fixture-session") ?? false;

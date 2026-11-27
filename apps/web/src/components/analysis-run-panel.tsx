@@ -27,17 +27,23 @@ function errorMessage(error: unknown, timeoutMessage: string, fallback: string) 
   return error instanceof Error ? error.message : fallback;
 }
 
-export function AnalysisRunPanel({ repositoryId, defaultBranch, branches = [], branchesTruncated = false }: {
+export function AnalysisRunPanel({
+  repositoryId, defaultBranch, branches = [], branchesTruncated = false, preferredBranch = null, initialTask = "",
+}: {
   repositoryId: number; defaultBranch: string; branches?: string[]; branchesTruncated?: boolean;
+  preferredBranch?: string | null; initialTask?: string;
 }) {
   // A complete list becomes a dropdown with the default branch first; otherwise type the name.
   const branchOptions = branchesTruncated || branches.length === 0 ? null
     : [defaultBranch, ...branches.filter((name) => name !== defaultBranch)];
+  // A similar-task link may name a branch; use it only if the repository still has it.
+  const startBranch = preferredBranch && (!branchOptions || branchOptions.includes(preferredBranch))
+    ? preferredBranch : defaultBranch;
   const [available, setAvailable] = useState<boolean | null>(null);
   const [workerAvailable, setWorkerAvailable] = useState(true);
   const [capabilityError, setCapabilityError] = useState<string | null>(null);
-  const [branch, setBranch] = useState(defaultBranch);
-  const [task, setTask] = useState("");
+  const [branch, setBranch] = useState(startBranch);
+  const [task, setTask] = useState(initialTask.slice(0, 4000));
   const [busy, setBusy] = useState(false);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [target, setTarget] = useState<(Pick<Receipt, "run_id"> & Partial<Receipt>) | null>(null);

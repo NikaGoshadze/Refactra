@@ -89,6 +89,7 @@ jobs:
           tests/e2e/analysis-run-form.spec.ts
           tests/e2e/repository-connection.spec.ts
           tests/e2e/run-history.spec.ts
+          tests/e2e/run-detail.spec.ts
 
   docker:
     name: Docker validation and full-stack smoke

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 import { AnalysisRunPanel } from "@/components/analysis-run-panel";
 import { AuthControls } from "@/components/auth-controls";
 import { request, type SessionStatus } from "@/lib/api";
@@ -15,6 +15,7 @@ type Listing = {
 type Repository = {
   repository_id: number; full_name: string; default_branch: string; branches: string[]; branches_truncated: boolean;
 };
+type Preset = { repositoryId: number; branch: string | null; task: string };
 type Load<T> = { status: "idle" | "loading" } | { status: "ready"; value: T } | { status: "error"; message: string };
 
 const TIMEOUT_MS = 65000; // The proxy allows 60 seconds for repository reads.
@@ -30,13 +31,32 @@ function RepositoryPanel({ authenticated }: { authenticated: boolean }) {
   const [selected, setSelected] = useState("");
   const [repository, setRepository] = useState<Load<Repository>>({ status: "idle" });
   const [reload, setReload] = useState(0);
+  const [preset, setPreset] = useState<Preset | null>(null);
   const verifying = useRef<AbortController | null>(null);
+  const presetRead = useRef(false);
+
+  // "Start a similar task" links carry ?repository=&branch=&task=; apply them once, after the
+  // list shows the repository is still available.
+  const applyPreset = useEffectEvent((value: Listing) => {
+    if (presetRead.current) return;
+    presetRead.current = true;
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get("repository");
+    const match = value.repositories.find((item) => String(item.id) === id && item.writable);
+    if (!match) return;
+    setPreset({ repositoryId: match.id, branch: params.get("branch"), task: params.get("task") ?? "" });
+    void choose(String(match.id));
+  });
 
   useEffect(() => {
     if (!authenticated) return;
     const controller = new AbortController();
     request<Listing>("user/repositories", { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(TIMEOUT_MS)]) })
-      .then((value) => { if (!controller.signal.aborted) setListing({ status: "ready", value }); })
+      .then((value) => {
+        if (controller.signal.aborted) return;
+        setListing({ status: "ready", value });
+        applyPreset(value);
+      })
       .catch((error: unknown) => {
         if (!controller.signal.aborted) setListing({
           status: "error", message: failure(error, "Loading your repositories timed out. Try again.", "Could not load your repositories."),
@@ -123,7 +143,9 @@ function RepositoryPanel({ authenticated }: { authenticated: boolean }) {
     {repository.status === "ready" && (
       <AnalysisRunPanel key={repository.value.repository_id} repositoryId={repository.value.repository_id}
         defaultBranch={repository.value.default_branch} branches={repository.value.branches}
-        branchesTruncated={repository.value.branches_truncated} />
+        branchesTruncated={repository.value.branches_truncated}
+        {...(preset?.repositoryId === repository.value.repository_id
+          ? { preferredBranch: preset.branch, initialTask: preset.task } : {})} />
     )}
     </>
   );
