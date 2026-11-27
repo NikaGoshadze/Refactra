@@ -486,7 +486,24 @@ To see persistence directly, stop the worker with `docker compose stop worker`, 
 | `REFACTRA_TOKEN_ENCRYPTION_KEY` | 32 random bytes in URL-safe base64 | API |
 | `REFACTRA_GITHUB_APP_SLUG` | the App's URL name | API |
 
-The error lists the setting names that need attention and never their values. The worker exits with code 2, so `run-worker.ps1` does not restart it. `GET /api/v1/capabilities` reports the environment. Compose passes the setting to the API and the worker.
+### Usage limits
+
+The owner pays for model usage, so three settings cap spending. Days and months are UTC.
+
+| Setting | Default | What it limits |
+|---|---|---|
+| `REFACTRA_USER_DAILY_RUNS` | `5` | New runs each user may start per day |
+| `REFACTRA_USER_MONTHLY_USD` | `3` | Model cost per user per month, across all of their runs |
+| `REFACTRA_MONTHLY_USD` | `12` | Total model cost per month for everyone (keep it below your OpenAI hard limit) |
+
+- **Ledger:** cost uses the model reservation ledger, counting settled usage or the reserved maximum while a call is unsettled.
+- **Starting a run:** if a limit is reached, `POST /api/v1/runs` returns `429` with `daily_run_limit`, `user_monthly_cost` or `monthly_cost`, a message saying when the limit resets, `resets_at`, and a `Retry-After` header. Retrying an accepted submission with its idempotency key is never refused. A per-user database lock makes simultaneous submissions take turns, so they cannot both pass the daily limit.
+- **Every model call:** each call, including plan revisions and repairs, also rechecks the run owner's monthly cost and the overall cap.
+- **Allowance display:** `GET /api/v1/usage` returns the signed-in user's usage, which the account bar shows as "Today: 2 of 5 runs · This month: $0.40 of $3.00".
+- **Invalid limits:** they stop the API at startup.
+- **Live test:** `scripts/run-live-e2e.ps1` raises the two per-user limits for its own stack unless they are set, because it runs many times a day as one user. The overall cap still applies.
+
+The production error lists the setting names that need attention and never their values. The worker exits with code 2, so `run-worker.ps1` does not restart it. `GET /api/v1/capabilities` reports the environment. Compose passes the setting to the API and the worker.
 
 ## Checks
 
