@@ -89,6 +89,30 @@ class GitHubOAuthConfig:
         )
 
 
+_NEXT = re.compile(r"/(?![/\\])[A-Za-z0-9\-._~!$&'()*+,;=:@%/?]{0,511}")
+
+
+def safe_next(value: str | None) -> str:
+    """A same-site path to return to after sign-in; anything else becomes "/".
+
+    Only a path that starts with one slash is kept, so a crafted link cannot send a user to
+    another site (no scheme, no "//host", no backslashes, no fragments or spaces).
+    """
+    if not value or _NEXT.fullmatch(value) is None:
+        return "/"
+    parts = urlsplit(value)
+    return value if not parts.scheme and not parts.netloc else "/"
+
+
+def attempt_next(config: GitHubOAuthConfig, cookie: str | None) -> str:
+    """The return path saved with a sign-in attempt that has already been validated."""
+    try:
+        payload = config.serializer().loads(cookie or "", max_age=OAUTH_TTL_SECONDS)
+    except BadData:
+        return "/"
+    return safe_next(payload.get("next")) if isinstance(payload, dict) else "/"
+
+
 def validate_oauth_attempt(config: GitHubOAuthConfig, cookie: str | None, state: str | None) -> str:
     """Return the PKCE verifier; the callback clears the cookie on success and failure.
 
@@ -213,7 +237,7 @@ def create_github_auth_router(
     router = APIRouter(prefix="/api/v1/auth/github", tags=["GitHub sign-in"])
 
     @router.get("/login", response_class=RedirectResponse, status_code=302)
-    def login_start():
+    def login_start(next: str | None = None):  # noqa: A002 - the query parameter's name
         signer = config.serializer()
         state, verifier = token_urlsafe(32), token_urlsafe(32)
         challenge = (
@@ -235,7 +259,8 @@ def create_github_auth_router(
         )
         response.set_cookie(
             config.cookie_name,
-            signer.dumps({"state": state, "verifier": verifier}),
+            # The page to return to rides in the signed attempt cookie, never in GitHub's URL.
+            signer.dumps({"state": state, "verifier": verifier, "next": safe_next(next)}),
             max_age=OAUTH_TTL_SECONDS,
             path="/",
             secure=config.secure_cookie,
@@ -270,7 +295,8 @@ def create_github_auth_router(
                 # Anyone may sign in; users who are not invited yet join the waitlist.
                 RepositoryAccessPolicy.from_env().join_waitlist(session, identity)
             # The transaction has committed before an authenticated cookie is issued.
-            destination = urlsplit(config.callback_url)._replace(path="/").geturl()
+            origin = urlsplit(config.callback_url)._replace(path="", query="", fragment="").geturl()
+            destination = origin + attempt_next(config, request.cookies.get(config.cookie_name))
             response = RedirectResponse(destination, status_code=302)
             response.set_cookie(
                 config.session_cookie_name,

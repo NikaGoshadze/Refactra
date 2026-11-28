@@ -232,6 +232,45 @@ def test_callback_verifies_github_and_commits_a_rotated_session(callback, sessio
 
 
 @pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("/history", "/history"),
+        ("/runs/abc-123?tab=plan", "/runs/abc-123?tab=plan"),
+        (None, "/"),
+        ("", "/"),
+        ("history", "/"),
+        ("//evil.example/path", "/"),
+        ("/\\evil.example", "/"),
+        ("https://evil.example/", "/"),
+        ("/ok#fragment", "/"),
+        ("/with space", "/"),
+        ("/\tevil", "/"),
+        ("/" + "a" * 512, "/"),
+    ],
+)
+def test_return_path_accepts_only_same_site_paths(value, expected):
+    assert github_auth.safe_next(value) == expected
+
+
+@pytest.mark.parametrize(
+    "requested,landing",
+    [("/history", "/history"), ("//evil.example", "/"), (None, "/")],
+)
+def test_callback_returns_to_the_saved_same_site_page(callback, requested, landing):
+    config, client, _, _ = callback
+    params = {} if requested is None else {"next": requested}
+    response = client.get("/api/v1/auth/github/login", params=params, follow_redirects=False)
+    state = parse_qs(urlsplit(response.headers["location"]).query)["state"][0]
+    # The return path never travels to GitHub; only the signed attempt cookie carries it.
+    assert "next" not in response.headers["location"]
+    finished = client.get(
+        CALLBACK_PATH, params={"code": "fixture-code", "state": state}, follow_redirects=False
+    )
+    assert finished.status_code == 302
+    assert finished.headers["location"] == f"https://refactra.example{landing}"
+
+
+@pytest.mark.parametrize(
     "problem,status",
     [("state", 400), ("denied", 400), ("code", 401), ("timeout", 502), ("identity", 502)],
 )
