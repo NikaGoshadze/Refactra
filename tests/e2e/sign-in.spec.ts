@@ -31,8 +31,10 @@ test("only same-site return paths are passed on to GitHub sign-in", async ({ pag
   await page.goto(`${authProxy.origin}/sign-in?next=${encodeURIComponent("/runs/abc?tab=plan")}`);
   await expect(page.getByRole("link", { name: "Sign in with GitHub" }))
     .toHaveAttribute("href", `/api/v1/auth/github/login?next=${encodeURIComponent("/runs/abc?tab=plan")}`);
-  await page.goto(`${authProxy.origin}/sign-in?next=${encodeURIComponent("//evil.example/")}`);
-  await expect(page.getByRole("link", { name: "Sign in with GitHub" })).toHaveAttribute("href", "/api/v1/auth/github/login");
+  for (const invalid of ["//outside.example/", "/history\n"]) {
+    await page.goto(`${authProxy.origin}/sign-in?next=${encodeURIComponent(invalid)}`);
+    await expect(page.getByRole("link", { name: "Sign in with GitHub" })).toHaveAttribute("href", "/api/v1/auth/github/login");
+  }
 });
 
 test("a signed-in visitor on the sign-in page goes on to the requested page", async ({ page, context, authProxy }) => {
@@ -57,16 +59,23 @@ test("the waitlist page needs a session and sends invited users to the workspace
   await expect(page.getByRole("heading", { name: "Workspace" })).toBeVisible();
 });
 
-test("a removed account sees that it has no access", async ({ page, context, authProxy }, testInfo) => {
-  await signIn(context, authProxy.origin);
-  await page.route("**/api/v1/auth/session", (route) => route.fulfill({
-    json: { authenticated: true, user: { user_id: 778, login: "former" }, access: "denied" },
-  }));
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`${authProxy.origin}/runs/367dfc44-100b-4af2-9ed7-ddf97ae24d52`);
-  await expect(page).toHaveURL(`${authProxy.origin}/waitlist`);
-  await expect(page.getByRole("heading", { name: "Your account does not have access" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "delete your account and data" })).toHaveAttribute("href", "/privacy");
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: testInfo.outputPath("waitlist-denied-mobile.png"), fullPage: true });
-});
+for (const [access, heading] of [
+  ["waitlisted", "You're on the waitlist"],
+  ["denied", "Your account does not have access"],
+]) {
+  test(`the ${access} state explains access and links to deletion`, async ({ page, context, authProxy }, testInfo) => {
+    await signIn(context, authProxy.origin);
+    await page.route("**/api/v1/auth/session", (route) => route.fulfill({
+      json: { authenticated: true, user: { user_id: 778, login: "fixture-user" }, access },
+    }));
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`${authProxy.origin}/runs/367dfc44-100b-4af2-9ed7-ddf97ae24d52`);
+    await expect(page).toHaveURL(`${authProxy.origin}/waitlist`);
+    await expect(page.getByRole("heading", { name: heading })).toBeVisible();
+    await expect(page.getByRole("link", { name: "delete your account and data" })).toHaveAttribute("href", "/privacy");
+    await page.screenshot({ path: testInfo.outputPath(`waitlist-${access}-desktop.png`), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`waitlist-${access}-mobile.png`), fullPage: true });
+  });
+}

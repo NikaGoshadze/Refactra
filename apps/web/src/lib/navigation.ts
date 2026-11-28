@@ -1,6 +1,6 @@
 // Mirrors safe_next in the API: only a plain path inside Refactra is a valid return address,
 // so a crafted sign-in link cannot send someone to another site afterwards.
-const NEXT = /^\/(?![/\\])[A-Za-z0-9\-._~!$&'()*+,;=:@%/?]{0,511}$/;
+const NEXT = /^\/(?![/\\])[A-Za-z0-9\-._~!$&'()*+,;=:@%/?]{0,511}(?![\s\S])/;
 
 export function safeNext(value: string | null | undefined): string {
   return value && NEXT.test(value) ? value : "/";
