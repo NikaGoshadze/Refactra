@@ -424,6 +424,8 @@ Add `--save-target` to save the verified commit and PR destination in PostgreSQL
 
 Review the commit and branches in the saved result. After migration `0015_candidate_publication`, **Approve publication** records the exact target and queues publication.
 
+**Saved diff** shows each file with old and new line numbers. Switch between **Split** and **Unified** views. Phones default to Unified. The viewer highlights Python, JavaScript, TypeScript, JSON and YAML, and shows the original text for other file types and binary replacement receipts. In Next.js development mode, open `/dev/states` for sample diffs without signing in.
+
 A required check that could not run, such as pytest without its locked dependencies, keeps the result reviewable but blocks publication approval. Enter a reason and select **Waive check** for each one first. The protected `POST /api/v1/runs/{run_id}/result/waivers` accepts `{result_id, result_sha256, check_index, reason}` from the run owner, with the trusted Origin and `X-Refactra-CSRF: 1`. A waiver applies only to that check in that exact result revision. A new result revision needs new waivers. Failed checks and optional checks cannot be waived, and waivers are locked once publication is approved. Saved results list their waivers under `publication_waivers`.
 
 With the clone and artifact flags enabled, the candidate worker pushes the prepared commit and opens or recovers its draft PR. Earlier approvals can still use the operator commands below.
