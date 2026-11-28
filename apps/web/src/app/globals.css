@@ -1,5 +1,33 @@
 @import "tailwindcss";
 
+/* Saved candidate diffs */
+.patch-viewer { display: grid; gap: 12px; min-width: 0; }
+.patch-layout { display: flex; justify-self: end; border: 1px solid var(--border); border-radius: 6px; }
+.patch-layout button { padding: 5px 12px; font-size: 12px; }
+.patch-layout button + button { border-left: 1px solid var(--border); }
+.patch-layout button[aria-pressed="true"] { background: var(--border); }
+.patch-file { min-width: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.patch-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 8px 12px; background: var(--surface); }
+.patch-heading code { min-width: 0; overflow-wrap: anywhere; }
+.patch-counts { flex-shrink: 0; font-family: var(--font-mono); font-size: 12px; }
+.patch-counts > :first-child { color: #3fb950; }
+.patch-counts > :last-child { color: #f85149; }
+.patch-scroll { overflow-x: auto; }
+.patch-table { width: 100%; border-collapse: collapse; background: var(--canvas); font: 12px/20px var(--font-mono); }
+.patch-split { min-width: 540px; table-layout: fixed; }
+.patch-gutter { width: 40px; }
+.patch-number { padding: 0 6px; text-align: right; color: var(--muted); vertical-align: top; }
+.patch-split td:nth-child(2) { border-right: 1px solid var(--border); }
+.patch-code { padding: 0 8px 0 21px; text-indent: -13px; white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: top; }
+.patch-marker { display: inline-block; width: 13px; text-indent: 0; }
+.patch-add { background: rgba(46, 160, 67, 0.17); }
+.patch-del { background: rgba(248, 81, 73, 0.16); }
+.patch-add .patch-marker, .patch-add.patch-number { color: #56d364; }
+.patch-del .patch-marker, .patch-del.patch-number { color: #ff7b72; }
+.patch-empty { background: var(--surface); }
+.patch-note td, .patch-hunk td, p.patch-empty { padding: 4px 12px; color: var(--muted); }
+.patch-hunk td { background: rgba(56, 139, 253, 0.14); }
+
 /* GitHub dark theme tokens (Primer). Every colour below comes from these. */
 :root {
   color-scheme: dark;

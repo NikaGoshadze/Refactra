@@ -200,8 +200,9 @@ test("opens, revises, and approves a saved plan", async ({ page, authProxy }) =>
   await expect(result.getByText(RESULT.sha256, { exact: true })).toBeVisible();
   await expect(result.getByText("3 passed", { exact: true })).toBeVisible();
   await expect(result.getByText("Exit code 0", { exact: false })).toBeVisible();
-  await expect(result.getByText(RESULT.diff)).toBeVisible();
-  await expect(result.locator("pre strong")).toHaveCount(0);
+  const diff = result.getByRole("table", { name: "Changes to src/cart.py" });
+  await expect(diff.getByText('<strong>cart</strong>', { exact: false })).toBeVisible();
+  await expect(diff.locator("strong")).toHaveCount(0);
   await expect(result.getByText(RESULT.publication_target.commit_sha, { exact: true })).toBeVisible({ timeout: 10000 });
   await expect(result.getByText(RESULT.publication_target.destination.head_branch, { exact: true })).toBeVisible();
   await expect(result.getByRole("status")).toHaveText("Candidate ready for review.");
@@ -342,4 +343,37 @@ test("a refused submission explains the limit", async ({ page }) => {
   await panel.getByLabel("What would you like to refactor?").fill("Review cart");
   await panel.getByRole("button", { name: "Start analysis" }).click();
   await expect(panel.getByRole("alert")).toHaveText(/the daily limit\. You can start more after midnight UTC\./);
+});
+
+test("candidate review preserves header-like edited lines and adapts the diff layout", async ({ page, authProxy }, testInfo) => {
+  const diff = [
+    "--- a/notes.txt", "+++ b/notes.txt", "@@ -1 +1 @@",
+    "--- old heading", "+++ new heading",
+    "--- /dev/null", "+++ b/src/cart.py", "@@ -0,0 +1,2 @@",
+    "+def cart_total(items):", "+    return sum(items)", "\\ No newline at end of file", "",
+  ].join("\n");
+  await page.route(`**${PLAN_PATH}`, (route) => route.fulfill({ json: { ...PLAN, approval: { revision: 1 } } }));
+  await page.route(`**${RESULT_PATH}?progress=true`, (route) => route.fulfill({
+    json: { status: "idle", message: null, result: { ...RESULT, diff } },
+  }));
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto(`${authProxy.origin}/runs/${RUN_ID}`);
+  const layouts = page.getByRole("group", { name: "Diff layout" });
+  await expect(layouts.getByRole("button", { name: "Split" })).toHaveAttribute("aria-pressed", "true");
+  const diffView = layouts.locator("..");
+  await expect(diffView.getByRole("table")).toHaveCount(2);
+  const notes = diffView.getByRole("table", { name: "Changes to notes.txt" });
+  await expect(notes.getByText("-- old heading", { exact: false })).toBeVisible();
+  await expect(notes.getByText("++ new heading", { exact: false })).toBeVisible();
+  await expect(diffView.getByRole("table", { name: "Changes to src/cart.py" }).locator("span[style]").first()).toBeVisible();
+  await diffView.screenshot({ path: testInfo.outputPath("candidate-diff-desktop.png") });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(layouts.getByRole("button", { name: "Unified" })).toHaveAttribute("aria-pressed", "true");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await diffView.screenshot({ path: testInfo.outputPath("candidate-diff-mobile.png") });
+  await layouts.getByRole("button", { name: "Split" }).click();
+  await expect(layouts.getByRole("button", { name: "Split" })).toHaveAttribute("aria-pressed", "true");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect((await page.request.get(`${authProxy.origin}/dev/states`)).status()).toBe(404);
 });

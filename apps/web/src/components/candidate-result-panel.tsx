@@ -1,5 +1,6 @@
 "use client";
 
+import { DiffView } from "@/components/diff-view";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { request } from "@/lib/api";
 import { nextUnchanged, pollDelay } from "@/lib/polling";
@@ -255,7 +256,7 @@ export function CandidateResultPanel({ runId }: { runId: string }) {
           </>}
         </>}
         <h5>Saved diff</h5>
-        <pre className="analysis-result">{result.diff}</pre>
+        <DiffView diff={result.diff} />
       </>}
       {result && <div className="saved-run">
         {target && <>
