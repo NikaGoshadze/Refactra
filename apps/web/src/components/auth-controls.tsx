@@ -1,5 +1,6 @@
 "use client";
 
+import { MarkGithubIcon } from "@primer/octicons-react";
 import { useEffect, useState } from "react";
 import { UsageSummary } from "@/components/usage-summary";
 import { accessNotice, request, type SessionStatus } from "@/lib/api";
@@ -49,7 +50,9 @@ export function AuthControls({ session, onSessionChange }: {
       </> : session ? <>
         <span role="status">Not signed in</span>
         {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- OAuth needs full navigation without prefetching. */}
-        <a className="account-signin" href="/api/v1/auth/github/login">Sign in with GitHub</a>
+        <a className="account-signin" href="/api/v1/auth/github/login">
+          <MarkGithubIcon size={16} aria-hidden="true" />Sign in with GitHub
+        </a>
       </> : <button type="button" onClick={retryAccount}>Retry account</button>}
       {error && <p className="account-error" role="alert">{error}</p>}
     </section>
