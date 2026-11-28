@@ -6,9 +6,9 @@ async function signIn(context: import("@playwright/test").BrowserContext, origin
   await context.addCookies([{ name: "refactra_session", value: "fixture-session", url: origin, httpOnly: true }]);
 }
 
-test("signed-out visitors are asked to sign in and no runs are requested", async ({ page, authProxy }) => {
+test("signed-out visitors are sent to sign in and no runs are requested", async ({ page, authProxy }) => {
   await page.goto(`${authProxy.origin}/history`);
-  await expect(page.getByText("Sign in with GitHub to see your runs.")).toBeVisible();
+  await expect(page).toHaveURL(`${authProxy.origin}/sign-in?next=%2Fhistory`);
   expect(authProxy.calls.some((call) => call.url.startsWith("/api/v1/runs"))).toBe(false);
 });
 

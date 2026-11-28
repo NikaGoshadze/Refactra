@@ -18,7 +18,7 @@ Install Docker Desktop with Linux containers (WSL2 on Windows), then run from th
 .\scripts\start-local.ps1
 ```
 
-Open [the local workspace](http://localhost:3000). The [API docs](http://localhost:8000/docs) and [readiness endpoint](http://localhost:8000/health/ready) are available separately.
+Open [the local workspace](http://localhost:3000). Without a session you land on **/sign-in**, which shows a real change from a Refactra run next to the GitHub-only sign-in card. After signing in you return to the page you first asked for; only paths inside Refactra are accepted as that return address. The development-only mock run, which needs no GitHub sign-in, is at [/dev/mock-run](http://localhost:3000/dev/mock-run). The [API docs](http://localhost:8000/docs) and [readiness endpoint](http://localhost:8000/health/ready) are available separately.
 
 Compose waits for PostgreSQL, applies Alembic migrations, then starts the API and worker. Default development credentials and ports are in [.env.example](.env.example); copying it to `.env` is optional for Compose. These credentials and this unauthenticated mock stack are for local development only. Published ports bind to loopback; do not expose this build as the public demo.
 
@@ -464,6 +464,8 @@ The portable `tokenizers` dependency and its lockfile are required; the 6.4 MB p
 
 ## What the interactive mock does
 
+Open it at `/dev/mock-run`. The page is not linked from the site, and the API refuses mock runs whenever mock mode is off, which production mode requires.
+
 1. The UI submits a clearly labeled mock task with an idempotency key.
 2. The API atomically inserts a run, START command and creation event.
 3. A separate worker claims work using a short PostgreSQL `FOR UPDATE SKIP LOCKED` transaction and a 60-second lease.
@@ -536,7 +538,7 @@ GitHub Apps receive installation events without subscribing to them. GitHub's **
 Anyone can sign in with GitHub, but only owners and invited users can use Refactra.
 - **Owners** are listed in `REFACTRA_ALLOWED_GITHUB_USER_IDS` and always have access.
 - **Everyone else** needs an `invited` row in the `user_access` table (migration `0022_user_access`).
-- **Signing in without access** adds the user to the waitlist. The workspace, History and run pages then show "You're on the Refactra waitlist" instead of repositories, and repository and run endpoints answer `403` with `waitlisted`.
+- **Signing in without access** adds the user to the waitlist. The workspace, History and run pages send them to the **/waitlist** page instead of showing repositories, and repository and run endpoints answer `403` with `waitlisted`. Removed users see a "no access" version of that page.
 - **Removed users** are refused (`repository_access_denied`) and are not put back on the waitlist when they sign in again.
 - **Session status:** `GET /api/v1/auth/session` reports `access` as `allowed`, `waitlisted` or `denied`.
 - **Queued runs:** workers re-check access for each queued run, including invites, so removing someone stops their queued work.
@@ -571,7 +573,7 @@ The production error lists the setting names that need attention and never their
 
 ## Checks
 
-GitHub Actions ([ci.yml](.github/workflows/ci.yml)) runs on every pull request and push to `main`. The backend job runs Ruff and the full pytest suite against a PostgreSQL 17 service. That suite also runs `run-worker.ps1` under PowerShell 7 with a fake `uv`, checking clean stop, restart with a doubling delay and stop on a configuration error. These tests skip only outside CI when `pwsh` is missing. The web job runs lint, build, typecheck and the Playwright specs that use the isolated proxy fixture. A docker job starts the Compose stack and checks readiness and the worker heartbeat. It then runs the Docker-gated validation tests against the built `refactra-backend:local` image, failing if any of them is skipped, and finishes with the full-stack `mock-run.spec.ts` browser test.
+GitHub Actions ([ci.yml](.github/workflows/ci.yml)) runs on every pull request and push to `main`. The backend job runs Ruff and the full pytest suite against a PostgreSQL 17 service. That suite also runs `run-worker.ps1` under PowerShell 7 with a fake `uv`, checking clean stop, restart with a doubling delay and stop on a configuration error. These tests skip only outside CI when `pwsh` is missing. The web job runs lint, build, typecheck and the Playwright specs that use the isolated proxy fixture. A pull request that changes only the website (`apps/web/`, `tests/e2e/`, `tests/fixtures/` or this README) runs just the web job; changes to the web Dockerfile or `mock-run.spec.ts`, and every push to `main`, run all jobs. A docker job starts the Compose stack and checks readiness and the worker heartbeat. It then runs the Docker-gated validation tests against the built `refactra-backend:local` image, failing if any of them is skipped, and finishes with the full-stack `mock-run.spec.ts` browser test.
 
 Backend integration tests use real PostgreSQL and migrate a unique disposable schema per test. They never truncate the application tables. The Compose `test` service builds a separate `refactra-backend:test` image that adds Git for the commit tests. The benchmark operator test runs only against a localhost database, so it is skipped in Compose:
 

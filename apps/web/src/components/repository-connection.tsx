@@ -156,7 +156,7 @@ export function RepositoryConnection({ children }: { children: ReactNode }) {
   // Waitlisted users are signed in but get the waitlist notice instead of their repositories.
   const notice = accessNotice(session);
   return <>
-    <AuthControls session={session} onSessionChange={setSession} />
+    <AuthControls session={session} onSessionChange={setSession} gate />
     {children}
     <RepositoryPanel key={session?.authenticated ? `${session.user.user_id}-${notice ? "notice" : "ok"}` : "anonymous"}
       authenticated={session?.authenticated === true && !notice} notice={notice} />

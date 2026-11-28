@@ -146,14 +146,66 @@ h3 { margin: 0 0 10px; font-size: 15px; font-weight: 600; }
 .error-box { background: var(--danger-surface); color: #ffa198; border: 1px solid var(--danger-border); padding: 12px; margin-top: 14px; font-size: 13px; border-radius: var(--radius); }
 .error-box p { margin: 0 0 8px; }
 .error-box button { text-decoration: underline; border: 0; background: transparent; padding: 0; color: inherit; }
-.roadmap { margin-top: 48px; padding-top: 28px; border-top: 1px solid var(--border-muted); }
-.roadmap .eyebrow { color: var(--muted); font-size: 10px; margin-bottom: 10px; }
-.roadmap h2 { font-size: 16px; }
-.workflow { list-style: none; display: grid; grid-template-columns: repeat(4, 1fr); padding: 0; margin: 25px 0 16px; gap: 20px; }
-.workflow li { display: grid; grid-template-columns: 25px 1fr; gap: 5px 10px; }
-.workflow li > span { grid-row: span 2; color: var(--success); font: 12px var(--font-mono); padding-top: 1px; }
-.workflow strong { font-size: 12px; font-weight: 600; }
-.workflow small { font-size: 11px; color: var(--muted); }
-.roadmap-note { color: var(--subtle); font-size: 11px; }
 footer { display: flex; justify-content: space-between; gap: 18px; margin-top: 38px; padding: 22px 0; border-top: 1px solid var(--border-muted); font-size: 11px; color: var(--subtle); }
-@media (max-width: 760px) { .workspace { padding: 0 22px; } .topbar { height: auto; padding: 16px 0 12px; flex-wrap: wrap; gap: 12px 16px; } .topnav { order: 3; width: 100%; } .brand { font-size: 21px; } .environment { font-size: 10px; } .intro { padding-top: 38px; } h1 { letter-spacing: -1.2px; } .console-grid { grid-template-columns: 1fr; } .task-card, .activity-card { padding: 22px; } .empty-state { padding: 35px 15px; } .workflow { grid-template-columns: 1fr 1fr; gap: 24px 15px; } footer { flex-direction: column; gap: 8px; } }
+@media (max-width: 760px) { .workspace { padding: 0 22px; } .topbar { height: auto; padding: 16px 0 12px; flex-wrap: wrap; gap: 12px 16px; } .topnav { order: 3; width: 100%; } .brand { font-size: 21px; } .environment { font-size: 10px; } .intro { padding-top: 38px; } h1 { letter-spacing: -1.2px; } .console-grid { grid-template-columns: 1fr; } .task-card, .activity-card { padding: 22px; } .empty-state { padding: 35px 15px; } footer { flex-direction: column; gap: 8px; } }
+
+/* Page titles inside the app are plain; the large display heading is only on the sign-in page. */
+.page-title { font-size: 24px; letter-spacing: -.4px; line-height: 1.3; margin: 24px 0 20px; }
+.page-heading { padding: 32px 0 24px; }
+.page-heading h1 { font-size: 24px; letter-spacing: -.4px; margin-bottom: 10px; }
+
+/* Sign-in page (Concept A): a real change on the left, GitHub-only sign-in on the right. */
+.signin-top { display: flex; align-items: center; justify-content: space-between; height: 72px; border-bottom: 1px solid var(--border-muted); }
+.signin-privacy { color: var(--muted); font-size: 13px; font-weight: 600; }
+.signin-grid { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 56px; align-items: start; padding: 64px 0 72px; }
+.signin-pitch h1 { font-size: clamp(32px, 3.4vw, 44px); letter-spacing: -1.2px; max-width: 640px; margin-bottom: 18px; }
+.signin-copy { max-width: 600px; margin: 0 0 32px; color: var(--muted); font-size: 16px; line-height: 1.65; }
+.signin-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-large); padding: 28px; }
+.signin-card h2 { font-size: 20px; font-weight: 600; margin: 0 0 8px; }
+.signin-card-copy { margin: 0 0 20px; color: var(--muted); font-size: 14px; line-height: 1.5; }
+.signin-button { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; padding: 11px 16px; border: 1px solid rgba(240, 246, 252, 0.1); border-radius: var(--radius); background: var(--green); color: #fff; font-size: 15px; font-weight: 600; }
+.signin-button:hover { background: var(--green-hover); color: #fff; }
+.signin-card h3 { margin: 24px 0 10px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.signin-scope { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; font-size: 13px; line-height: 1.5; }
+.signin-scope li { display: grid; grid-template-columns: 16px 1fr; gap: 10px; }
+.signin-scope svg { margin-top: 2px; }
+.signin-can svg { color: var(--success); }
+.signin-cannot svg { color: var(--muted); }
+.signin-note { margin: 24px 0 0; padding-top: 16px; border-top: 1px solid var(--border-muted); color: var(--muted); font-size: 12px; line-height: 1.6; }
+.signin-note a, .waitlist-card a { color: var(--link); }
+.signin-note a:hover, .waitlist-card a:hover { text-decoration: underline; }
+
+/* A GitHub-style diff. D3 turns this into the shared viewer. */
+.sample-diff { margin: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--canvas); }
+.diff-file { display: flex; justify-content: space-between; gap: 12px; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border); font: 12px var(--font-mono); }
+.diff-path { overflow-wrap: anywhere; }
+.diff-stat-add { color: var(--success); }
+.diff-stat-del { color: var(--danger); }
+.diff-hunk { padding: 6px 16px; background: rgba(56, 139, 253, 0.1); color: var(--muted); font: 12px/20px var(--font-mono); }
+.diff-scroll { overflow-x: auto; }
+.diff-table { width: 100%; border-collapse: collapse; font: 12px/20px var(--font-mono); table-layout: fixed; }
+.diff-split .diff-num { width: 44px; }
+.diff-unified { display: none; }
+.diff-unified .diff-num { width: 36px; }
+.diff-num { padding: 0 8px; text-align: right; color: var(--subtle); user-select: none; vertical-align: top; }
+/* Wrapped lines hang under the code, not under the +/- marker. */
+.diff-code { padding: 0 12px 0 22px; text-indent: -22px; white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: top; }
+.diff-split td.diff-code:nth-child(2) { border-right: 1px solid var(--border-muted); }
+.diff-sign { display: inline-block; width: 22px; padding-left: 4px; text-indent: 0; color: var(--muted); user-select: none; }
+.diff-del { background: rgba(248, 81, 73, 0.1); }
+.diff-del.diff-num { background: rgba(248, 81, 73, 0.2); }
+.diff-add { background: rgba(46, 160, 67, 0.15); }
+.diff-add.diff-num { background: rgba(63, 185, 80, 0.3); color: var(--fg); }
+.diff-empty { background: var(--surface); }
+.diff-footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 20px; padding: 10px 16px; border-top: 1px solid var(--border); background: var(--surface); font-size: 12px; color: var(--muted); }
+.diff-footer span { display: inline-flex; align-items: center; gap: 6px; }
+.diff-checks { color: var(--success); font-weight: 600; }
+
+.waitlist-card { max-width: 620px; margin: 56px auto; padding: 32px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-large); }
+.waitlist-icon { color: var(--attention); }
+.waitlist-card h1 { font-size: 24px; letter-spacing: -.4px; margin: 14px 0 12px; }
+.waitlist-card p { margin: 0 0 12px; color: var(--muted); font-size: 14px; line-height: 1.6; }
+.waitlist-card strong { color: var(--fg); }
+
+@media (max-width: 960px) { .signin-grid { grid-template-columns: 1fr; gap: 32px; padding: 40px 0 48px; } .signin-card { max-width: 480px; } }
+@media (max-width: 760px) { .diff-split { display: none; } .diff-unified { display: table; } .signin-card { padding: 22px; } .waitlist-card { margin: 32px 0; padding: 22px; } .diff-file, .diff-hunk, .diff-footer { padding-left: 12px; padding-right: 12px; } }
