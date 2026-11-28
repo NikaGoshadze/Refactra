@@ -1,8 +1,8 @@
 import { test, expect } from "@playwright/test";
 
 test("a mock task reaches the worker through PostgreSQL and survives a page reload", async ({ page }) => {
-  await page.goto("/");
-  await expect(page.getByRole("heading", { name: "A clearer path from task to change." })).toBeVisible();
+  await page.goto("/dev/mock-run");
+  await expect(page.getByRole("heading", { name: "Mock run" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Start mock run" })).toBeEnabled();
   await page.getByLabel("What would you like to refactor?").fill("Browser smoke: extract duplicated calculation logic.");
   const saved = page.waitForResponse((response) => response.url().endsWith("/api/v1/mock/runs") && response.request().method() === "POST");
@@ -23,7 +23,7 @@ test("a mock task reaches the worker through PostgreSQL and survives a page relo
 
 test("the local page remains usable at mobile width", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/");
+  await page.goto("/dev/mock-run");
   await expect(page.getByRole("button", { name: "Start mock run" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

@@ -16,12 +16,10 @@ async function signIn(context: import("@playwright/test").BrowserContext, origin
   await context.addCookies([{ name: "refactra_session", value: "fixture-session", url: origin, httpOnly: true }]);
 }
 
-test("signed-out visitors are asked to sign in and nothing is requested", async ({ page, authProxy }) => {
+test("signed-out visitors are sent to sign in and nothing is requested", async ({ page, authProxy }) => {
   await page.goto(authProxy.origin);
-  await expect(page.getByRole("region", { name: "GitHub account" }).getByText("Not signed in", { exact: true })).toBeVisible();
-  const panel = page.getByRole("region", { name: "Repository connection" });
-  await expect(panel.getByRole("status")).toHaveText("Sign in with GitHub to choose a repository.");
-  await expect(panel.getByLabel("Repository", { exact: true })).toHaveCount(0);
+  await expect(page).toHaveURL(`${authProxy.origin}/sign-in`);
+  await expect(page.getByRole("heading", { name: "Sign in to Refactra" })).toBeVisible();
   expect(authProxy.calls.some((call) => call.url.includes("repositor"))).toBe(false);
 });
 
@@ -46,8 +44,8 @@ test("a signed-in user picks a writable repository and sign-out clears it", asyn
   expect(await page.evaluate(() => document.cookie)).not.toContain("refactra_session");
   await page.screenshot({ path: testInfo.outputPath("repository-desktop.png"), fullPage: true });
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
-  await expect(panel.getByRole("status")).toHaveText("Sign in with GitHub to choose a repository.");
-  await expect(panel.getByText("fixture/example", { exact: true })).toHaveCount(0);
+  await expect(page).toHaveURL(`${authProxy.origin}/sign-in`);
+  await expect(page.getByText("fixture/example", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Repository analysis" })).toHaveCount(0);
 });
 
@@ -134,8 +132,8 @@ test("sign-out cancels a pending check and a late result does not come back", as
   await cancelled;
   release();
   await lateResponse;
-  await expect(panel.getByRole("status")).toHaveText("Sign in with GitHub to choose a repository.");
-  await expect(panel.getByText("fixture/example", { exact: true })).toHaveCount(0);
+  await expect(page).toHaveURL(`${authProxy.origin}/sign-in`);
+  await expect(page.getByText("fixture/example", { exact: true })).toHaveCount(0);
 });
 
 test("a repository with too many branches to list takes a typed branch", async ({ page, context, authProxy }) => {
@@ -163,19 +161,17 @@ test("the analysis form explains when no analysis worker is running", async ({ p
   await expect(analysis.getByRole("button", { name: "Start analysis" })).toBeVisible();
 });
 
-test("a waitlisted user sees the waitlist notice instead of repositories", async ({ page, context, authProxy }) => {
+test("a waitlisted user is sent to the waitlist page instead of repositories", async ({ page, context, authProxy }) => {
   await signIn(context, authProxy.origin);
   await page.route("**/api/v1/auth/session", (route) => route.fulfill({
     json: { authenticated: true, user: { user_id: 777, login: "newcomer" }, access: "waitlisted" },
   }));
   await page.goto(authProxy.origin);
-  const panel = page.getByRole("region", { name: "Repository connection" });
-  await expect(panel.getByRole("status")).toHaveText(
-    "You're on the Refactra waitlist. You'll get access once the owner invites you.",
-  );
-  await expect(panel.getByLabel("Repository", { exact: true })).toHaveCount(0);
+  await expect(page).toHaveURL(`${authProxy.origin}/waitlist`);
+  await expect(page.getByRole("heading", { name: "You're on the waitlist" })).toBeVisible();
+  await expect(page.getByLabel("Repository", { exact: true })).toHaveCount(0);
   await page.goto(`${authProxy.origin}/history`);
-  await expect(page.getByText("You're on the Refactra waitlist.", { exact: false })).toBeVisible();
+  await expect(page).toHaveURL(`${authProxy.origin}/waitlist`);
   expect(authProxy.calls.some((call) => call.url.startsWith("/api/v1/user/repositories")
     || call.url.startsWith("/api/v1/runs") || call.url === "/api/v1/usage")).toBe(false);
 });

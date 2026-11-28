@@ -13,8 +13,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect website-only changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      web_only: ${{ steps.diff.outputs.web_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: diff
+        name: Compare the pull request with its base
+        # Website-only pull requests run only the web job (owner choice, 2026-11-28). Pushes to
+        # main, and anything touching the backend, Docker files, manifests or the Compose smoke
+        # test, run every job.
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            echo "web_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(git diff --name-only "$BASE...$HEAD")
+          echo "$files"
+          web_only=true
+          [ -n "$files" ] || web_only=false
+          while IFS= read -r file; do
+            case "$file" in
+              apps/web/Dockerfile|tests/e2e/mock-run.spec.ts) web_only=false ;;
+              apps/web/*|tests/e2e/*|tests/fixtures/*|README.md) ;;
+              *) web_only=false ;;
+            esac
+          done <<< "$files"
+          echo "web_only=$web_only" | tee -a "$GITHUB_OUTPUT"
+
   backend:
     name: Backend lint and tests
+    needs: changes
+    if: needs.changes.outputs.web_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
@@ -90,9 +129,12 @@ jobs:
           tests/e2e/repository-connection.spec.ts
           tests/e2e/run-history.spec.ts
           tests/e2e/run-detail.spec.ts
+          tests/e2e/sign-in.spec.ts
 
   docker:
     name: Docker validation and full-stack smoke
+    needs: changes
+    if: needs.changes.outputs.web_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:

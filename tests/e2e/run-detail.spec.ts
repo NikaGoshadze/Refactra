@@ -12,9 +12,9 @@ test.beforeEach(async ({ context, page, authProxy }) => {
   }
 });
 
-test("signed-out visitors are asked to sign in and nothing is requested", async ({ page, authProxy }) => {
+test("signed-out visitors are sent to sign in and nothing is requested", async ({ page, authProxy }) => {
   await page.goto(`${authProxy.origin}/runs/${RUN_ID}`);
-  await expect(page.getByText("Sign in with GitHub to see this run.")).toBeVisible();
+  await expect(page).toHaveURL(`${authProxy.origin}/sign-in?next=${encodeURIComponent(`/runs/${RUN_ID}`)}`);
   expect(authProxy.calls.some((call) => call.url.startsWith(RUN_PATH))).toBe(false);
 });
 

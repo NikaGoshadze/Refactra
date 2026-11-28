@@ -81,7 +81,7 @@ test.describe("account controls", () => {
 
   test("privacy is public and only the confirmed login can delete the account", async ({ authProxy, page, context }) => {
     await page.goto(authProxy.origin);
-    await page.getByRole("link", { name: "Privacy" }).click();
+    await page.getByRole("link", { name: "Privacy", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Privacy and account data" })).toBeVisible();
     await expect(page.getByText("Sign in with GitHub above to delete your account.")).toBeVisible();
     await context.addCookies([{ name: "refactra_session", value: "fixture-session", url: authProxy.origin, httpOnly: true }]);
@@ -109,13 +109,14 @@ test.describe("account controls", () => {
   test("anonymous users can start GitHub sign-in", async ({ authProxy, page }, testInfo) => {
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
-    await page.goto(authProxy.origin);
-    const account = page.getByRole("region", { name: "GitHub account" });
-    await expect(account.getByText("Not signed in", { exact: true })).toBeVisible();
-    await expect(account.getByRole("link", { name: "Sign in with GitHub" })).toHaveAttribute("href", "/api/v1/auth/github/login");
+    await page.goto(`${authProxy.origin}/history`);
+    await expect(page).toHaveURL(`${authProxy.origin}/sign-in?next=%2Fhistory`);
+    const account = page.getByRole("region", { name: "Sign in to Refactra" });
+    await expect(account.getByRole("link", { name: "Sign in with GitHub" }))
+      .toHaveAttribute("href", "/api/v1/auth/github/login?next=%2Fhistory");
     await page.screenshot({ path: testInfo.outputPath("account-anonymous.png"), fullPage: true });
     // Intercept navigation so this UI test never visits the real GitHub site.
-    await page.route("**/api/v1/auth/github/login", (route) => route.fulfill({
+    await page.route("**/api/v1/auth/github/login?next=*", (route) => route.fulfill({
       contentType: "text/html", body: "<h1>GitHub authorization handoff</h1>",
     }));
     await account.getByRole("link", { name: "Sign in with GitHub" }).click();
@@ -133,12 +134,12 @@ test.describe("account controls", () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath("account-signed-in-mobile.png"), fullPage: true });
     await account.getByRole("button", { name: "Sign out", exact: true }).click();
-    await expect(account.getByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
+    await expect(page).toHaveURL(`${authProxy.origin}/sign-in`);
+    await expect(page.getByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
     const logout = authProxy.calls.find((call) => call.url === "/api/v1/auth/logout");
     expect(logout?.headers.origin).toBe(authProxy.origin);
     expect(logout?.headers["x-refactra-csrf"]).toBe("1");
     expect((await context.cookies()).some((cookie) => cookie.name === "refactra_session")).toBe(false);
-    await expect(account.getByRole("alert")).toHaveCount(0);
   });
 
   test("a rejected logout keeps the account visible and explains the failure", async ({ authProxy, page, context }) => {
@@ -158,7 +159,8 @@ test.describe("account controls", () => {
     await page.route("**/api/v1/auth/session", (route) => ++attempts === 1
       ? route.fulfill({ status: 503, json: { error: { message: "Account service unavailable." } } })
       : route.continue());
-    await page.goto(authProxy.origin);
+    // The public privacy page keeps the account bar for signed-out visitors.
+    await page.goto(`${authProxy.origin}/privacy`);
     const account = page.getByRole("region", { name: "GitHub account" });
     await expect(account.getByRole("alert")).toHaveText("Account service unavailable.");
     await expect(account.getByRole("link", { name: "Sign in with GitHub" })).toHaveCount(0);
