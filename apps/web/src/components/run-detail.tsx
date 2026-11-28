@@ -102,7 +102,7 @@ export function RunDetail({ runId }: { runId: string }) {
   const [session, setSession] = useState<SessionStatus | null>(null);
   const notice = accessNotice(session);
   return <>
-    <AuthControls session={session} onSessionChange={setSession} />
+    <AuthControls session={session} onSessionChange={setSession} gate />
     {notice ? <p className="repository-state" role="status">{notice}</p>
       : session?.authenticated ? <RunDetailBody key={session.user.user_id} runId={runId} />
       : session ? <p className="repository-state" role="status">Sign in with GitHub to see this run.</p> : null}

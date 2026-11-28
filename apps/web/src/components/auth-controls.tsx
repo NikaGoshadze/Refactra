@@ -1,13 +1,19 @@
 "use client";
 
 import { MarkGithubIcon } from "@primer/octicons-react";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { UsageSummary } from "@/components/usage-summary";
 import { accessNotice, request, type SessionStatus } from "@/lib/api";
+import { loginHref, signInPath } from "@/lib/navigation";
 
-export function AuthControls({ session, onSessionChange }: {
-  session: SessionStatus | null; onSessionChange: (session: SessionStatus) => void;
+/** The account bar. On app pages (`gate`), signed-out visitors go to the sign-in page and
+ * users without access go to the waitlist page. */
+export function AuthControls({ session, onSessionChange, gate = false }: {
+  session: SessionStatus | null; onSessionChange: (session: SessionStatus) => void; gate?: boolean;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -23,6 +29,12 @@ export function AuthControls({ session, onSessionChange }: {
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [retry, onSessionChange]);
+
+  useEffect(() => {
+    if (!gate || !session) return;
+    if (!session.authenticated) router.replace(signInPath(pathname + window.location.search));
+    else if (accessNotice(session)) router.replace("/waitlist");
+  }, [gate, session, router, pathname]);
 
   function retryAccount() {
     setError(null);
@@ -49,8 +61,8 @@ export function AuthControls({ session, onSessionChange }: {
         <button type="button" disabled={busy} onClick={signOut}>{busy ? "Signing out…" : "Sign out"}</button>
       </> : session ? <>
         <span role="status">Not signed in</span>
-        {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- OAuth needs full navigation without prefetching. */}
-        <a className="account-signin" href="/api/v1/auth/github/login">
+        {/* A plain link: OAuth needs full navigation without prefetching. */}
+        <a className="account-signin" href={loginHref(pathname)}>
           <MarkGithubIcon size={16} aria-hidden="true" />Sign in with GitHub
         </a>
       </> : <button type="button" onClick={retryAccount}>Retry account</button>}

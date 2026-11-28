@@ -113,7 +113,7 @@ export function RunHistory() {
   const [session, setSession] = useState<SessionStatus | null>(null);
   const notice = accessNotice(session);
   return <>
-    <AuthControls session={session} onSessionChange={setSession} />
+    <AuthControls session={session} onSessionChange={setSession} gate />
     {notice ? <p className="repository-state" role="status">{notice}</p>
       : session?.authenticated ? <HistoryList key={session.user.user_id} />
       : session ? <p className="repository-state" role="status">Sign in with GitHub to see your runs.</p> : null}
